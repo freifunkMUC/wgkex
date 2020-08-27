@@ -1,0 +1,23 @@
+#!/usr/bin/python3
+from flask import Flask, render_template, jsonify
+import base64
+
+app = Flask(__name__)
+
+@app.route('/', methods=['GET'])
+def index():
+  # return templates/index.html
+  return render_template('index.html')
+
+@app.route('/wg-public-key/<path:key>', methods=['GET'])
+def receive_public_key(key):
+  if len(key) != 44:
+    return jsonify({'ErrorMessage' : 'Invalid Key Length'}), 400
+  if str(base64.b64encode(base64.b64decode(key)), 'utf-8') != str(key):
+    return jsonify({'ErrorMessage' : 'Invalid Key'}), 400
+  with open("/var/lib/wgke/public.keys", "a")  as pubkeys:
+    pubkeys.write("%s\n" % key)
+  return jsonify({'Message' : 'OK'}), 200
+
+if __name__ == '__main__':
+  app.run(debug=True, host="0.0.0.0", port=5000)
