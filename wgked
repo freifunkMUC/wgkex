@@ -1,22 +1,60 @@
 #!/usr/bin/python3
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
 import base64
+import json
 
 app = Flask(__name__)
+SEGMENTS=[
+'ffmuc_freising',
+'ffmuc_gauting',
+'ffmuc_muc_cty',
+'ffmuc_muc_nord',
+'ffmuc_muc_ost',
+'ffmuc_muc_sued',
+'ffmuc_muc_west',
+'ffmuc_uml_nord',
+'ffmuc_uml_ost',
+'ffmuc_uml_sued',
+'ffmuc_uml_west',
+'ffmuc_welt'
+]
+
+def validate_wg_key(key):
+  if len(key) != 44:
+    return False
+  if str(base64.b64encode(base64.b64decode(key)), 'utf-8') != str(key):
+    return False
+  return True
 
 @app.route('/', methods=['GET'])
 def index():
   # return templates/index.html
   return render_template('index.html')
 
+#Keep to be compatible
 @app.route('/wg-public-key/<path:key>', methods=['GET'])
 def receive_public_key(key):
-  if len(key) != 44:
-    return jsonify({'ErrorMessage' : 'Invalid Key Length'}), 400
-  if str(base64.b64encode(base64.b64decode(key)), 'utf-8') != str(key):
-    return jsonify({'ErrorMessage' : 'Invalid Key'}), 400
+  if not validate_wg_key(key):
+    return jsonify({'Message' : 'Invalid Key'}), 400
   with open("/var/lib/wgke/public.keys", "a")  as pubkeys:
     pubkeys.write("%s\n" % key)
+  return jsonify({'Message' : 'OK'}), 200
+
+@app.route('/api/v1/wg/key/exchange', methods=['POST'])
+def receive_json_wg_public_key():
+  request.get_json(force=True)
+  print(request.json.keys())
+  if not request.json or not 'public_key' in request.json or not 'segment' in request.json:
+    return jsonify({'Message' : 'Missing Data'}), 400
+  key=request.json['public_key']
+  segment=request.json['segment']
+  print(segment)
+  if not validate_wg_key(key):
+    return jsonify({'Message' : 'Invalid Key'}), 400
+  if not segment in SEGMENTS:
+    return jsonify({'Message' : 'Invalid Segment'}), 400
+  with open("/var/lib/wgke/public.keys", "a")  as pubkeys:
+    pubkeys.write("%s %s\n" % (key, segment))
   return jsonify({'Message' : 'OK'}), 200
 
 if __name__ == '__main__':
