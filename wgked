@@ -13,6 +13,8 @@ def index():
 def receive_public_key(key):
   if len(key) != 44:
     return jsonify({'ErrorMessage' : 'Invalid Key Length'}), 400
+  if key[43] != '=':
+    return jsonify({'ErrorMessage' : 'Invalid Key'}), 400
   if str(base64.b64encode(base64.b64decode(key)), 'utf-8') != str(key):
     return jsonify({'ErrorMessage' : 'Invalid Key'}), 400
   with open("/var/lib/wgke/public.keys", "a")  as pubkeys:
