@@ -22,6 +22,8 @@ SEGMENTS=[
 def validate_wg_key(key):
   if len(key) != 44:
     return False
+  if key[43] != '=':
+    return False
   if str(base64.b64encode(base64.b64decode(key)), 'utf-8') != str(key):
     return False
   return True
