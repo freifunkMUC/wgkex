@@ -36,7 +36,7 @@ def index():
 #Keep to be compatible
 @app.route('/wg-public-key/<path:key>', methods=['GET'])
 def receive_public_key(key):
- if not validate_wg_key(key):
+  if not validate_wg_key(key):
     return jsonify({'Message' : 'Invalid Key'}), 400
   with open("/var/lib/wgke/public.keys", "a")  as pubkeys:
     pubkeys.write("%s\n" % key)
