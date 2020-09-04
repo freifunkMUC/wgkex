@@ -2,8 +2,12 @@
 from flask import Flask, render_template, jsonify, request
 import base64
 import json
+import re
 
 app = Flask(__name__)
+
+WG_PUBKEY_PATTERN = re.compile("^[A-Za-z0-9+/]{42}[A|E|I|M|Q|U|Y|c|g|k|o|s|w|4|8|0]{1}=$")
+
 SEGMENTS=[
 'ffmuc_freising',
 'ffmuc_gauting',
@@ -19,14 +23,9 @@ SEGMENTS=[
 'ffmuc_welt'
 ]
 
-def validate_wg_key(key):
-  if len(key) != 44:
-    return False
-  if key[43] != '=':
-    return False
-  if str(base64.b64encode(base64.b64decode(key)), 'utf-8') != str(key):
-    return False
-  return True
+def is_valid_wg_pubkey(pubkey):
+  return WG_PUBKEY_PATTERN.match(pubkey) is not None
+
 
 @app.route('/', methods=['GET'])
 def index():
@@ -36,7 +35,7 @@ def index():
 #Keep to be compatible
 @app.route('/wg-public-key/<path:key>', methods=['GET'])
 def receive_public_key(key):
-  if not validate_wg_key(key):
+  if not is_valid_wg_pubkey(key):
     return jsonify({'Message' : 'Invalid Key'}), 400
   with open("/var/lib/wgke/public.keys", "a")  as pubkeys:
     pubkeys.write("%s\n" % key)
@@ -51,7 +50,7 @@ def receive_json_wg_public_key():
   key=request.json['public_key']
   segment=request.json['segment']
   print(segment)
-  if not validate_wg_key(key):
+  if not is_valid_wg_pubkey(key):
     return jsonify({'Message' : 'Invalid Key'}), 400
   if not segment in SEGMENTS:
     return jsonify({'Message' : 'Invalid Segment'}), 400
