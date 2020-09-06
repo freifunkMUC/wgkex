@@ -3,27 +3,14 @@ from flask import Flask, render_template, jsonify, request
 import base64
 import json
 import re
+import yaml
+import argparse
+
 
 app = Flask(__name__)
 
-WG_PUBKEY_PATTERN = re.compile("^[A-Za-z0-9+/]{42}[A|E|I|M|Q|U|Y|c|g|k|o|s|w|4|8|0]{1}=$")
-
-SEGMENTS=[
-'ffmuc_freising',
-'ffmuc_gauting',
-'ffmuc_muc_cty',
-'ffmuc_muc_nord',
-'ffmuc_muc_ost',
-'ffmuc_muc_sued',
-'ffmuc_muc_west',
-'ffmuc_uml_nord',
-'ffmuc_uml_ost',
-'ffmuc_uml_sued',
-'ffmuc_uml_west',
-'ffmuc_welt'
-]
-
 def is_valid_wg_pubkey(pubkey):
+  WG_PUBKEY_PATTERN = re.compile("^[A-Za-z0-9+/]{42}[A|E|I|M|Q|U|Y|c|g|k|o|s|w|4|8|0]{1}=$")
   return WG_PUBKEY_PATTERN.match(pubkey) is not None
 
 
@@ -54,9 +41,28 @@ def receive_json_wg_public_key():
     return jsonify({'Message' : 'Invalid Key'}), 400
   if not segment in SEGMENTS:
     return jsonify({'Message' : 'Invalid Segment'}), 400
-  with open("/var/lib/wgke/public.keys", "a")  as pubkeys:
+  with open(PUBKEYS_FILE, "a")  as pubkeys:
     pubkeys.write("%s %s\n" % (key, segment))
   return jsonify({'Message' : 'OK'}), 200
 
 if __name__ == '__main__':
+  parser = argparse.ArgumentParser(description='Wireguard Key Exchange Daemon')
+  parser.add_argument("-c",'--config', help="Load configuration from CONFIG File", default="/etc/wgked.conf")
+  args = parser.parse_args()
+
+  with open(args.config, 'r') as stream:
+    try:
+      cfg=yaml.safe_load(stream)
+    except yaml.YAMLError as e:
+      print("Error in configuration file: %s" % e)
+    try:
+      SEGMENTS=cfg['segments']
+    except Exception as e:
+      print("Error in configuration file: segments missing")
+      raise(e)
+    try:
+      PUBKEYS_FILE=cfg['pubkeys_file']
+    except Exception as e:
+      PUBKEYS_FILE="/var/lib/wgke/public.keys"
+
   app.run(debug=True, host="::", port=5000)
