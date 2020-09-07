@@ -13,6 +13,7 @@ WG_PUBKEY_PATTERN = re.compile(
     "^[A-Za-z0-9+/]{42}[A|E|I|M|Q|U|Y|c|g|k|o|s|w|4|8|0]{1}=$"
 )
 
+
 def is_valid_wg_pubkey(pubkey):
     return WG_PUBKEY_PATTERN.match(pubkey) is not None
 
