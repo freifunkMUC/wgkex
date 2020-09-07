@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, abort, jsonify, render_template, request
+from voluptuous import All, Invalid, Length, MultipleInvalid, Required, Schema
+import argparse
 import base64
 import json
 import re
+import sys
 import yaml
-import argparse
-
 
 app = Flask(__name__)
 
@@ -15,7 +16,27 @@ WG_PUBKEY_PATTERN = re.compile(
 
 
 def is_valid_wg_pubkey(pubkey):
-    return WG_PUBKEY_PATTERN.match(pubkey) is not None
+    if WG_PUBKEY_PATTERN.match(pubkey) is None:
+        raise Invalid("Not a valid Wireguard public key")
+    return pubkey
+
+
+def is_valid_segment(segment):
+    if segment not in config.get("segments"):
+        raise Invalid("Not a valid segment")
+    return segment
+
+
+CONFIG_SCHEMA = Schema(
+    {
+        Required("segments"): All([str], min=1),
+        Required("pubkeys_file", default="/var/lib/wgke/public.keys"): str,
+    }
+)
+
+WG_KEY_EXCHANGE_SCHEMA_V1 = Schema(
+    {Required("public_key"): is_valid_wg_pubkey, Required("segment"): is_valid_segment}
+)
 
 
 @app.route("/", methods=["GET"])
@@ -35,24 +56,19 @@ def receive_public_key(key):
 
 
 @app.route("/api/v1/wg/key/exchange", methods=["POST"])
-def receive_json_wg_public_key():
-    request.get_json(force=True)
-    print(request.json.keys())
-    if (
-        not request.json
-        or not "public_key" in request.json
-        or not "segment" in request.json
-    ):
-        return jsonify({"Message": "Missing Data"}), 400
-    key = request.json["public_key"]
-    segment = request.json["segment"]
-    print(segment)
-    if not is_valid_wg_pubkey(key):
-        return jsonify({"Message": "Invalid Key"}), 400
-    if not segment in SEGMENTS:
-        return jsonify({"Message": "Invalid Segment"}), 400
-    with open(PUBKEYS_FILE, "a") as pubkeys:
+def wg_key_exchange():
+    try:
+        data = WG_KEY_EXCHANGE_SCHEMA_V1(request.get_json(force=True))
+    except MultipleInvalid as ex:
+        return abort(400, jsonify({"error": {"message": str(ex)}}))
+
+    key = data["public_key"]
+    segment = data["segment"]
+    print(key, segment)
+
+    with open(config["pubkeys_file"], "a") as pubkeys:
         pubkeys.write("%s %s\n" % (key, segment))
+
     return jsonify({"Message": "OK"}), 200
 
 
@@ -68,17 +84,9 @@ if __name__ == "__main__":
 
     with open(args.config, "r") as stream:
         try:
-            cfg = yaml.safe_load(stream)
-        except yaml.YAMLError as e:
-            print("Error in configuration file: %s" % e)
-        try:
-            SEGMENTS = cfg["segments"]
-        except Exception as e:
-            print("Error in configuration file: segments missing")
-            raise (e)
-        try:
-            PUBKEYS_FILE = cfg["pubkeys_file"]
-        except Exception as e:
-            PUBKEYS_FILE = "/var/lib/wgke/public.keys"
+            config = CONFIG_SCHEMA(yaml.safe_load(stream))
+        except MultipleInvalid as ex:
+            print(f"Config file failed to validate: {ex}", file=sys.stderr)
+            sys.exit(1)
 
     app.run(debug=True, host="::", port=5000)
