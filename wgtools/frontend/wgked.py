@@ -11,9 +11,7 @@ app = Flask(__name__)
 # dummy value, content is loaded in main
 config = {}
 
-WG_PUBKEY_PATTERN = re.compile(
-    "^[A-Za-z0-9+/]{42}[A|E|I|M|Q|U|Y|c|g|k|o|s|w|4|8|0]{1}=$"
-)
+WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
 
 def is_valid_wg_pubkey(pubkey):
