@@ -9,6 +9,8 @@ import sys
 import yaml
 
 app = Flask(__name__)
+# dummy value, content is loaded in main
+config = {}
 
 WG_PUBKEY_PATTERN = re.compile(
     "^[A-Za-z0-9+/]{42}[A|E|I|M|Q|U|Y|c|g|k|o|s|w|4|8|0]{1}=$"
@@ -72,7 +74,7 @@ def wg_key_exchange():
     return jsonify({"Message": "OK"}), 200
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser(description="Wireguard Key Exchange Daemon")
     parser.add_argument(
         "-c",
@@ -84,9 +86,14 @@ if __name__ == "__main__":
 
     with open(args.config, "r") as stream:
         try:
+            global config
             config = CONFIG_SCHEMA(yaml.safe_load(stream))
         except MultipleInvalid as ex:
             print(f"Config file failed to validate: {ex}", file=sys.stderr)
             sys.exit(1)
 
     app.run(debug=True, host="::", port=5000)
+
+
+if __name__ == "__main__":
+    main()
