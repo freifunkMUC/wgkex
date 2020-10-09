@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-from flask import Flask, abort, jsonify, render_template, request
-from voluptuous import All, Invalid, Length, MultipleInvalid, Required, Schema
 import argparse
-import base64
-import json
 import re
 import sys
+
 import yaml
+from flask import Flask, abort, jsonify, render_template, request
+from voluptuous import All, Invalid, MultipleInvalid, Required, Schema
 
 app = Flask(__name__)
 # dummy value, content is loaded in main
 config = {}
 
-WG_PUBKEY_PATTERN = re.compile(
-    "^[A-Za-z0-9+/]{42}[A|E|I|M|Q|U|Y|c|g|k|o|s|w|4|8|0]{1}=$"
-)
+WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
 
 def is_valid_wg_pubkey(pubkey):
