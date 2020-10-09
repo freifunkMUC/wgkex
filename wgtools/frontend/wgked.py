@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
-from flask import Flask, abort, jsonify, render_template, request
-from voluptuous import All, Invalid, Length, MultipleInvalid, Required, Schema
 import argparse
-import base64
-import json
 import re
 import sys
+
 import yaml
+from flask import Flask, abort, jsonify, render_template, request
+from voluptuous import All, Invalid, MultipleInvalid, Required, Schema
 
 app = Flask(__name__)
 # dummy value, content is loaded in main
