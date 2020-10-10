@@ -40,7 +40,7 @@ def index():
 def receive_public_key(key):
     if not is_valid_wg_pubkey(key):
         return jsonify({"Message": "Invalid Key"}), 400
-    with open("/var/lib/wgke/public.keys", "a") as pubkeys:
+    with open("/var/lib/wgkex/public.keys", "a") as pubkeys:
         pubkeys.write("%s\n" % key)
     return jsonify({"Message": "OK"}), 200
 

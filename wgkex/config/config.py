@@ -7,7 +7,7 @@ from voluptuous import All, MultipleInvalid, Required, Schema
 CONFIG_SCHEMA = Schema(
     {
         Required("domains"): All([str], min=1),
-        Required("pubkeys_file", default="/var/lib/wgke/public.keys"): str,
+        Required("pubkeys_file", default="/var/lib/wgkex/public.keys"): str,
     }
 )
 
