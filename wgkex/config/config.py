@@ -6,7 +6,7 @@ from voluptuous import All, MultipleInvalid, Required, Schema
 
 CONFIG_SCHEMA = Schema(
     {
-        Required("segments"): All([str], min=1),
+        Required("domains"): All([str], min=1),
         Required("pubkeys_file", default="/var/lib/wgke/public.keys"): str,
     }
 )

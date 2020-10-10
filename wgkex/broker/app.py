@@ -18,14 +18,14 @@ def is_valid_wg_pubkey(pubkey):
     return pubkey
 
 
-def is_valid_segment(segment):
-    if segment not in config.get("segments"):
-        raise Invalid("Not a valid segment")
-    return segment
+def is_valid_domain(domain):
+    if domain not in config.get("domains"):
+        raise Invalid("Not a valid domain")
+    return domain
 
 
 WG_KEY_EXCHANGE_SCHEMA_V1 = Schema(
-    {Required("public_key"): is_valid_wg_pubkey, Required("segment"): is_valid_segment}
+    {Required("public_key"): is_valid_wg_pubkey, Required("domain"): is_valid_domain}
 )
 
 
@@ -53,10 +53,10 @@ def wg_key_exchange():
         return abort(400, jsonify({"error": {"message": str(ex)}}))
 
     key = data["public_key"]
-    segment = data["segment"]
-    print(key, segment)
+    domain = data["domain"]
+    print(key, domain)
 
     with open(config["pubkeys_file"], "a") as pubkeys:
-        pubkeys.write("%s %s\n" % (key, segment))
+        pubkeys.write("%s %s\n" % (key, domain))
 
     return jsonify({"Message": "OK"}), 200
