@@ -15,7 +15,7 @@ setup(
     setup_requires=["wheel"],
     entry_points={
         "console_scripts": [
-            "wgked=wgtools.frontend.wgked:main",
+            "wgked=wgkex.frontend.wgked:main",
         ],
     },
 )
