@@ -13,9 +13,4 @@ setup(
     zip_safe=False,
     install_requires=["Flask", "PyYAML", "voluptuous"],
     setup_requires=["wheel"],
-    entry_points={
-        "console_scripts": [
-            "wgked=wgkex.broker.app:main",
-        ],
-    },
 )

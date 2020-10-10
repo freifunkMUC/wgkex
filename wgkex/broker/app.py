@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-import argparse
 import re
-import sys
 
-import yaml
 from flask import Flask, abort, jsonify, render_template, request
-from voluptuous import All, Invalid, MultipleInvalid, Required, Schema
+from voluptuous import Invalid, MultipleInvalid, Required, Schema
+
+from wgkex.config import load_config
 
 app = Flask(__name__)
-# dummy value, content is loaded in main
-config = {}
+config = load_config()
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
@@ -25,13 +23,6 @@ def is_valid_segment(segment):
         raise Invalid("Not a valid segment")
     return segment
 
-
-CONFIG_SCHEMA = Schema(
-    {
-        Required("segments"): All([str], min=1),
-        Required("pubkeys_file", default="/var/lib/wgke/public.keys"): str,
-    }
-)
 
 WG_KEY_EXCHANGE_SCHEMA_V1 = Schema(
     {Required("public_key"): is_valid_wg_pubkey, Required("segment"): is_valid_segment}
@@ -69,28 +60,3 @@ def wg_key_exchange():
         pubkeys.write("%s %s\n" % (key, segment))
 
     return jsonify({"Message": "OK"}), 200
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Wireguard Key Exchange Daemon")
-    parser.add_argument(
-        "-c",
-        "--config",
-        help="Load configuration from CONFIG File",
-        default="/etc/wgked.yaml",
-    )
-    args = parser.parse_args()
-
-    with open(args.config, "r") as stream:
-        try:
-            global config
-            config = CONFIG_SCHEMA(yaml.safe_load(stream))
-        except MultipleInvalid as ex:
-            print(f"Config file failed to validate: {ex}", file=sys.stderr)
-            sys.exit(1)
-
-    app.run(debug=True, host="::", port=5000)
-
-
-if __name__ == "__main__":
-    main()
