@@ -1,13 +1,13 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="wireguard-tools",
+    name="wg-key-exchange",
     version="0.1.0",
     author="",
     author_email="",
-    description="WireGuard Tools",
+    description="WireGuard Key Exchange",
     license="",
-    url="https://github.com/freifunkMUC/wireguard-tools",
+    url="https://github.com/freifunkMUC/wg-key-exchange",
     packages=find_packages(exclude="tests"),
     include_package_data=True,
     zip_safe=False,
