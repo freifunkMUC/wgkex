@@ -6,6 +6,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
+    - name: Install dependencies
+      run: |
+        sudo apt update -qq -y
+        sudo apt install -qq -y build-essential fakeroot git python-all python3-cryptography python3-stdeb python3-wheel twine
+    - name: Prepare build process
+      id: buildprep
+      run: |
+        # Fetch tags and determine version
+        git fetch --tags -f
+        VER="$(python3 setup.py --version)"
+        echo "Version found: $VER"
+        echo "::set-output name=version::$VER"
+    - name: Build python package using setuptools (source/wheel)
+      run: |
+        python3 setup.py sdist --formats=gztar
+        python3 setup.py bdist_wheel
+    - name: Prepare stdeb build process
+      id: stdebprep
+      run: |
+        # Patch setup.py to allow stdeb proper debian style builds
+        sed "s/=determine_version()/='$(python3 setup.py --version)'/gi" -i setup.py
+        sed "s@('readme'@('share/doc/python3-acertmgr'@" -i setup.py
+        # Determine recommended dependencies for deb package
+        echo "::set-output name=recommends3::$(echo "python3-pkg-resources")"
+        # Find optional dependencies to suggest in deb package
+        echo "::set-output name=suggests3::$(python3 -c "from setup import extra_requirements; print('\n'.join(['\n'.join(x) for x in extra_requirements.values()]))" | grep -v cryptography | sed 's/PyYAML/yaml/gi' | awk '{ printf("python3-%s, ",$1)};' | awk '{$1=$1; print}')"
+    - name: Build debian package using setuptools and stdeb
+      run: python3 setup.py --command-packages=stdeb.command sdist_dsc --with-python2=False --with-python3=True --recommends3="${{ steps.stdebprep.outputs.recommends3 }}" --suggests3="${{ steps.stdebprep.outputs.suggests3 }}" bdist_deb
+    - name: Collect files for artifact upload
+      run: |
+        mkdir -v artifacts
+        cp -v changelog.txt artifacts/
+        cp -v dist/*.tar.gz artifacts/
+        cp -v dist/*.whl artifacts/
+        cp -v deb_dist/*.deb artifacts/
+    - name: Upload build artifact
+      uses: actions/upload-artifact@v1
+      with:
+        name: ${{ format('acertmgr_build_{0}', steps.buildprep.outputs.version) }}
+        path: artifacts
     - name: Publish package
       if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
       uses: pypa/gh-action-pypi-publish@master
