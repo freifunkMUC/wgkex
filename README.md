@@ -1,6 +1,7 @@
-# WireGuard Tools
+# WireGuard Key Exchange
 
-WireGuard Tools consists of both a frontend and a backend to dynamically supply WireGuard keys to a FreiFunk Gateway offering BATMAN over VXLAN over WireGuard.
+WireGuard Key Exchange is a tool consisting of two parts: a frontend (broker) and a backend (worker). The frontend (broker) is where the client can push (register) its key before connecting. The backend (worker) is injecting those keys into a WireGuard instance.
+This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted high-performance mesh links.
 
 ## Installation
 
