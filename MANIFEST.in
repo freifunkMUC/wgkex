@@ -1,1 +1,1 @@
-recursive-include wgkex/frontend/templates *
+recursive-include wgkex/broker/templates *
