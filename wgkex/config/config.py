@@ -4,10 +4,22 @@ import sys
 import yaml
 from voluptuous import All, MultipleInvalid, Required, Schema
 
+MQTT_SCHEMA = Schema(
+    {
+        Required("broker_url"): str,
+        Required("broker_port", default=1883): int,
+        Required("username", default=""): str,
+        Required("password", default=""): str,
+        Required("keepalive", default=5): int,
+        Required("tls", default=False): bool,
+    }
+)
+
 CONFIG_SCHEMA = Schema(
     {
         Required("domains"): All([str], min=1),
-        Required("pubkeys_file", default="/var/lib/wgkex/public.keys"): str,
+        Required("pubkeys_file", default=""): str,
+        Required("mqtt"): MQTT_SCHEMA,
     }
 )
 

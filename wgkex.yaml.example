@@ -12,3 +12,10 @@ domains:
   - ffmuc_uml_west
   - ffmuc_welt
 pubkeys_file: /var/lib/wgke/public.keys
+mqtt:
+  broker_url: broker.example.com
+  broker_port: 1883
+  username: user
+  password: SECRET
+  keppalive: 5
+  tls: False
