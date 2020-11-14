@@ -1,43 +1,40 @@
 ---
-name: Build (and release)
-on: [ push, pull_request ]
+name: Build and release
+
+on:
+  push:
+    tags:
+      - '*.*.*'
+
 jobs:
-  build:
+  publish:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
       with:
         fetch-depth: 0
+    - uses: actions/setup-python@v2
+    # https://github.com/marketplace/actions/python-poetry-action
+    - uses: abatilo/actions-poetry@v2.0.0
     - name: Install dependencies
       run: |
-        sudo apt update -qq -y
-        sudo apt install -qq -y build-essential fakeroot git python-all python3-cryptography python3-stdeb python3-wheel twine
-    - name: Prepare build process
-      id: buildprep
+        poetry install --no-dev
+    - name: Build project
       run: |
-        # Fetch tags and determine version
-        git fetch --tags -f
-        VER="$(python3 setup.py --version)"
-        echo "Version found: $VER"
-        echo "::set-output name=version::$VER"
-    - name: Build python package using setuptools (source/wheel)
+        poetry run poetry build
+    - name: Collect artifacts
       run: |
-        python3 setup.py sdist --formats=gztar
-        python3 setup.py bdist_wheel
-    - name: Collect files for artifact upload
-      run: |
-        mkdir -v artifacts
-        cp -v changelog.txt artifacts/
-        cp -v dist/*.tar.gz artifacts/
-        cp -v dist/*.whl artifacts/
-    - name: Upload build artifact
+        cp -v CHANGELOG.md dist/
+    - name: Upload artifact
       uses: actions/upload-artifact@v1
       with:
-        name: ${{ format('acertmgr_build_{0}', steps.buildprep.outputs.version) }}
-        path: artifacts
+        name: dist
+        path: dist
     - name: Publish package
-      if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-      uses: pypa/gh-action-pypi-publish@master
-      with:
-        user: __token__
-        password: ${{ secrets.pypi_password }}
+      env:
+        # https://python-poetry.org/docs/repositories/#configuring-credentials
+        POETRY_PYPI_TOKEN_PYPI: ${{ secrets.pypi_password }}
+      run: |
+        poetry run poetry publish
+
+
