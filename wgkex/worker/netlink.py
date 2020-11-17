@@ -93,7 +93,7 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
             action,
             ifindex=ip.link_lookup(ifname=client.vx_interface)[0],
             lladdr="00:00:00:00:00:00",
-            dst=re.sub("\/\d+$", "", client.lladdr),
+            dst=re.sub(r"/\d+$", "", client.lladdr),
         )
 
 
