@@ -2,12 +2,22 @@
 import re
 
 from flask import Flask, abort, jsonify, render_template, request
+from flask_mqtt import Mqtt
 from voluptuous import Invalid, MultipleInvalid, Required, Schema
 
 from wgkex.config import load_config
 
 app = Flask(__name__)
 config = load_config()
+
+app.config["MQTT_BROKER_URL"] = config.get("mqtt", {}).get("broker_url")
+app.config["MQTT_BROKER_PORT"] = config.get("mqtt", {}).get("broker_port")
+app.config["MQTT_USERNAME"] = config.get("mqtt", {}).get("username")
+app.config["MQTT_PASSWORD"] = config.get("mqtt", {}).get("password")
+app.config["MQTT_KEEPALIVE"] = config.get("mqtt", {}).get("keepalive")
+app.config["MQTT_TLS_ENABLED"] = config.get("mqtt", {}).get("tls")
+
+mqtt = Mqtt(app)
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
@@ -54,9 +64,29 @@ def wg_key_exchange():
 
     key = data["public_key"]
     domain = data["domain"]
-    print(key, domain)
+    # in case we want to decide here later we want to publish it only to dedicated gateways
+    gateway = "all"
+    print(f"wg_key_exchange: Domain: {domain}, Key:{key}")
 
-    with open(config["pubkeys_file"], "a") as pubkeys:
-        pubkeys.write("%s %s\n" % (key, domain))
+    if config.get("pubkeys_file") != "":
+        with open(config["pubkeys_file"], "a") as pubkeys:
+            pubkeys.write(f"{key} {domain}\n")
+
+    mqtt.publish(f"wireguard/{domain}/{gateway}", key)
 
     return jsonify({"Message": "OK"}), 200
+
+
+@mqtt.on_connect()
+def handle_mqtt_connect(client, userdata, flags, rc):
+    print(
+        "MQTT connected to {}:{}".format(
+            app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
+        )
+    )
+    # mqtt.subscribe("wireguard/#")
+
+
+@mqtt.on_message()
+def handle_mqtt_message(client, userdata, message):
+    print(f"MQTT message received on {message.topic}: {message.payload.decode()}")
