@@ -12,6 +12,13 @@ from wgkex.common.utils import mac2eui64
 
 @dataclass
 class WireGuardClient:
+    public_key: str
+    domain: str
+    lladdr: str
+    wg_interface: str
+    vx_interface: str
+    remove: bool
+
     """WireGuardClient describes complete configuration for a specific WireGuard client
 
     Attributes:
@@ -22,13 +29,6 @@ class WireGuardClient:
         vx_interface: Name of the VXLAN interface we set a route for the lladdr to
         remove: Are we removing this peer or not?
     """
-
-    public_key: str
-    domain: str
-    lladdr: str
-    wg_interface: str
-    vx_interface: str
-    remove: bool
 
 
 # we receive stuff from wgkex-broker
