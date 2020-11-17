@@ -53,7 +53,7 @@ def generate_ifname(peer: WireGuardClient) -> WireGuardClient:
     return peer
 
 
-def wg_flush_stale_peers(domain: str) -> bool:
+def wg_flush_stale_peers(domain: str) -> List[Dict]:
     stale_clients = find_stale_wireguard_clients("wg-" + domain)
     result = []
     for stale_client in stale_clients:
