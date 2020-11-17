@@ -1,15 +1,13 @@
-#!/usr/bin/env python3
-import re
 import hashlib
-
-from salt.utils.network import mac2eui64
-from textwrap import wrap
-from typing import Dict, List
-from pyroute2 import WireGuard, IPRoute
-from pyroute2.netlink.rtnl import ndmsg
-from typing import Dict, List
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from textwrap import wrap
+from typing import Dict, List
+
+from pyroute2 import WireGuard, IPRoute
+
+from wgkex.common.utils import mac2eui64
 
 
 @dataclass
