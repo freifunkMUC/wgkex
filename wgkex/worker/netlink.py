@@ -89,7 +89,7 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
     action = "append"
     if client.remove:
         action = "del"
-    
+
     with IPRoute() as ip:
         return ip.fdb(
             action,
@@ -97,6 +97,7 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
             lladdr="00:00:00:00:00:00",
             dst=re.sub("\/\d+$", "", client.lladdr),
         )
+
 
 def wireguard_handler(client: WireGuardClient) -> Dict:
     wg = WireGuard()
@@ -114,7 +115,9 @@ def wireguard_handler(client: WireGuardClient) -> Dict:
 def route_handler(client: WireGuardClient) -> Dict:
     with IPRoute() as ip:
         return ip.route(
-            "del" if client.remove else "add", dst=client.lladdr, oif=ip.link_lookup(ifname=client.wg_interface)[0]
+            "del" if client.remove else "add",
+            dst=client.lladdr,
+            oif=ip.link_lookup(ifname=client.wg_interface)[0],
         )
 
 
