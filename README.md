@@ -13,12 +13,11 @@ This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as 
 
 ## Running the broker
 
-* The broker web frontend can be started like this using Flask directly:
+* The broker web frontend can be started directly from a Git checkout:
 ```
-export FLASK_APP=wgkex.broker.app
 # defaults to /etc/wgkex.yaml if not set
 export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
-flask run
+poetry run wgkex-broker
 ```
 
 ## Client usage
@@ -29,3 +28,7 @@ $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUS
   "Message": "OK"
 }
 ```
+
+## Contact
+
+#wgkex - IRCNet
