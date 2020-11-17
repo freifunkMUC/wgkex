@@ -9,6 +9,7 @@ authors = []
 
 [tool.poetry.scripts]
 wgkex-broker = "wgkex.broker.app:main"
+wgkex-worker = "wgkex.worker.app:main"
 
 [tool.poetry.dependencies]
 python = "^3.6"
