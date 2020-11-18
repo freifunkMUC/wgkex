@@ -12,6 +12,7 @@ from wgkex.worker.netlink import (
     generate_ifname,
 )
 
+config = load_config()
 
 def connect(domains: str):
     broker_address = config.get("mqtt", {}).get("broker_url")
