@@ -1,19 +1,24 @@
-#!/usr/bin/env python3
-import re
 import hashlib
-
-from salt.utils.network import mac2eui64
-from textwrap import wrap
-from typing import Dict, List
-from pyroute2 import WireGuard, IPRoute
-from pyroute2.netlink.rtnl import ndmsg
-from typing import Dict, List
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from textwrap import wrap
+from typing import Dict, List
+
+from pyroute2 import WireGuard, IPRoute
+
+from wgkex.common.utils import mac2eui64
 
 
 @dataclass
 class WireGuardClient:
+    public_key: str
+    domain: str
+    lladdr: str
+    wg_interface: str
+    vx_interface: str
+    remove: bool
+
     """WireGuardClient describes complete configuration for a specific WireGuard client
 
     Attributes:
@@ -24,13 +29,6 @@ class WireGuardClient:
         vx_interface: Name of the VXLAN interface we set a route for the lladdr to
         remove: Are we removing this peer or not?
     """
-
-    public_key: str
-    domain: str
-    lladdr: str
-    wg_interface: str
-    vx_interface: str
-    remove: bool
 
 
 # we receive stuff from wgkex-broker
@@ -95,7 +93,7 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
             action,
             ifindex=ip.link_lookup(ifname=client.vx_interface)[0],
             lladdr="00:00:00:00:00:00",
-            dst=re.sub("\/\d+$", "", client.lladdr),
+            dst=re.sub(r"/\d+$", "", client.lladdr),
         )
 
 
