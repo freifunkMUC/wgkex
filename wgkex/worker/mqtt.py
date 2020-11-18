@@ -8,11 +8,10 @@ from wgkex.worker.netlink import (
     find_stale_wireguard_clients,
     link_handler,
     WireGuardClient,
-    generate_lladdr,
-    generate_ifname,
 )
 
 config = load_config()
+
 
 def connect(domains: str):
     broker_address = config.get("mqtt", {}).get("broker_url")
@@ -32,16 +31,9 @@ def on_message(client, userdata, message):
 
     client = WireGuardClient(
         public_key=str(message.payload.decode("utf-8")),
-        lladdr=b"",
         domain=domain,
-        wg_interface="",
-        vx_interface="",
         remove=False,
     )
-
-    client.lladdr = generate_lladdr(client.public_key)
-
-    client = generate_ifname(client)
 
     print("Received node create message for key " + client.public_key)
 
