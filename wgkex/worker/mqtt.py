@@ -40,7 +40,7 @@ def on_message(client, userdata, message):
 
     client.lladdr = generate_lladdr(client.public_key)
 
-    client = generate_interface_names(client)
+    client = generate_ifname(client)
 
     print("Received node create message for key " + client.public_key)
 
