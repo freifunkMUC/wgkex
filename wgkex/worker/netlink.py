@@ -130,6 +130,8 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
         for client in clients:
             latest_handshake = client.WGPEER_A_LAST_HANDSHAKE_TIME["tv_sec"]
             if latest_handshake < int(three_hours_ago):
-                stale_clients.append(client.WGPEER_A_PUBLIC_KEY["value"].decode("utf-8"))
+                stale_clients.append(
+                    client.WGPEER_A_PUBLIC_KEY["value"].decode("utf-8")
+                )
 
         return stale_clients
