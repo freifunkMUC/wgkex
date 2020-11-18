@@ -8,7 +8,7 @@ from wgkex.worker.netlink import (
     link_handler,
     WireGuardClient,
     generate_lladdr,
-    generate_ifnames,
+    generate_ifname,
 )
 
 
