@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import paho.mqtt.client as mqtt
+from wgkex.config import load_config
 import socket
 import time
 import re
@@ -13,7 +14,7 @@ from wgkex.worker.netlink import (
 
 
 def connect(domains: str):
-    broker_address = "broker.ov.ffmuc.net"
+    broker_address = config.get("mqtt", {}).get("broker_url")
     client = mqtt.Client(socket.gethostname())
     client.on_message = on_message
     print("connecting to broker " + broker_address)
