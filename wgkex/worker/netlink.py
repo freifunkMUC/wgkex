@@ -98,16 +98,16 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
 
 
 def wireguard_handler(client: WireGuardClient) -> Dict:
-    wg = WireGuard()
+    with WireGuard() as wg:
 
-    wg_peer = {
-        "public_key": client.public_key,
-        "persistent_keepalive": 15,
-        "allowed_ips": [client.lladdr],
-        "remove": client.remove,
-    }
+        wg_peer = {
+            "public_key": client.public_key,
+            "persistent_keepalive": 15,
+            "allowed_ips": [client.lladdr],
+            "remove": client.remove,
+        }
 
-    return wg.set(client.wg_interface, peer=wg_peer)
+        return wg.set(client.wg_interface, peer=wg_peer)
 
 
 def route_handler(client: WireGuardClient) -> Dict:
@@ -120,16 +120,16 @@ def route_handler(client: WireGuardClient) -> Dict:
 
 
 def find_stale_wireguard_clients(wg_interface: str) -> List:
-    wg = WireGuard()
+    with WireGuard() as wg:
 
-    clients = wg.info(wg_interface)[0].WGDEVICE_A_PEERS.value
+        clients = wg.info(wg_interface)[0].WGDEVICE_A_PEERS.value
 
-    three_hours_ago = (datetime.now() - timedelta(hours=3)).timestamp()
+        three_hours_ago = (datetime.now() - timedelta(hours=3)).timestamp()
 
-    stale_clients = []
-    for client in clients:
-        latest_handshake = client.WGPEER_A_LAST_HANDSHAKE_TIME["tv_sec"]
-        if latest_handshake < int(three_hours_ago):
-            stale_clients.append(client.WGPEER_A_PUBLIC_KEY["value"].decode("utf-8"))
+        stale_clients = []
+        for client in clients:
+            latest_handshake = client.WGPEER_A_LAST_HANDSHAKE_TIME["tv_sec"]
+            if latest_handshake < int(three_hours_ago):
+                stale_clients.append(client.WGPEER_A_PUBLIC_KEY["value"].decode("utf-8"))
 
-    return stale_clients
+        return stale_clients
