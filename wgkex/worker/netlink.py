@@ -14,10 +14,27 @@ from wgkex.common.utils import mac2eui64
 class WireGuardClient:
     public_key: str
     domain: str
-    lladdr: str
-    wg_interface: str
-    vx_interface: str
     remove: bool
+
+    @property
+    def lladdr(self) -> str:
+        m = hashlib.md5()
+
+        m.update(self.public_key.encode("ascii") + b"\n")
+        hashed_key = m.hexdigest()
+        hash_as_list = wrap(hashed_key, 2)
+        temp_mac = ":".join(["02"] + hash_as_list[:5])
+
+        lladdr = re.sub(r"/\d+$", "/128", mac2eui64(mac=temp_mac, prefix="fe80::/10"))
+        return lladdr
+
+    @property
+    def vx_interface(self) -> str:
+        return f"vx-{self.domain}"
+
+    @property
+    def wg_interface(self) -> str:
+        return f"wg-{self.domain}"
 
     """WireGuardClient describes complete configuration for a specific WireGuard client
 
@@ -31,39 +48,15 @@ class WireGuardClient:
     """
 
 
-# we receive stuff from wgkex-broker
-def generate_lladdr(public_key: str) -> str:
-    m = hashlib.md5()
-
-    m.update(public_key.encode("ascii") + b"\n")
-    hashed_key = m.hexdigest()
-    hash_as_list = wrap(hashed_key, 2)
-    temp_mac = ":".join(["02"] + hash_as_list[:5])
-
-    lladdr = re.sub(r"/\d+$", "/128", mac2eui64(mac=temp_mac, prefix="fe80::/10"))
-    return lladdr
-
-
-def generate_ifname(peer: WireGuardClient) -> WireGuardClient:
-    peer.wg_interface = "wg-" + peer.domain
-    peer.vx_interface = "vx-" + peer.domain
-
-    return peer
-
-
 def wg_flush_stale_peers(domain: str) -> List[Dict]:
     stale_clients = find_stale_wireguard_clients("wg-" + domain)
     result = []
     for stale_client in stale_clients:
         stale_wireguard_client = WireGuardClient(
             public_key=stale_client,
-            lladdr=generate_lladdr(stale_client),
             domain=domain,
-            wg_interface="",
-            vx_interface="",
             remove=True,
         )
-        stale_wireguard_client = generate_ifname(stale_wireguard_client)
         result = link_handler(stale_wireguard_client)
     return result
 
@@ -83,14 +76,9 @@ def link_handler(client: WireGuardClient) -> Dict:
 
 
 def bridge_fdb_handler(client: WireGuardClient) -> Dict:
-
-    action = "append"
-    if client.remove:
-        action = "del"
-
     with IPRoute() as ip:
         return ip.fdb(
-            action,
+            "del" if client.remove else "append",
             ifindex=ip.link_lookup(ifname=client.vx_interface)[0],
             lladdr="00:00:00:00:00:00",
             dst=re.sub(r"/\d+$", "", client.lladdr),
