@@ -57,7 +57,7 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
             domain=domain,
             remove=True,
         )
-        result = link_handler(stale_wireguard_client)
+        result.append(link_handler(stale_wireguard_client))
     return result
 
 
