@@ -1,0 +1,10 @@
+NetLink
+flask-mqtt
+pyroute2
+PyYAML
+Flask
+voluptuous
+
+# Common
+ipaddress
+mock
