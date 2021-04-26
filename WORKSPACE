@@ -10,5 +10,4 @@ load("@rules_python//python:pip.bzl", "pip_install")
 
 pip_install(
    requirements = "//:requirements.txt",
-   python_interpreter = "/Library/Frameworks/Python.framework/Versions/3.9/bin/python3.9",
 )
