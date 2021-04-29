@@ -45,3 +45,21 @@ py_test(
        requirement("mock"),
     ],
 )
+
+py_binary(
+    name = "app",
+    srcs = ["app.py"],
+    deps = [
+       ":mqtt",
+       "//wgkex/config:config",
+    ],
+)
+
+py_test(
+    name = "app_test",
+    srcs = ["app_test.py"],
+    deps = [
+       ":app",
+       requirement("mock"),
+    ],
+)
