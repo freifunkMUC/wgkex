@@ -1,0 +1,16 @@
+name: Bazel tests
+
+on: [push, pull_request]
+
+jobs:
+  bazel-run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup cache
+        uses: actions/cache@v2
+        with:
+          path: "/home/runner/.cache/bazel"
+          key: bazel
+      - uses: actions/checkout@v2
+      - name: Run Bazel tests
+        run: bazel test ...:all
