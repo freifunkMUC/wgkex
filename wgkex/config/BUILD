@@ -7,8 +7,16 @@ py_library(
     srcs = ["config.py"],
     visibility = ["//visibility:public"],
     deps = [
-       requirement("voluptuous"),
        requirement("PyYAML"),
        "//wgkex/common:utils"
+    ],
+)
+
+py_test(
+    name = "config_test",
+    srcs = ["config_test.py"],
+    deps = [
+       ":config",
+       requirement("mock"),
     ],
 )
