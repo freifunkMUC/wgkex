@@ -21,7 +21,7 @@ class TestConfig(unittest.TestCase):
         mock_open = mock.mock_open(read_data=_INVALID_LINT)
         with mock.patch("builtins.open", mock_open):
             config.load_config()
-            exit_mock.assert_called_with(1)
+            exit_mock.assert_called_with(2)
 
     @mock.patch.object(config.sys, "exit", autospec=True)
     def test_load_config_fails_bad_yaml(self, exit_mock):
@@ -29,7 +29,7 @@ class TestConfig(unittest.TestCase):
         mock_open = mock.mock_open(read_data=_INVALID_CFG)
         with mock.patch("builtins.open", mock_open):
             config.load_config()
-            exit_mock.assert_called_with(1)
+            exit_mock.assert_called_with(2)
 
     def test_fetch_config_from_disk_success(self):
         """Test fetch file from disk."""

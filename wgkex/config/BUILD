@@ -3,20 +3,17 @@ load("@pip//:requirements.bzl", "requirement")
 
 
 py_library(
-    name = "config",
-    srcs = ["config.py"],
-    visibility = ["//visibility:public"],
-    deps = [
-       requirement("PyYAML"),
-       "//wgkex/common:utils"
-    ],
+    name="config",
+    srcs=["config.py"],
+    visibility=["//visibility:public"],
+    deps=[requirement("PyYAML"), "//wgkex/common:utils"],
 )
 
 py_test(
-    name = "config_test",
-    srcs = ["config_test.py"],
-    deps = [
-       ":config",
-       requirement("mock"),
+    name="config_test",
+    srcs=["config_test.py"],
+    deps=[
+        ":config",
+        requirement("mock"),
     ],
 )
