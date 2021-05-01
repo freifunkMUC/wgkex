@@ -39,6 +39,17 @@ class MQTT:
     broker_port: int = 1883
     keepalive: int = 5
 
+    @classmethod
+    def from_dict(cls, mqtt_cfg: Dict[str, str]) -> "MQTT":
+        return cls(
+            broker_url=mqtt_cfg["broker_url"],
+            username=mqtt_cfg["username"],
+            password=mqtt_cfg["password"],
+            tls=mqtt_cfg["broker_url"] if mqtt_cfg["broker_url"] else None,
+            broker_port=mqtt_cfg["broker_port"] if mqtt_cfg["broker_port"] else None,
+            keepalive=mqtt_cfg["keepalive"] if mqtt_cfg["keepalive"] else None,
+        )
+
 
 @dataclasses.dataclass
 class Config:
@@ -62,7 +73,10 @@ class Config:
         Returns:
             A Config object.
         """
-        return cls(**cfg)
+        mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
+        return cls(
+            domains=cfg["domains"], pubkeys_file=cfg["pubkeys_file"], mqtt=mqtt_cfg
+        )
 
 
 @lru_cache(maxsize=10)
@@ -92,9 +106,9 @@ def load_config() -> Dict[str, str]:
     try:
         _ = Config.from_dict(config)
         return config
-    except (ValueError, TypeError) as e:
+    except (KeyError, TypeError) as e:
         print(f"Failed to lint file: {e}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)
 
 
 def fetch_config_from_disk() -> str:
