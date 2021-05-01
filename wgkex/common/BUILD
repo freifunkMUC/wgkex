@@ -10,3 +10,12 @@ py_library(
        requirement("ipaddress"),
     ],
 )
+
+py_test(
+    name = "utils_test",
+    srcs = ["utils_test.py"],
+    deps = [
+       ":utils",
+       requirement("mock"),
+    ],
+)
