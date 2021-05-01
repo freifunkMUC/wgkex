@@ -21,8 +21,10 @@ def mac2eui64(mac: str, prefix=None) -> str:
     Returns:
         An EUI64 address, or IPv6 Prefix.
     """
-    if mac.count(':') != 5:
-        raise ValueError(f'{mac} does not appear to be a correctly formatted mac address')
+    if mac.count(":") != 5:
+        raise ValueError(
+            f"{mac} does not appear to be a correctly formatted mac address"
+        )
     # http://tools.ietf.org/html/rfc4291#section-2.5.1
     eui64 = re.sub(r"[.:-]", "", mac).lower()
     eui64 = eui64[0:6] + "fffe" + eui64[6:]
