@@ -40,9 +40,9 @@ digraph G {
   client -> wgkex_broker [label="RESTFul API"];
   wgkex_broker -> mqtt [label="publish"];
   wgkex_worker -> mqtt [label="Subscribe"];
-  wgkex_worker -> netlink [label="Interface\ncreation"];
-  wgkex_worker -> wireguard [label="Peer\ncreation"];
-  wgkex_worker -> vxlan [label="VxLAN FDB\nentry"];
+  wgkex_worker -> netlink [label="Route\nInjection"];
+  wgkex_worker -> wireguard [label="Peer\nCreation"];
+  wgkex_worker -> vxlan [label="VxLAN FDB\nEntry"];
 
   client [shape=Mdiamond];
   {rank=same wgkex_broker mqtt}
