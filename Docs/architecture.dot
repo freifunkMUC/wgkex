@@ -1,0 +1,50 @@
+# http://www.graphviz.org/content/cluster
+
+digraph G {
+  graph [fontname = "Handlee"];
+  node [fontname = "Handlee"];
+  edge [fontname = "Handlee"];
+
+  bgcolor=transparent;
+
+  subgraph wgkex_broker {
+    style=filled;
+    color=lightgrey;
+    style="dotted"
+    node [style=filled,color="#d8b365"];
+    wgkex_broker [label="*WGKex Broker*"];
+    fontsize = 20;
+  }
+
+  subgraph wgkex_mqtt {
+    node [style=filled,color="#f5f5f5"];
+    style="dotted"
+    mqtt [label="*Mosquitto*"];
+    fontsize = 20;
+    color=blue
+  }
+
+  subgraph wgkex_worker {
+    node [style=filled,color="#5ab4ac"];
+    style="dotted"
+    color=blue;
+    label = "*WGKEX Worker*";
+    fontsize = 20;
+    color=blue
+    mqtt -> wgkex_worker -> netlink -> wireguard -> vxlan [style=invis];
+    wgkex_worker [label="*WGKex Worker*"];
+    netlink [label="netlink\n(pyroute2)"];
+    wireguard [label="wireguard\n(pyroute2)"];
+    vxlan [label="vxlan FDB\n(pyroute2)"];
+  }
+  client -> wgkex_broker [label="RESTFul API"];
+  wgkex_broker -> mqtt [label="publish"];
+  wgkex_worker -> mqtt [label="Subscribe"];
+  wgkex_worker -> netlink [label="Route\nInjection"];
+  wgkex_worker -> wireguard [label="Peer\nCreation"];
+  wgkex_worker -> vxlan [label="VxLAN FDB\nEntry"];
+
+  client [shape=Mdiamond];
+  {rank=same wgkex_broker mqtt}
+  {rank=same netlink wireguard vxlan}
+}
