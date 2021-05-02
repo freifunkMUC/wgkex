@@ -37,7 +37,7 @@ digraph G {
     wireguard [label="wireguard\n(pyroute2)"];
     vxlan [label="vxlan FDB\n(pyroute2)"];
   }
-  client -> wgkex_broker [label="docker"];
+  client -> wgkex_broker [label="RESTFul API"];
   wgkex_broker -> mqtt [label="publish"];
   wgkex_worker -> mqtt [label="Subscribe"];
   wgkex_worker -> netlink [label="Interface\ncreation"];
