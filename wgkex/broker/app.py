@@ -1,92 +1,182 @@
 #!/usr/bin/env python3
 import re
+import dataclasses
+from typing import Tuple, Any
 
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask
+from flask import abort
+from flask import jsonify
+from flask import render_template
+from flask import request
+from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
-from voluptuous import Invalid, MultipleInvalid, Required, Schema
+import paho.mqtt.client as mqtt_client
 
-from wgkex.config import load_config
+from wgkex.config import config
 
-app = Flask(__name__)
-config = load_config()
-
-app.config["MQTT_BROKER_URL"] = config.get("mqtt", {}).get("broker_url")
-app.config["MQTT_BROKER_PORT"] = config.get("mqtt", {}).get("broker_port")
-app.config["MQTT_USERNAME"] = config.get("mqtt", {}).get("username")
-app.config["MQTT_PASSWORD"] = config.get("mqtt", {}).get("password")
-app.config["MQTT_KEEPALIVE"] = config.get("mqtt", {}).get("keepalive")
-app.config["MQTT_TLS_ENABLED"] = config.get("mqtt", {}).get("tls")
-
-mqtt = Mqtt(app)
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
+app = None
+mqtt = None
 
 
-def is_valid_wg_pubkey(pubkey):
+@dataclasses.dataclass
+class KeyExchange:
+    """A key exchange message.
+
+    Attributes:
+        public_key: The public key for this exchange.
+        domain: The domain for this exchange.
+    """
+
+    public_key: str
+    domain: str
+
+    @classmethod
+    def from_dict(cls, msg: dict) -> "KeyExchange":
+        """Creates a new KeyExchange message from dict.
+
+        Arguments:
+            msg: The message to convert.
+        Returns:
+            A KeyExchange object.
+        """
+        public_key = is_valid_wg_pubkey(msg.get("public_key"))
+        domain = is_valid_domain(msg.get("domain"))
+        return cls(public_key=public_key, domain=domain)
+
+
+def main():
+    global app, mqtt
+    app = _fetch_app_config()
+    mqtt = Mqtt(app)
+
+    @app.route("/", methods=["GET"])
+    def index() -> None:
+        """Returns main page"""
+        return render_template("index.html")
+
+    # Keep to be compatible
+    @app.route("/wg-public-key/<path:key>", methods=["GET"])
+    def receive_public_key(key: str) -> Tuple[str, int]:
+        """Validates a new key and saves to disk.
+
+        Arguments:
+            key: The public key.
+        Returns:
+            Status message.
+        """
+        if not is_valid_wg_pubkey(key):
+            return jsonify({"Message": "Invalid Key"}), 400
+        # TODO(ruairi): Move to env and static variable.
+        with open("/var/lib/wgkex/public.keys", "a") as pubkeys:
+            pubkeys.write("%s\n" % key)
+        return jsonify({"Message": "OK"}), 200
+
+    @app.route("/api/v1/wg/key/exchange", methods=["POST"])
+    def wg_key_exchange() -> Tuple[str, int]:
+        """Retrieves a new key and validates.
+
+        Returns:
+            Status message.
+        """
+        try:
+            data = KeyExchange.from_dict(request.get_json(force=True))
+        except TypeError as ex:
+            return abort(400, jsonify({"error": {"message": str(ex)}}))
+
+        key = data.public_key
+        domain = data.domain
+        # in case we want to decide here later we want to publish it only to dedicated gateways
+        gateway = "all"
+        print(f"wg_key_exchange: Domain: {domain}, Key:{key}")
+
+        pubkey_cfg_file = config.fetch_from_config("pubkeys_file")
+        if pubkey_cfg_file:
+            with open(pubkey_cfg_file, "a") as pubkeys:
+                pubkeys.write(f"{key} {domain}\n")
+        # mqtt.publish(f"wireguard/{domain}/{gateway}", key)
+        return jsonify({"Message": "OK"}), 200
+
+    app.run()
+
+    @mqtt.on_connect()
+    def handle_mqtt_connect(
+        client: Mqtt.Client, userdata: bytes, flags: Any, rc: Any
+    ) -> None:
+        """Prints status of connect message."""
+        # TODO(ruairi): Clarify current usage of this function.
+        print(
+            "MQTT connected to {}:{}".format(
+                app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
+            )
+        )
+        # mqtt.subscribe("wireguard/#")
+
+    @mqtt.on_message()
+    def handle_mqtt_message(
+        client: Mqtt.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+    ) -> None:
+        """Prints message contents."""
+        # TODO(ruairi): Clarify current usage of this function.
+        print(f"MQTT message received on {message.topic}: {message.payload.decode()}")
+
+
+def is_valid_wg_pubkey(pubkey: str) -> str:
+    """Verifies if key is a valid WireGuard public key or not.
+
+    Arguments:
+        pubkey: The key to verify.
+
+    Raises:
+        ValueError: If the Wireguard Key is invalid.
+
+    Returns:
+        The public key.
+    """
+    # TODO(ruairi): Refactor to return bool.
     if WG_PUBKEY_PATTERN.match(pubkey) is None:
-        raise Invalid("Not a valid Wireguard public key")
+        raise ValueError(f"Not a valid Wireguard public key: {pubkey}.")
     return pubkey
 
 
-def is_valid_domain(domain):
-    if domain not in config.get("domains"):
-        raise Invalid("Not a valid domain")
+def is_valid_domain(domain: str) -> str:
+    """Verifies if the domain is configured.
+
+    Arguments:
+        domain: The domain to verify.
+
+    Raises:
+        ValueError: If the domain is not configured.
+
+    Returns:
+        The domain.
+    """
+    # TODO(ruairi): Refactor to return bool.
+    if domain not in config.fetch_from_config("domains"):
+        raise ValueError(
+            f'Domains {domain} not in configured domains({config.fetch_from_config("domains")}) a valid domain'
+        )
     return domain
 
 
-WG_KEY_EXCHANGE_SCHEMA_V1 = Schema(
-    {Required("public_key"): is_valid_wg_pubkey, Required("domain"): is_valid_domain}
-)
+def _fetch_app_config() -> Flask_app:
+    """Creates the Flask app from configuration.
+
+    Returns:
+        A created Flask app.
+    """
+    app = Flask(__name__)
+    # TODO(ruairi): Refactor load_config to return Dataclass.
+    mqtt_cfg = config.Config.from_dict(config.load_config()).mqtt
+    app.config["MQTT_BROKER_URL"] = mqtt_cfg.broker_url
+    app.config["MQTT_BROKER_PORT"] = mqtt_cfg.broker_port
+    app.config["MQTT_USERNAME"] = mqtt_cfg.username
+    app.config["MQTT_PASSWORD"] = mqtt_cfg.password
+    app.config["MQTT_KEEPALIVE"] = mqtt_cfg.keepalive
+    app.config["MQTT_TLS_ENABLED"] = mqtt_cfg.tls
+    return app
 
 
-@app.route("/", methods=["GET"])
-def index():
-    # return templates/index.html
-    return render_template("index.html")
-
-
-# Keep to be compatible
-@app.route("/wg-public-key/<path:key>", methods=["GET"])
-def receive_public_key(key):
-    if not is_valid_wg_pubkey(key):
-        return jsonify({"Message": "Invalid Key"}), 400
-    with open("/var/lib/wgkex/public.keys", "a") as pubkeys:
-        pubkeys.write("%s\n" % key)
-    return jsonify({"Message": "OK"}), 200
-
-
-@app.route("/api/v1/wg/key/exchange", methods=["POST"])
-def wg_key_exchange():
-    try:
-        data = WG_KEY_EXCHANGE_SCHEMA_V1(request.get_json(force=True))
-    except MultipleInvalid as ex:
-        return abort(400, jsonify({"error": {"message": str(ex)}}))
-
-    key = data["public_key"]
-    domain = data["domain"]
-    # in case we want to decide here later we want to publish it only to dedicated gateways
-    gateway = "all"
-    print(f"wg_key_exchange: Domain: {domain}, Key:{key}")
-
-    if config.get("pubkeys_file") != "":
-        with open(config["pubkeys_file"], "a") as pubkeys:
-            pubkeys.write(f"{key} {domain}\n")
-
-    mqtt.publish(f"wireguard/{domain}/{gateway}", key)
-
-    return jsonify({"Message": "OK"}), 200
-
-
-@mqtt.on_connect()
-def handle_mqtt_connect(client, userdata, flags, rc):
-    print(
-        "MQTT connected to {}:{}".format(
-            app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
-        )
-    )
-    # mqtt.subscribe("wireguard/#")
-
-
-@mqtt.on_message()
-def handle_mqtt_message(client, userdata, message):
-    print(f"MQTT message received on {message.topic}: {message.payload.decode()}")
+if __name__ == "__main__":
+    main()
