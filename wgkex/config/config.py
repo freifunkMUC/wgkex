@@ -45,7 +45,7 @@ class MQTT:
             broker_url=mqtt_cfg["broker_url"],
             username=mqtt_cfg["username"],
             password=mqtt_cfg["password"],
-            tls=mqtt_cfg["broker_url"] if mqtt_cfg["broker_url"] else None,
+            tls=mqtt_cfg["tls"] if mqtt_cfg["tls"] else False,
             broker_port=mqtt_cfg["broker_port"] if mqtt_cfg["broker_port"] else None,
             keepalive=mqtt_cfg["keepalive"] if mqtt_cfg["keepalive"] else None,
         )
