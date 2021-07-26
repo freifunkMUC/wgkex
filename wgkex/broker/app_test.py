@@ -3,7 +3,7 @@ import mock
 import app
 import sys
 
-_VALID_CFG = "domains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\npubkeys_file: some/file\n"
+_VALID_CFG = "domains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
 _INVALID_CFG = "asdasdasdasd"
 
 

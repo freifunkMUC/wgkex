@@ -57,12 +57,10 @@ class Config:
 
     Attributes:
         domains: The list of domains to listen for.
-        pubkeys_file: The public keys file to use.
         mqtt: The MQTT configuration.
     """
 
     domains: List[str]
-    pubkeys_file: str
     mqtt: MQTT
 
     @classmethod
@@ -75,7 +73,7 @@ class Config:
         """
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
         return cls(
-            domains=cfg["domains"], pubkeys_file=cfg["pubkeys_file"], mqtt=mqtt_cfg
+            domains=cfg["domains"], mqtt=mqtt_cfg
         )
 
 

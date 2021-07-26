@@ -74,10 +74,6 @@ def main():
         gateway = "all"
         print(f"wg_key_exchange: Domain: {domain}, Key:{key}")
 
-        pubkey_cfg_file = config.fetch_from_config("pubkeys_file")
-        if pubkey_cfg_file:
-            with open(pubkey_cfg_file, "a") as pubkeys:
-                pubkeys.write(f"{key} {domain}\n")
         mqtt.publish(f"wireguard/{domain}/{gateway}", key)
         return jsonify({"Message": "OK"}), 200
 
