@@ -55,7 +55,7 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
         message: The MQTT message.
     """
     # TODO(ruairi): Check bounds and raise exception here.
-    domain = re.search(r"/.*ffmuc_(\w+)/", message.topic).group(1)
+    domain = re.search(r"/^wireguard\/ff(\w+)\//", message.topic).group(1)
     client = WireGuardClient(
         public_key=str(message.payload.decode("utf-8")),
         domain=domain,
