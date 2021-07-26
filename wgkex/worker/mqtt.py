@@ -33,11 +33,17 @@ def connect(domains: List[str]) -> None:
     """
     broker_address = fetch_from_config("mqtt").get("broker_url")
     broker_port = fetch_from_config("mqtt").get("broker_port")
+    broker_username = fetch_from_config("mqtt").get("username")
+    broker_password = fetch_from_config("mqtt").get("password")
+    use_tls = fetch_from_config("mqtt").get("tls")
     broker_keepalive = fetch_from_config("mqtt").get("keepalive")
     # TODO(ruairi): Move the hostname to a global variable.
     client = mqtt.Client(socket.gethostname())
     client.on_message = on_message
+    client.username_pw_set(broker_username, broker_password)
     print(f"connecting to broker {broker_address}")
+    if use_tls:
+        client.tls_set()
     client.connect(broker_address, port=broker_port, keepalive=broker_keepalive)
     for domain in domains:
         topic = f"wireguard/{domain}/+"
