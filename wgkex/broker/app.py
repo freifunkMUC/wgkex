@@ -56,23 +56,6 @@ def main():
         """Returns main page"""
         return render_template("index.html")
 
-    # Keep to be compatible
-    @app.route("/wg-public-key/<path:key>", methods=["GET"])
-    def receive_public_key(key: str) -> Tuple[str, int]:
-        """Validates a new key and saves to disk.
-
-        Arguments:
-            key: The public key.
-        Returns:
-            Status message.
-        """
-        if not is_valid_wg_pubkey(key):
-            return jsonify({"Message": "Invalid Key"}), 400
-        # TODO(ruairi): Move to env and static variable.
-        with open("/var/lib/wgkex/public.keys", "a") as pubkeys:
-            pubkeys.write("%s\n" % key)
-        return jsonify({"Message": "OK"}), 200
-
     @app.route("/api/v1/wg/key/exchange", methods=["POST"])
     def wg_key_exchange() -> Tuple[str, int]:
         """Retrieves a new key and validates.
