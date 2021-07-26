@@ -16,9 +16,6 @@ from wgkex.config import config
 
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
-app = None
-mqtt = None
-
 
 @dataclasses.dataclass
 class KeyExchange:
@@ -46,59 +43,72 @@ class KeyExchange:
         return cls(public_key=public_key, domain=domain)
 
 
-def main():
-    global app, mqtt
-    app = _fetch_app_config()
-    mqtt = Mqtt(app)
+def _fetch_app_config() -> Flask_app:
+    """Creates the Flask app from configuration.
 
-    @app.route("/", methods=["GET"])
-    def index() -> None:
-        """Returns main page"""
-        return render_template("index.html")
+    Returns:
+        A created Flask app.
+    """
+    app = Flask(__name__)
+    # TODO(ruairi): Refactor load_config to return Dataclass.
+    mqtt_cfg = config.Config.from_dict(config.load_config()).mqtt
+    app.config["MQTT_BROKER_URL"] = mqtt_cfg.broker_url
+    app.config["MQTT_BROKER_PORT"] = mqtt_cfg.broker_port
+    app.config["MQTT_USERNAME"] = mqtt_cfg.username
+    app.config["MQTT_PASSWORD"] = mqtt_cfg.password
+    app.config["MQTT_KEEPALIVE"] = mqtt_cfg.keepalive
+    app.config["MQTT_TLS_ENABLED"] = mqtt_cfg.tls
+    return app
 
-    @app.route("/api/v1/wg/key/exchange", methods=["POST"])
-    def wg_key_exchange() -> Tuple[str, int]:
-        """Retrieves a new key and validates.
+app = _fetch_app_config()
+mqtt = Mqtt(app)
 
-        Returns:
-            Status message.
-        """
-        try:
-            data = KeyExchange.from_dict(request.get_json(force=True))
-        except TypeError as ex:
-            return abort(400, jsonify({"error": {"message": str(ex)}}))
+@app.route("/", methods=["GET"])
+def index() -> None:
+    """Returns main page"""
+    return render_template("index.html")
 
-        key = data.public_key
-        domain = data.domain
-        # in case we want to decide here later we want to publish it only to dedicated gateways
-        gateway = "all"
-        print(f"wg_key_exchange: Domain: {domain}, Key:{key}")
+@app.route("/api/v1/wg/key/exchange", methods=["POST"])
+def wg_key_exchange() -> Tuple[str, int]:
+    """Retrieves a new key and validates.
 
-        mqtt.publish(f"wireguard/{domain}/{gateway}", key)
-        return jsonify({"Message": "OK"}), 200
+    Returns:
+        Status message.
+    """
+    try:
+        data = KeyExchange.from_dict(request.get_json(force=True))
+    except TypeError as ex:
+        return abort(400, jsonify({"error": {"message": str(ex)}}))
 
-    app.run()
+    key = data.public_key
+    domain = data.domain
+    # in case we want to decide here later we want to publish it only to dedicated gateways
+    gateway = "all"
+    print(f"wg_key_exchange: Domain: {domain}, Key:{key}")
 
-    @mqtt.on_connect()
-    def handle_mqtt_connect(
-        client: Mqtt.Client, userdata: bytes, flags: Any, rc: Any
-    ) -> None:
-        """Prints status of connect message."""
-        # TODO(ruairi): Clarify current usage of this function.
-        print(
-            "MQTT connected to {}:{}".format(
-                app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
-            )
+    mqtt.publish(f"wireguard/{domain}/{gateway}", key)
+    return jsonify({"Message": "OK"}), 200
+
+@mqtt.on_connect()
+def handle_mqtt_connect(
+    client: Mqtt.Client, userdata: bytes, flags: Any, rc: Any
+) -> None:
+    """Prints status of connect message."""
+    # TODO(ruairi): Clarify current usage of this function.
+    print(
+        "MQTT connected to {}:{}".format(
+            app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
         )
-        # mqtt.subscribe("wireguard/#")
+    )
+    # mqtt.subscribe("wireguard/#")
 
-    @mqtt.on_message()
-    def handle_mqtt_message(
-        client: Mqtt.Client, userdata: bytes, message: mqtt_client.MQTTMessage
-    ) -> None:
-        """Prints message contents."""
-        # TODO(ruairi): Clarify current usage of this function.
-        print(f"MQTT message received on {message.topic}: {message.payload.decode()}")
+@mqtt.on_message()
+def handle_mqtt_message(
+    client: Mqtt.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Prints message contents."""
+    # TODO(ruairi): Clarify current usage of this function.
+    print(f"MQTT message received on {message.topic}: {message.payload.decode()}")
 
 
 def is_valid_wg_pubkey(pubkey: str) -> str:
@@ -138,24 +148,5 @@ def is_valid_domain(domain: str) -> str:
         )
     return domain
 
-
-def _fetch_app_config() -> Flask_app:
-    """Creates the Flask app from configuration.
-
-    Returns:
-        A created Flask app.
-    """
-    app = Flask(__name__)
-    # TODO(ruairi): Refactor load_config to return Dataclass.
-    mqtt_cfg = config.Config.from_dict(config.load_config()).mqtt
-    app.config["MQTT_BROKER_URL"] = mqtt_cfg.broker_url
-    app.config["MQTT_BROKER_PORT"] = mqtt_cfg.broker_port
-    app.config["MQTT_USERNAME"] = mqtt_cfg.username
-    app.config["MQTT_PASSWORD"] = mqtt_cfg.password
-    app.config["MQTT_KEEPALIVE"] = mqtt_cfg.keepalive
-    app.config["MQTT_TLS_ENABLED"] = mqtt_cfg.tls
-    return app
-
-
 if __name__ == "__main__":
-    main()
+    app.run()
