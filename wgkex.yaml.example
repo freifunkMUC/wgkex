@@ -17,5 +17,5 @@ mqtt:
   broker_port: 1883
   username: user
   password: SECRET
-  keppalive: 5
+  keepalive: 5
   tls: False
