@@ -49,12 +49,12 @@ class WireGuardClient:
     @property
     def vx_interface(self) -> str:
         """Returns the name of the VxLAN interface associated with this lladdr."""
-        return f"vx-{self.domain}"
+        return f"vx{self.domain}"
 
     @property
     def wg_interface(self) -> str:
         """Returns the WireGuard peer interface."""
-        return f"wg-{self.domain}"
+        return f"wg{self.domain}"
 
 
 def wg_flush_stale_peers(domain: str) -> List[Dict]:
