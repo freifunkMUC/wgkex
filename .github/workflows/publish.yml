@@ -15,7 +15,7 @@ jobs:
         fetch-depth: 0
     - uses: actions/setup-python@v2
     # https://github.com/marketplace/actions/python-poetry-action
-    - uses: abatilo/actions-poetry@v2.0.0
+    - uses: abatilo/actions-poetry@v2.1.0
     - name: Install dependencies
       run: |
         poetry install --no-dev
@@ -35,6 +35,6 @@ jobs:
         # https://python-poetry.org/docs/repositories/#configuring-credentials
         POETRY_PYPI_TOKEN_PYPI: ${{ secrets.pypi_password }}
       run: |
-        poetry run poetry publish
+        poetry publish --build
 
 
