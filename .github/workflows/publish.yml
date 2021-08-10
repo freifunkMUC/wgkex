@@ -36,5 +36,3 @@ jobs:
         POETRY_PYPI_TOKEN_PYPI: ${{ secrets.pypi_password }}
       run: |
         poetry publish --build
-
-
