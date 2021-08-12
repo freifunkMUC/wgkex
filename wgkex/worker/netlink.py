@@ -182,11 +182,11 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
         clients = []
         infos = wg.info(wg_interface)
         for info in infos:
-            clients.extend(info.WGDEVICE_A_PEERS.value)
+            clients.extend(info.get_attr('WGDEVICE_A_PEERS'))
         ret = [
-            client.WGPEER_A_PUBLIC_KEY.get("value", "").decode("utf-8")
+            client.get_attr('WGPEER_A_PUBLIC_KEY').decode("utf-8")
             for client in clients
-            if client.WGPEER_A_LAST_HANDSHAKE_TIME.get("tv_sec", int())
+            if client.get_attr('WGPEER_A_LAST_HANDSHAKE_TIME').get("tv_sec", int())
             < three_hrs_in_secs
         ]
         return ret
