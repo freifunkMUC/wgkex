@@ -67,7 +67,7 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
         The peers which we can remove.
     """
     stale_clients = [
-        stale_client for stale_client in find_stale_wireguard_clients("wg-" + domain)
+        stale_client for stale_client in find_stale_wireguard_clients("wg" + domain)
     ]
     stale_wireguard_clients = [
         WireGuardClient(public_key=stale_client, domain=domain, remove=True)
