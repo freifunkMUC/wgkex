@@ -47,6 +47,23 @@ class WireGuardClient:
         )
 
     @property
+    def old_lladdr(self) -> str:
+        """Compute the X for an (IPv6) Link-Local address.
+
+        Returns:
+            IPv6 Link-Local address of the WireGuard peer.
+        """
+        pub_key_hash = hashlib.md5()
+        pub_key_hash.update(self.public_key.encode("ascii") + b"\n")
+        hashed_key = pub_key_hash.hexdigest()
+        hash_as_list = wrap(hashed_key, 2)
+        current_mac_addr = ":".join(["00"] + hash_as_list[:5])
+
+        return re.sub(
+            r"/\d+$", "/128", mac2eui64(mac=current_mac_addr, prefix="fe80::/10")
+        )
+
+    @property
     def vx_interface(self) -> str:
         """Returns the name of the VxLAN interface associated with this lladdr."""
         return f"vx{self.domain}"
@@ -115,6 +132,12 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
     """
     # TODO(ruairi): Splice this into an add_ and remove_ function.
     with pyroute2.IPRoute() as ip:
+        ip.fdb(
+            "del" if client.remove else "append",
+            ifindex=ip.link_lookup(ifname=client.vx_interface)[0],
+            lladdr="00:00:00:00:00:00",
+            dst=re.sub(r"/\d+$", "", client.old_lladdr),
+        )
         return ip.fdb(
             "del" if client.remove else "append",
             ifindex=ip.link_lookup(ifname=client.vx_interface)[0],
@@ -139,7 +162,7 @@ def update_wireguard_peer(client: WireGuardClient) -> Dict:
         wg_peer = {
             "public_key": client.public_key,
             "persistent_keepalive": _PERSISTENT_KEEPALIVE_SECONDS,
-            "allowed_ips": [client.lladdr],
+            "allowed_ips": [client.lladdr, client.old_lladdr],
             "remove": client.remove,
         }
         return wg.set(client.wg_interface, peer=wg_peer)
@@ -159,6 +182,11 @@ def route_handler(client: WireGuardClient) -> Dict:
     # TODO(ruairi): Determine what Exceptions are raised by ip.route
     # TODO(ruairi): Splice this into an add_ and remove_ function.
     with pyroute2.IPRoute() as ip:
+        ip.route(
+            "del" if client.remove else "add",
+            dst=client.old_lladdr,
+            oif=ip.link_lookup(ifname=client.wg_interface)[0],
+        )
         return ip.route(
             "del" if client.remove else "add",
             dst=client.lladdr,

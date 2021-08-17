@@ -28,7 +28,7 @@ def mac2eui64(mac: str, prefix=None) -> str:
     # http://tools.ietf.org/html/rfc4291#section-2.5.1
     eui64 = re.sub(r"[.:-]", "", mac).lower()
     eui64 = eui64[0:6] + "fffe" + eui64[6:]
-    eui64 = hex(int(eui64[0:2], 16) | 2)[2:].zfill(2) + eui64[2:]
+    eui64 = hex(int(eui64[0:2], 16) ^ 2)[2:].zfill(2) + eui64[2:]
 
     if not prefix:
         return ":".join(re.findall(r".{4}", eui64))
