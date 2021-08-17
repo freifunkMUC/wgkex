@@ -14,10 +14,10 @@ class Error(Exception):
 class DomainsNotInConfig(Error):
     """If no domains exist in configuration file."""
 
-def clean_up_worker(domain: str):
+def clean_up_worker(domain: str) -> None:
     while True:
-        wg_flush_stale_peers(domain)
         time.sleep(300)
+        wg_flush_stale_peers(domain)
 
 def main():
     """Starts MQTT listener.
