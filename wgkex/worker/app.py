@@ -15,7 +15,7 @@ logging.basicConfig(
     level=logging.DEBUG,
 )
 
-_CLEANUP_TIME = datetime.timedelta(seconds=300)
+_CLEANUP_TIME = 300
 
 
 class Error(Exception):
