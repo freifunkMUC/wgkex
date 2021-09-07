@@ -5,7 +5,6 @@ import app
 
 
 class AppTest(unittest.TestCase):
-
     def setUp(self) -> None:
         app._CLEANUP_TIME = 0
 
@@ -18,7 +17,7 @@ class AppTest(unittest.TestCase):
         config_mock.return_value = dict(
             domains=[f"{test_prefix}domain.one"], key_prefix=test_prefix
         )
-        with mock.patch('app.flush_workers', return_value=None):
+        with mock.patch("app.flush_workers", return_value=None):
             app.main()
             connect_mock.assert_called_with(["TEST_PREFIX_domain.one"])
 

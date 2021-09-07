@@ -18,6 +18,7 @@ logging.basicConfig(
     level=logging.DEBUG,
 )
 
+
 def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
     """Fetches values from configuration file.
 

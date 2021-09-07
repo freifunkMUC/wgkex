@@ -6,16 +6,15 @@ from wgkex.config.config_test import _VALID_CFG
 from wgkex.config.config_test import _INVALID_CFG
 
 
-
 class TestApp(unittest.TestCase):
 
     # TODO(ruairi): Add test for Flask.
     # def setUp(self) -> None:
-        # mock_open = mock.mock_open(read_data=_VALID_CFG)
-        # with mock.patch("builtins.open", mock_open):
-        #     app_cfg = app.app.test_client()
-        #     app.main()
-        # self.app_cfg = app_cfg
+    # mock_open = mock.mock_open(read_data=_VALID_CFG)
+    # with mock.patch("builtins.open", mock_open):
+    #     app_cfg = app.app.test_client()
+    #     app.main()
+    # self.app_cfg = app_cfg
 
     def test_app_load_success(self):
         """Tests _fetch_app_config success."""
