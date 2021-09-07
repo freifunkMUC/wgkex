@@ -13,5 +13,4 @@ WORKDIR /srv/wgkex
 COPY --from=builder /srv/wgkex/bazel /srv/wgkex/
 
 EXPOSE 5000
-COPY wgkex.yaml /etc/wgkex.yaml
 CMD ["./wgkex/broker/app"]
