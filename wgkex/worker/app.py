@@ -41,7 +41,7 @@ def clean_up_worker(domains: List[Text]) -> None:
         domains: list of domains.
     """
     logging.debug("Cleaning up the following domains: %s", domains)
-    prefix = config.load_config().get("key_prefix")
+    prefix = config.load_config().get("domain_prefix")
     for domain in domains:
         logging.info("Scheduling cleanup task for %s, ", domain)
         try:

@@ -15,7 +15,7 @@ class AppTest(unittest.TestCase):
         connect_mock.return_value = None
         test_prefix = "TEST_PREFIX_"
         config_mock.return_value = dict(
-            domains=[f"{test_prefix}domain.one"], key_prefix=test_prefix
+            domains=[f"{test_prefix}domain.one"], domain_prefix=test_prefix
         )
         with mock.patch("app.flush_workers", return_value=None):
             app.main()
