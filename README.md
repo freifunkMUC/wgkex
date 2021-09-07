@@ -30,13 +30,8 @@ an MQTT bus for all workers to consume.
 The frontend broker exposes the following API endpoints for use:
 
 ```
-/wg-public-key/<path:key>
 /api/v1/wg/key/exchange
 ```
-
-#### GET /wg-public-key/<path:key>
-
-The key in the URI (ie: part after `/wg-public-key/`) is validated and written to disk.
 
 #### POST /api/v1/wg/key/exchange
 
