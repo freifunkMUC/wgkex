@@ -179,14 +179,16 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
         (datetime.now() - timedelta(hours=_PEER_TIMEOUT_HOURS)).timestamp()
     )
     with pyroute2.WireGuard() as wg:
-        clients = []
+        all_clients = []
         infos = wg.info(wg_interface)
         for info in infos:
-            clients.extend(info.WGDEVICE_A_PEERS.value)
+            clients = info.get_attr("WGDEVICE_A_PEERS")
+            if clients is not None:
+                all_clients.extend(clients)
         ret = [
-            client.WGPEER_A_PUBLIC_KEY.get("value", "").decode("utf-8")
-            for client in clients
-            if client.WGPEER_A_LAST_HANDSHAKE_TIME.get("tv_sec", int())
+            client.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
+            for client in all_clients
+            if client.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME").get("tv_sec", int())
             < three_hrs_in_secs
         ]
         return ret
