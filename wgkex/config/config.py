@@ -33,7 +33,6 @@ class MQTT:
         broker_url: The broker URL for MQTT to connect to.
         username: The username to use for MQTT.
         password: The password to use for MQTT.
-        domain_prefix: The prefix to pre-pend to a given domain.
         tls: If TLS is used or not.
         broker_port: The port for MQTT to connect on.
         keepalive: The keepalive in seconds to use.
@@ -42,7 +41,6 @@ class MQTT:
     broker_url: str
     username: str
     password: str
-    domain_prefix: str
     tls: bool = False
     broker_port: int = 1883
     keepalive: int = 5
@@ -58,7 +56,6 @@ class MQTT:
             if mqtt_cfg["broker_port"]
             else None,
             keepalive=int(mqtt_cfg["keepalive"]) if mqtt_cfg["keepalive"] else None,
-            domain_prefix=mqtt_cfg["domain_prefix"],
         )
 
 
@@ -69,10 +66,12 @@ class Config:
     Attributes:
         domains: The list of domains to listen for.
         mqtt: The MQTT configuration.
+        domain_prefix: The prefix to pre-pend to a given domain.
     """
 
     domains: List[str]
     mqtt: MQTT
+    domain_prefix: str
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, str]) -> "Config":
@@ -83,7 +82,9 @@ class Config:
             A Config object.
         """
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
-        return cls(domains=cfg["domains"], mqtt=mqtt_cfg)
+        return cls(
+            domains=cfg["domains"], mqtt=mqtt_cfg, domain_prefix=cfg["domain_prefix"]
+        )
 
 
 @lru_cache(maxsize=10)
