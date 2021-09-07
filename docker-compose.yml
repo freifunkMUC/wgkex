@@ -1,0 +1,35 @@
+version: "3"
+
+services:
+  mqtt:
+    image: eclipse-mosquitto:1.6
+    restart: unless-stopped
+    volumes:
+      #- ./config/mosquitto:/mosquitto/config
+      - ./volumes/mosquitto/data:/mosquitto/data
+      - ./volumes/mosquitto/log:/mosquitto/log
+    ports:
+     - "9001:9001"
+
+  broker:
+    build: .
+    image: wgkex
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    ports:
+      - "5000:5000"
+    #volumes:
+      #- ./config/broker/wgkex.yaml:/etc/wgkex.yaml
+
+
+  worker:
+    build: .
+    image: wgkex
+    restart: unless-stopped
+    depends_on:
+      - mqtt
+    #volumes:
+      #- ./config/worker/wgkex.yaml:/etc/wgkex.yaml
+    command: ["./wgkex/worker/app"]
+
