@@ -73,12 +73,16 @@ can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
 ```
 # defaults to /etc/wgkex.yaml if not set
 export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
-poetry run wgkex-broker
+bazel build //wgkex/worker:app
+# Artifact will now be placed into ./bazel-bin/wgkex/worker/app
+./bazel-bin/wgkex/worker/app
 ```
 
 * The broker can also be built and run via [bazel](https://bazel.build):
 
 ```shell
+# defaults to /etc/wgkex.yaml if not set
+export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
 bazel build //wgkex/broker:app
 # Artifact will now be placed into ./bazel-bin/wgkex/broker/app
 ./bazel-bin/wgkex/broker/app
