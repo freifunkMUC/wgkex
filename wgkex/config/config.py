@@ -5,6 +5,7 @@ import yaml
 from functools import lru_cache
 from typing import Dict, Union, Any, List, Optional
 import dataclasses
+import logging
 
 
 class Error(Exception):
@@ -17,6 +18,11 @@ class ConfigFileNotFoundError(Error):
 
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
 WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
+logging.basicConfig(
+    format="%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
+    datefmt="%Y-%m-%d:%H:%M:%S",
+    level=logging.DEBUG,
+)
 
 
 @dataclasses.dataclass
@@ -30,11 +36,13 @@ class MQTT:
         tls: If TLS is used or not.
         broker_port: The port for MQTT to connect on.
         keepalive: The keepalive in seconds to use.
+        key_prefix: The prefix to pre-pend to a given domain, interface.
     """
 
     broker_url: str
     username: str
     password: str
+    key_prefix: str
     tls: bool = False
     broker_port: int = 1883
     keepalive: int = 5
@@ -46,8 +54,11 @@ class MQTT:
             username=mqtt_cfg["username"],
             password=mqtt_cfg["password"],
             tls=mqtt_cfg["tls"] if mqtt_cfg["tls"] else False,
-            broker_port=mqtt_cfg["broker_port"] if mqtt_cfg["broker_port"] else None,
-            keepalive=mqtt_cfg["keepalive"] if mqtt_cfg["keepalive"] else None,
+            broker_port=int(mqtt_cfg["broker_port"])
+            if mqtt_cfg["broker_port"]
+            else None,
+            keepalive=int(mqtt_cfg["keepalive"]) if mqtt_cfg["keepalive"] else None,
+            key_prefix=mqtt_cfg["key_prefix"],
         )
 
 
@@ -97,13 +108,13 @@ def load_config() -> Dict[str, str]:
     try:
         config = yaml.safe_load(cfg_contents)
     except yaml.YAMLError as e:
-        print(f"Failed to load YAML file: {e}")
+        logging.error("Failed to load YAML file: %s", e)
         sys.exit(1)
     try:
         _ = Config.from_dict(config)
         return config
     except (KeyError, TypeError) as e:
-        print(f"Failed to lint file: {e}", file=sys.stderr)
+        logging.error("Failed to lint file: %s", e)
         sys.exit(2)
 
 

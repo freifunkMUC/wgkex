@@ -3,8 +3,8 @@ import mock
 import config
 import yaml
 
-_VALID_CFG = "domains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
-_INVALID_LINT = "derpmains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+_VALID_CFG = "domains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n  key_prefix: ffmuc_\n"
+_INVALID_LINT = "derpmains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n  key_prefix: ffmuc_\n"
 _INVALID_CFG = "asdasdasdasd"
 
 

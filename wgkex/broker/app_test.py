@@ -2,20 +2,20 @@ import unittest
 import mock
 import app
 import sys
+from wgkex.config.config_test import _VALID_CFG
+from wgkex.config.config_test import _INVALID_CFG
 
-_VALID_CFG = "domains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
-_INVALID_CFG = "asdasdasdasd"
 
 
 class TestApp(unittest.TestCase):
 
     # TODO(ruairi): Add test for Flask.
     # def setUp(self) -> None:
-    #     mock_open = mock.mock_open(read_data=_VALID_CFG)
-    #     with mock.patch("builtins.open", mock_open):
-    #         app_cfg = app.app.test_client()
-    #         app.main()
-    #     self.app_cfg = app_cfg
+        # mock_open = mock.mock_open(read_data=_VALID_CFG)
+        # with mock.patch("builtins.open", mock_open):
+        #     app_cfg = app.app.test_client()
+        #     app.main()
+        # self.app_cfg = app_cfg
 
     def test_app_load_success(self):
         """Tests _fetch_app_config success."""
