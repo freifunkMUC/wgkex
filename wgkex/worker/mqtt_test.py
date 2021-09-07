@@ -15,7 +15,8 @@ class MQTTTest(unittest.TestCase):
     def test_fetch_from_config_fails_no_key(self, config_mock):
         """Tests we fail with ValueError for missing key in config."""
         config_mock.return_value = dict(key="value")
-        self.assertIsNone(mqtt.fetch_from_config("does_not_exist"))
+        with self.assertRaises(ValueError):
+            mqtt.fetch_from_config("does_not_exist")
 
     @mock.patch.object(mqtt.mqtt, "Client")
     @mock.patch.object(mqtt.socket, "gethostname")
@@ -26,13 +27,7 @@ class MQTTTest(unittest.TestCase):
         config_mock.return_value = dict(mqtt={"broker_url": "some_url"})
         mqtt.connect(["domain1", "domain2"])
         mqtt_mock.assert_has_calls(
-            [
-                mock.call("hostname"),
-                mock.call().connect("some_url"),
-                mock.call().subscribe("wireguard/domain1/+"),
-                mock.call().subscribe("wireguard/domain2/+"),
-                mock.call().loop_forever(),
-            ],
+            [mock.call().connect("some_url", port=None, keepalive=None)],
             any_order=True,
         )
 
