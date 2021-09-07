@@ -72,9 +72,7 @@ class Config:
             A Config object.
         """
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
-        return cls(
-            domains=cfg["domains"], mqtt=mqtt_cfg
-        )
+        return cls(domains=cfg["domains"], mqtt=mqtt_cfg)
 
 
 @lru_cache(maxsize=10)

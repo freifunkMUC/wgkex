@@ -17,6 +17,7 @@ from wgkex.config import config
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
+
 @dataclasses.dataclass
 class KeyExchange:
     """A key exchange message.
@@ -60,13 +61,16 @@ def _fetch_app_config() -> Flask_app:
     app.config["MQTT_TLS_ENABLED"] = mqtt_cfg.tls
     return app
 
+
 app = _fetch_app_config()
 mqtt = Mqtt(app)
+
 
 @app.route("/", methods=["GET"])
 def index() -> None:
     """Returns main page"""
     return render_template("index.html")
+
 
 @app.route("/api/v1/wg/key/exchange", methods=["POST"])
 def wg_key_exchange() -> Tuple[str, int]:
@@ -89,6 +93,7 @@ def wg_key_exchange() -> Tuple[str, int]:
     mqtt.publish(f"wireguard/{domain}/{gateway}", key)
     return jsonify({"Message": "OK"}), 200
 
+
 @mqtt.on_connect()
 def handle_mqtt_connect(
     client: mqtt_client.Client, userdata: bytes, flags: Any, rc: Any
@@ -101,6 +106,7 @@ def handle_mqtt_connect(
         )
     )
     # mqtt.subscribe("wireguard/#")
+
 
 @mqtt.on_message()
 def handle_mqtt_message(
@@ -147,6 +153,7 @@ def is_valid_domain(domain: str) -> str:
             f'Domains {domain} not in configured domains({config.fetch_from_config("domains")}) a valid domain'
         )
     return domain
+
 
 if __name__ == "__main__":
     app.run()
