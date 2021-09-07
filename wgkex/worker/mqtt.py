@@ -75,4 +75,4 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     )
     logging.info(f"Received node create message for key {client.public_key}")
     # TODO(ruairi): Verify return type here.
-    print(link_handler(client))
+    logging.info(link_handler(client))
