@@ -45,7 +45,7 @@ class MQTT:
             broker_url=mqtt_cfg["broker_url"],
             username=mqtt_cfg["username"],
             password=mqtt_cfg["password"],
-            tls=mqtt_cfg["broker_url"] if mqtt_cfg["broker_url"] else None,
+            tls=mqtt_cfg["tls"] if mqtt_cfg["tls"] else False,
             broker_port=mqtt_cfg["broker_port"] if mqtt_cfg["broker_port"] else None,
             keepalive=mqtt_cfg["keepalive"] if mqtt_cfg["keepalive"] else None,
         )
@@ -57,12 +57,10 @@ class Config:
 
     Attributes:
         domains: The list of domains to listen for.
-        pubkeys_file: The public keys file to use.
         mqtt: The MQTT configuration.
     """
 
     domains: List[str]
-    pubkeys_file: str
     mqtt: MQTT
 
     @classmethod
@@ -74,9 +72,7 @@ class Config:
             A Config object.
         """
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
-        return cls(
-            domains=cfg["domains"], pubkeys_file=cfg["pubkeys_file"], mqtt=mqtt_cfg
-        )
+        return cls(domains=cfg["domains"], mqtt=mqtt_cfg)
 
 
 @lru_cache(maxsize=10)

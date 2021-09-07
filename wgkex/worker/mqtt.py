@@ -32,11 +32,13 @@ def connect(domains: List[str]) -> None:
         domains: The domains to connect to.
     """
     broker_address = fetch_from_config("mqtt").get("broker_url")
+    broker_port = fetch_from_config("mqtt").get("broker_port")
+    broker_keepalive = fetch_from_config("mqtt").get("keepalive")
     # TODO(ruairi): Move the hostname to a global variable.
     client = mqtt.Client(socket.gethostname())
     client.on_message = on_message
     print(f"connecting to broker {broker_address}")
-    client.connect(broker_address)
+    client.connect(broker_address, port=broker_port, keepalive=broker_keepalive)
     for domain in domains:
         topic = f"wireguard/{domain}/+"
         print(f"Subscribing to topic {topic}")
