@@ -33,7 +33,7 @@ class MQTT:
         broker_url: The broker URL for MQTT to connect to.
         username: The username to use for MQTT.
         password: The password to use for MQTT.
-        domain_prefix: The prefix to pre-pend to a given domain, interface.
+        domain_prefix: The prefix to pre-pend to a given domain.
         tls: If TLS is used or not.
         broker_port: The port for MQTT to connect on.
         keepalive: The keepalive in seconds to use.
