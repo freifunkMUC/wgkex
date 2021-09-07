@@ -6,7 +6,6 @@ from datetime import datetime
 from datetime import timedelta
 from textwrap import wrap
 from typing import Dict, List
-
 import pyroute2
 
 from wgkex.common.utils import mac2eui64

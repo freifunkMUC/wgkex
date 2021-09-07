@@ -12,6 +12,12 @@ from wgkex.worker.netlink import WireGuardClient
 from typing import Optional, Dict, List, Any, Union
 import logging
 
+logging.basicConfig(
+    format="%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
+    datefmt="%Y-%m-%d:%H:%M:%S",
+    level=logging.DEBUG,
+)
+
 
 def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
     """Fetches values from configuration file.
