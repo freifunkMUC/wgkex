@@ -1,7 +1,6 @@
 - [WireGuard Key Exchange](#wireguard-key-exchange)
   * [Overview](#overview)
     + [Frontend broker](#frontend-broker)
-      - [GET /wg-public-key/<path:key>](#get--wg-public-key--path-key-)
       - [POST /api/v1/wg/key/exchange](#post--api-v1-wg-key-exchange)
     + [Backend worker](#backend-worker)
   * [Installation](#installation)
