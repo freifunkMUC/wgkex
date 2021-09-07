@@ -18,6 +18,7 @@ class DomainsNotInConfig(Error):
 def clean_up_worker(domain: str) -> None:
     while True:
         time.sleep(300)
+        print(f"Running cleanup task for {domain}")
         wg_flush_stale_peers(domain)
 
 
