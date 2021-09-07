@@ -32,7 +32,9 @@ def main():
         raise DomainsNotInConfig("Could not locate domains in configuration.")
     clean_up_threads = []
     for domain in domains:
-        thread = threading.Thread(target=clean_up_worker, args=(domain.split('ffmuc_')[1],))
+        thread = threading.Thread(
+            target=clean_up_worker, args=(domain.split("ffmuc_")[1],)
+        )
         thread.start()
         clean_up_threads.append(thread)
     mqtt.connect(domains)
