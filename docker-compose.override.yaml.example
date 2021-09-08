@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  mqtt:
+    #profiles: ["do-not-start"]
+    #volumes:
+    #  - ./config/mosquitto:/mosquitto/config
+  broker:
+    #profiles: ["do-not-start"]
+    #volumes:
+    #  - ./config/broker/wgkex.yaml:/etc/wgkex.yaml
+  worker:
+    profiles: ["do-not-start"]
+    #volumes:
+    #  - ./config/broker/wgkex.yaml:/etc/wgkex.yaml

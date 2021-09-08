@@ -16,8 +16,6 @@ services:
     image: wgkex
     command: broker
     restart: unless-stopped
-    depends_on:
-      - mqtt
     ports:
       - "5000:5000"
     #volumes:
@@ -38,8 +36,6 @@ services:
     image: wgkex
     command: worker
     restart: unless-stopped
-    depends_on:
-      - mqtt
     #volumes:
       #- ./config/worker/wgkex.yaml:/etc/wgkex.yaml
     environment:

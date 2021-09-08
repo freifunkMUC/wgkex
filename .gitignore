@@ -131,11 +131,13 @@ dmypy.json
 # Bazel local cache/files ignore.
 bazel-*
 
+# docker-compose
+.env
+docker-compose.override.yaml
 # docker-compose volumes
 /volumes
 # docker-compose config
 /config
-# docker-compose environment file
-.env
 
+# config file
 wgkex.yaml
