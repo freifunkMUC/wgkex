@@ -12,7 +12,7 @@ domains:
   - ffmuc_uml_west
   - ffmuc_welt
 mqtt:
-  broker_url: broker.example.com
+  broker_url: broker.hivemq.com
   broker_port: 1883
   username: user
   password: SECRET
