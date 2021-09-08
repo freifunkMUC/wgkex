@@ -3,7 +3,7 @@ import mock
 import config
 import yaml
 
-_VALID_CFG = "domain_prefix: ffmuc_\ndomains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+_VALID_CFG = "domain_prefix: ffmuc_\nlog_level: DEBUG\ndomains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
 _INVALID_LINT = "domain_prefix: ffmuc_\nBAD_KEY_FOR_DOMAIN:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
 _INVALID_CFG = "asdasdasdasd"
 
