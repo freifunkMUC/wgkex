@@ -120,7 +120,9 @@ def handle_mqtt_message(
 ) -> None:
     """Prints message contents."""
     # TODO(ruairi): Clarify current usage of this function.
-    logging.debug(f"MQTT message received on {message.topic}: {message.payload.decode()}")
+    logging.debug(
+        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+    )
 
 
 def is_valid_wg_pubkey(pubkey: str) -> str:
