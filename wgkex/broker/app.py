@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import re
 import dataclasses
+import logging
 from typing import Tuple, Any
 
 from flask import Flask
@@ -14,6 +15,11 @@ import paho.mqtt.client as mqtt_client
 
 from wgkex.config import config
 
+logging.basicConfig(
+    format="%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
+    datefmt="%Y-%m-%d:%H:%M:%S",
+    level=config.load_config().get("log_level"),
+)
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
@@ -88,7 +94,7 @@ def wg_key_exchange() -> Tuple[str, int]:
     domain = data.domain
     # in case we want to decide here later we want to publish it only to dedicated gateways
     gateway = "all"
-    print(f"wg_key_exchange: Domain: {domain}, Key:{key}")
+    logging.info(f"wg_key_exchange: Domain: {domain}, Key:{key}")
 
     mqtt.publish(f"wireguard/{domain}/{gateway}", key)
     return jsonify({"Message": "OK"}), 200
@@ -100,7 +106,7 @@ def handle_mqtt_connect(
 ) -> None:
     """Prints status of connect message."""
     # TODO(ruairi): Clarify current usage of this function.
-    print(
+    logging.debug(
         "MQTT connected to {}:{}".format(
             app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
         )
@@ -114,7 +120,7 @@ def handle_mqtt_message(
 ) -> None:
     """Prints message contents."""
     # TODO(ruairi): Clarify current usage of this function.
-    print(f"MQTT message received on {message.topic}: {message.payload.decode()}")
+    logging.debug(f"MQTT message received on {message.topic}: {message.payload.decode()}")
 
 
 def is_valid_wg_pubkey(pubkey: str) -> str:
