@@ -1,16 +1,21 @@
 FROM l.gcr.io/google/bazel:latest AS builder
 
-WORKDIR /srv/wgkex
+WORKDIR /wgkex
 
 COPY . ./
 
 RUN ["bazel", "build", "//wgkex/broker:app"]
+RUN ["bazel", "build", "//wgkex/worker:app"]
 RUN ["cp", "-rL", "bazel-bin", "bazel"]
 
-FROM python:3.8
-WORKDIR /srv/wgkex
+FROM python:3
+WORKDIR /wgkex
 
-COPY --from=builder /srv/wgkex/bazel /srv/wgkex/
+COPY --from=builder /wgkex/bazel /wgkex/
+
+COPY entrypoint /entrypoint
 
 EXPOSE 5000
-CMD ["./wgkex/broker/app"]
+
+ENTRYPOINT ["/entrypoint"]
+CMD ["broker"]
