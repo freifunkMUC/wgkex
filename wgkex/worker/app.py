@@ -15,7 +15,7 @@ logging.basicConfig(
     level=config.load_config().get("log_level"),
 )
 
-_CLEANUP_TIME = 300
+_CLEANUP_TIME = 3600
 
 
 class Error(Exception):
