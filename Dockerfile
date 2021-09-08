@@ -13,8 +13,9 @@ WORKDIR /wgkex
 
 COPY --from=builder /wgkex/bazel /wgkex/
 
-COPY wgkex.yaml.example /etc/wgkex.yaml
-RUN sed -i "s/broker_url:.*/broker_url: mqtt/g; s/username:.*/username:/g; s/password:.*/password:/g" /etc/wgkex.yaml
+COPY entrypoint /entrypoint
 
 EXPOSE 5000
-CMD ["./wgkex/broker/app"]
+
+ENTRYPOINT ["/entrypoint"]
+CMD ["broker"]

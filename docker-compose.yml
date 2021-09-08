@@ -14,6 +14,7 @@ services:
   broker:
     build: .
     image: wgkex
+    command: broker
     restart: unless-stopped
     depends_on:
       - mqtt
@@ -21,15 +22,33 @@ services:
       - "5000:5000"
     #volumes:
       #- ./config/broker/wgkex.yaml:/etc/wgkex.yaml
-
+    environment:
+      WGKEX_DOMAINS: ${WGKEX_DOMAINS-ffmuc_freising, ffmuc_gauting, ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_uml_nord, ffmuc_uml_ost, ffmuc_uml_sued, ffmuc_uml_west, ffmuc_welt
+      WGKEX_DOMAIN_PREFIX: ${WGKEX_DOMAIN_PREFIX-ffmuc_}
+      WGKEX_DEBUG: ${WGKEX_DEBUG-DEBUG}
+      MQTT_BROKER_URL: ${MQTT_BROKER_URL-mqtt}
+      MQTT_BROKER_PORT: ${MQTT_BROKER_PORT-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD-}
+      MQTT_KEEPALIVE: ${MQTT_KEEPALIVE-5}
+      MQTT_TLS: ${MQTT_TLS-False}
 
   worker:
     build: .
     image: wgkex
+    command: worker
     restart: unless-stopped
     depends_on:
       - mqtt
     #volumes:
       #- ./config/worker/wgkex.yaml:/etc/wgkex.yaml
-    command: ["./wgkex/worker/app"]
-
+    environment:
+      WGKEX_DOMAINS: ${WGKEX_DOMAINS-ffmuc_freising, ffmuc_gauting, ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_uml_nord, ffmuc_uml_ost, ffmuc_uml_sued, ffmuc_uml_west, ffmuc_welt}
+      WGKEX_DOMAIN_PREFIX: ${WGKEX_DOMAIN_PREFIX-ffmuc_}
+      WGKEX_DEBUG: ${WGKEX_DEBUG-DEBUG}
+      MQTT_BROKER_URL: ${MQTT_BROKER_URL-mqtt}
+      MQTT_BROKER_PORT: ${MQTT_BROKER_PORT-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD-}
+      MQTT_KEEPALIVE: ${MQTT_KEEPALIVE-5}
+      MQTT_TLS: ${MQTT_TLS-False}

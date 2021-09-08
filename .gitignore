@@ -135,3 +135,7 @@ bazel-*
 /volumes
 # docker-compose config
 /config
+# docker-compose environment file
+.env
+
+wgkex.yaml
