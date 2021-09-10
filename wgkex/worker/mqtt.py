@@ -54,6 +54,7 @@ def connect(domains: List[str]) -> None:
     client = mqtt.Client(socket.gethostname())
     client.on_message = on_message
     logging.info("connecting to broker %s", broker_address)
+    client.max_inflight_messages_set(200)
     client.connect(broker_address, port=broker_port, keepalive=broker_keepalive)
     for domain in domains:
         topic = f"wireguard/{domain}/+"
@@ -72,7 +73,8 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     """
     # TODO(ruairi): Check bounds and raise exception here.
     logging.debug("Got message %s from MTQQ", message)
-    domain = re.search(r"/.*ffmuc_(\w+)/", message.topic).group(1)
+    domain_prefix = load_config().get("domain_prefix")
+    domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic).group(1)
     logging.debug("Found domain %s", domain)
     client = WireGuardClient(
         public_key=str(message.payload.decode("utf-8")),
