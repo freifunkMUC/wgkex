@@ -62,8 +62,15 @@ def connect() -> None:
 
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
+    """Handles MQTT connect and subscribes to topics on connect
 
-    logging.info("Connected with result code " + str(rc))
+    Arguments:
+        client: the client instance for this callback.
+        userdata: the private user data.
+        flags: The MQTT flags.
+        rc: The MQTT rc.
+    """
+    logging.debug("Connected with result code " + str(rc))
     domains = load_config().get("domains")
 
     # Subscribing in on_connect() means that if we lose the connection and
