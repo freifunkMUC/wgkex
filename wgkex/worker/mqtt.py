@@ -99,6 +99,6 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
         domain=domain,
         remove=False,
     )
-    logging.info(f"Received node create message for key {client.public_key}")
+    logging.info(f"Received create message for key {client.public_key} on domain {domain} with lladdr {client.lladdr}")
     # TODO(ruairi): Verify return type here.
     logging.debug(link_handler(client))
