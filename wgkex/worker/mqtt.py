@@ -64,7 +64,7 @@ def connect() -> None:
 def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
 
     logging.info("Connected with result code " + str(rc))
-    domains = config.load_config().get("domains")
+    domains = load_config().get("domains")
 
     # Subscribing in on_connect() means that if we lose the connection and
     # reconnect then subscriptions will be renewed.
