@@ -38,29 +38,47 @@ def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
     return config.get(var)
 
 
-def connect(domains: List[str]) -> None:
+def connect() -> None:
     """Connect to MQTT for the given domains.
 
     Argument:
         domains: The domains to connect to.
     """
-    if not domains:
-        logging.error("No domains were passed: %s", domains)
     base_config = fetch_from_config("mqtt")
     broker_address = base_config.get("broker_url")
     broker_port = base_config.get("broker_port")
     broker_keepalive = base_config.get("keepalive")
     # TODO(ruairi): Move the hostname to a global variable.
     client = mqtt.Client(socket.gethostname())
+
+    # Register handlers
+    client.on_connect = on_connect
     client.on_message = on_message
     logging.info("connecting to broker %s", broker_address)
-    client.max_inflight_messages_set(200)
+
     client.connect(broker_address, port=broker_port, keepalive=broker_keepalive)
+    client.loop_forever()
+
+
+# The callback for when the client receives a CONNACK response from the server.
+def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
+    """Handles MQTT connect and subscribes to topics on connect
+
+    Arguments:
+        client: the client instance for this callback.
+        userdata: the private user data.
+        flags: The MQTT flags.
+        rc: The MQTT rc.
+    """
+    logging.debug("Connected with result code " + str(rc))
+    domains = load_config().get("domains")
+
+    # Subscribing in on_connect() means that if we lose the connection and
+    # reconnect then subscriptions will be renewed.
     for domain in domains:
         topic = f"wireguard/{domain}/+"
         logging.info(f"Subscribing to topic {topic}")
         client.subscribe(topic)
-    client.loop_forever()
 
 
 def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
@@ -83,4 +101,4 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     )
     logging.info(f"Received node create message for key {client.public_key}")
     # TODO(ruairi): Verify return type here.
-    logging.info(link_handler(client))
+    logging.debug(link_handler(client))
