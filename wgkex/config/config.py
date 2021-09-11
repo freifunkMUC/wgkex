@@ -66,7 +66,6 @@ class Config:
     domains: List[str]
     mqtt: MQTT
     domain_prefix: str
-    log_level: str
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, str]) -> "Config":
@@ -81,7 +80,6 @@ class Config:
             domains=cfg["domains"],
             mqtt=mqtt_cfg,
             domain_prefix=cfg["domain_prefix"],
-            log_level=cfg["log_level"],
         )
 
 
