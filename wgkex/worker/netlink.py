@@ -9,6 +9,7 @@ from typing import Dict, List
 import pyroute2
 
 from wgkex.common.utils import mac2eui64
+from wgkex.common import logger
 
 _PERSISTENT_KEEPALIVE_SECONDS = 15
 _PEER_TIMEOUT_HOURS = 3
@@ -65,16 +66,22 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
     Returns:
         The peers which we can remove.
     """
+    logger.info('Searching for stale clients for %s', domain)
     stale_clients = [
         stale_client for stale_client in find_stale_wireguard_clients("wg-" + domain)
     ]
+    logger.debug('Found stable clients: %s', stale_clients)
+    logger.info('Searching for stale WireGuard clients.')
     stale_wireguard_clients = [
         WireGuardClient(public_key=stale_client, domain=domain, remove=True)
         for stale_client in stale_clients
     ]
+    logger.debug('Found stable WireGuard clients: %s', stale_wireguard_clients)
+    logger.info('Processing clients.')
     link_handled = [
         link_handler(stale_client) for stale_client in stale_wireguard_clients
     ]
+    logger.debug('Handled the following clients: %s', link_handled)
     return link_handled
 
 

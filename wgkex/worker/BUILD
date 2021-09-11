@@ -10,7 +10,8 @@ py_library(
        requirement("NetLink"),
        requirement("paho-mqtt"),
        requirement("pyroute2"),
-       "//wgkex/common:utils"
+       "//wgkex/common:utils",
+       "//wgkex/common:logger"
     ],
 )
 
@@ -33,6 +34,7 @@ py_library(
        requirement("pyroute2"),
        "//wgkex/common:utils",
        "//wgkex/config:config",
+       "//wgkex/common:logger",
        ":netlink",
     ],
 )
@@ -52,6 +54,7 @@ py_binary(
     deps = [
        ":mqtt",
        "//wgkex/config:config",
+       "//wgkex/common:logger",
     ],
 )
 

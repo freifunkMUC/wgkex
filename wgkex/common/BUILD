@@ -19,3 +19,9 @@ py_test(
        requirement("mock"),
     ],
 )
+
+py_library(
+    name = "logger",
+    srcs = ["logger.py"],
+    visibility = ["//visibility:public"]
+)
