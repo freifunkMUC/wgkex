@@ -27,7 +27,7 @@ _LOGGING_DEFAULT_CONFIG = {
 }
 
 
-def fetch_logging_configuration() -> dict[str, str]:
+def fetch_logging_configuration():
     """Fetches logging configuration from disk, if exists.
 
     If the config exists, then we check to see if the key 'logging_config' is set. If it is, we return this configuration.
