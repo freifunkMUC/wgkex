@@ -88,7 +88,9 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     domain_prefix = load_config().get("domain_prefix")
     domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic)
     if not domain:
-        raise ValueError('Could not find a match for %s on %s', domain_prefix, message.topic)
+        raise ValueError(
+            "Could not find a match for %s on %s", domain_prefix, message.topic
+        )
     domain = domain.group(1)
     logger.debug("Found domain %s", domain)
     client = WireGuardClient(
@@ -96,6 +98,8 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
         domain=domain,
         remove=False,
     )
-    logger.info(f"Received create message for key {client.public_key} on domain {domain} with lladdr {client.lladdr}")
+    logger.info(
+        f"Received create message for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
+    )
     # TODO(ruairi): Verify return type here.
     logger.debug(link_handler(client))

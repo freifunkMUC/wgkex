@@ -3,8 +3,8 @@ import unittest
 import mock
 import mqtt
 
-class MQTTTest(unittest.TestCase):
 
+class MQTTTest(unittest.TestCase):
     @mock.patch.object(mqtt, "load_config")
     def test_fetch_from_config_success(self, config_mock):
         """Ensure we can fetch a value from config."""
@@ -44,7 +44,7 @@ class MQTTTest(unittest.TestCase):
     @mock.patch.object(mqtt, "load_config")
     def test_on_message_success(self, config_mock, link_mock):
         """Tests on_message for success."""
-        config_mock.return_value = {'domain_prefix': '_ffmuc_'}
+        config_mock.return_value = {"domain_prefix": "_ffmuc_"}
         link_mock.return_value = dict(WireGuard="result")
         mqtt_msg = mock.patch.object(mqtt.mqtt, "MQTTMessage")
         mqtt_msg.topic = "/_ffmuc_domain1/"
@@ -65,7 +65,19 @@ class MQTTTest(unittest.TestCase):
     @mock.patch.object(mqtt, "load_config")
     def test_on_message_fails_no_domain(self, config_mock, link_mock):
         """Tests on_message for failure to parse domain."""
-        config_mock.return_value = {'domain_prefix': 'ffmuc_', 'log_level': 'DEBUG', 'domains': ['a', 'b'], 'mqtt': {'broker_port': 1883, 'broker_url': 'mqtt://broker', 'keepalive': 5, 'password': 'pass', 'tls': True, 'username': 'user'}}
+        config_mock.return_value = {
+            "domain_prefix": "ffmuc_",
+            "log_level": "DEBUG",
+            "domains": ["a", "b"],
+            "mqtt": {
+                "broker_port": 1883,
+                "broker_url": "mqtt://broker",
+                "keepalive": 5,
+                "password": "pass",
+                "tls": True,
+                "username": "user",
+            },
+        }
         link_mock.return_value = dict(WireGuard="result")
         mqtt_msg = mock.patch.object(mqtt.mqtt, "MQTTMessage")
         mqtt_msg.topic = "bad_domain_match"
