@@ -19,7 +19,6 @@ mqtt:
   keepalive: 5
   tls: False
 domain_prefix: myprefix-
-log_level: DEBUG
 logging_config:
     formatters:
       standard:
