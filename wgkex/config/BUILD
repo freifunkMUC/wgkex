@@ -6,7 +6,10 @@ py_library(
     name="config",
     srcs=["config.py"],
     visibility=["//visibility:public"],
-    deps=[requirement("PyYAML"), "//wgkex/common:utils"],
+    deps=[requirement("PyYAML"),
+    "//wgkex/common:utils",
+    "//wgkex/common:logger",
+    ],
 )
 
 py_test(

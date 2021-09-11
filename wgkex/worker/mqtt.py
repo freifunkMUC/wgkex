@@ -10,13 +10,7 @@ import re
 from wgkex.worker.netlink import link_handler
 from wgkex.worker.netlink import WireGuardClient
 from typing import Optional, Dict, List, Any, Union
-import logging
-
-logging.basicConfig(
-    format="%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
-    datefmt="%Y-%m-%d:%H:%M:%S",
-    level=load_config().get("log_level"),
-)
+from wgkex.common import logger
 
 
 def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
@@ -54,7 +48,7 @@ def connect() -> None:
     # Register handlers
     client.on_connect = on_connect
     client.on_message = on_message
-    logging.info("connecting to broker %s", broker_address)
+    logger.info("connecting to broker %s", broker_address)
 
     client.connect(broker_address, port=broker_port, keepalive=broker_keepalive)
     client.loop_forever()
@@ -70,14 +64,14 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         flags: The MQTT flags.
         rc: The MQTT rc.
     """
-    logging.debug("Connected with result code " + str(rc))
+    logger.debug("Connected with result code " + str(rc))
     domains = load_config().get("domains")
 
     # Subscribing in on_connect() means that if we lose the connection and
     # reconnect then subscriptions will be renewed.
     for domain in domains:
         topic = f"wireguard/{domain}/+"
-        logging.info(f"Subscribing to topic {topic}")
+        logger.info(f"Subscribing to topic {topic}")
         client.subscribe(topic)
 
 
@@ -90,15 +84,18 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
         message: The MQTT message.
     """
     # TODO(ruairi): Check bounds and raise exception here.
-    logging.debug("Got message %s from MTQQ", message)
+    logger.debug("Got message %s from MTQQ", message)
     domain_prefix = load_config().get("domain_prefix")
-    domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic).group(1)
-    logging.debug("Found domain %s", domain)
+    domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic)
+    if not domain:
+        raise ValueError('Could not find a match for %s on %s', domain_prefix, message.topic)
+    domain = domain.group(1)
+    logger.debug("Found domain %s", domain)
     client = WireGuardClient(
         public_key=str(message.payload.decode("utf-8")),
         domain=domain,
         remove=False,
     )
-    logging.info(f"Received create message for key {client.public_key} on domain {domain} with lladdr {client.lladdr}")
+    logger.info(f"Received create message for key {client.public_key} on domain {domain} with lladdr {client.lladdr}")
     # TODO(ruairi): Verify return type here.
-    logging.debug(link_handler(client))
+    logger.debug(link_handler(client))
