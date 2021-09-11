@@ -5,7 +5,6 @@ import yaml
 from functools import lru_cache
 from typing import Dict, Union, Any, List, Optional
 import dataclasses
-from wgkex.common import logger
 
 
 class Error(Exception):

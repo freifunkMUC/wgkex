@@ -20,3 +20,16 @@ mqtt:
   tls: False
 domain_prefix: myprefix-
 log_level: DEBUG
+logging_config:
+    formatters:
+      standard:
+        format: '%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: standard
+    root:
+      handlers:
+      - console
+      level: DEBUG
+    version: 1
