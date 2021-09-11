@@ -12,12 +12,3 @@ py_binary(
         "//wgkex/config:config",
     ],
 )
-
-py_test(
-    name="app_test",
-    srcs=["app_test.py"],
-    deps=[
-        ":app",
-        requirement("mock"),
-    ],
-)
