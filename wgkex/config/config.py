@@ -5,7 +5,6 @@ import yaml
 from functools import lru_cache
 from typing import Dict, Union, Any, List, Optional
 import dataclasses
-import logging
 
 
 class Error(Exception):
@@ -18,11 +17,6 @@ class ConfigFileNotFoundError(Error):
 
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
 WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
-logging.basicConfig(
-    format="%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
-    datefmt="%Y-%m-%d:%H:%M:%S",
-    level=logging.DEBUG,
-)
 
 
 @dataclasses.dataclass
@@ -113,13 +107,13 @@ def load_config() -> Dict[str, str]:
     try:
         config = yaml.safe_load(cfg_contents)
     except yaml.YAMLError as e:
-        logging.error("Failed to load YAML file: %s", e)
+        logger.error("Failed to load YAML file: %s", e)
         sys.exit(1)
     try:
         _ = Config.from_dict(config)
         return config
     except (KeyError, TypeError) as e:
-        logging.error("Failed to lint file: %s", e)
+        logger.error("Failed to lint file: %s", e)
         sys.exit(2)
 
 

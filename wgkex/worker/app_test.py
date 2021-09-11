@@ -19,7 +19,7 @@ class AppTest(unittest.TestCase):
         )
         with mock.patch("app.flush_workers", return_value=None):
             app.main()
-            connect_mock.assert_called_with(["TEST_PREFIX_domain.one"])
+            connect_mock.assert_called_with()
 
     @mock.patch.object(app.config, "load_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)

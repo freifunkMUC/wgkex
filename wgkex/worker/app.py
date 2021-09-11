@@ -5,15 +5,8 @@ from wgkex.worker import mqtt
 from wgkex.worker.netlink import wg_flush_stale_peers
 import threading
 import time
-import logging
-import datetime
+from wgkex.common import logger
 from typing import List, Text
-
-logging.basicConfig(
-    format="%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
-    datefmt="%Y-%m-%d:%H:%M:%S",
-    level=config.load_config().get("log_level"),
-)
 
 _CLEANUP_TIME = 3600
 
@@ -30,8 +23,8 @@ def flush_workers(domain: Text) -> None:
     """Calls peer flush every _CLEANUP_TIME interval."""
     while True:
         time.sleep(_CLEANUP_TIME)
-        logging.info(f"Running cleanup task for {domain}")
-        logging.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
+        logger.info(f"Running cleanup task for {domain}")
+        logger.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
 
 
 def clean_up_worker(domains: List[Text]) -> None:
@@ -40,14 +33,14 @@ def clean_up_worker(domains: List[Text]) -> None:
     Arguments:
         domains: list of domains.
     """
-    logging.debug("Cleaning up the following domains: %s", domains)
+    logger.debug("Cleaning up the following domains: %s", domains)
     prefix = config.load_config().get("domain_prefix")
     for domain in domains:
-        logging.info("Scheduling cleanup task for %s, ", domain)
+        logger.info("Scheduling cleanup task for %s, ", domain)
         try:
             cleaned_domain = domain.split(prefix)[1]
         except IndexError:
-            logging.error(
+            logger.error(
                 "Cannot strip domain with prefix %s from passed value %s. Skipping cleanup operation",
                 prefix,
                 domain,
