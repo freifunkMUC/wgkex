@@ -1,17 +1,27 @@
-on: ["push", "pull_request"]
-
-name: Test Coveralls
+name: push
+on: [push, pull_request]
 
 jobs:
-
-  build:
-    name: Build
+  test:
     runs-on: ubuntu-latest
     steps:
+    - uses: actions/checkout@v2
+    - uses: actions/setup-python@v1
 
-    - uses: actions/checkout@v1
+    - name: Unit tests
+      run: make test
 
     - name: Coveralls
-      uses: coverallsapp/github-action@master
+      uses: AndreMiras/coveralls-python-action@develop
       with:
-        github-token: ${{ secrets.GITHUB_TOKEN }}
+        parallel: true
+        flag-name: Unit Test
+
+  coveralls_finish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+    - name: Coveralls Finished
+      uses: AndreMiras/coveralls-python-action@develop
+      with:
+        parallel-finished: true
