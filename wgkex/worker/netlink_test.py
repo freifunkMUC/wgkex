@@ -22,26 +22,16 @@ _WG_CLIENT_DEL = netlink.WireGuardClient(
     public_key="public_key", domain="del", remove=True
 )
 
-_WG_PEER_STALE = mock.Mock()
-_WG_PEER_STALE.WGPEER_A_PUBLIC_KEY = {"value": b"WGPEER_A_PUBLIC_KEY_STALE"}
-_WG_PEER_STALE.WGPEER_A_LAST_HANDSHAKE_TIME = {
-    "tv_sec": int((datetime.now() - timedelta(hours=5)).timestamp())
-}
 
-_WG_PEER = mock.Mock()
-_WG_PEER.WGPEER_A_PUBLIC_KEY = {"value": b"WGPEER_A_PUBLIC_KEY"}
-_WG_PEER.WGPEER_A_LAST_HANDSHAKE_TIME = {
-    "tv_sec": int((datetime.now() - timedelta(seconds=3)).timestamp())
-}
-
-
-def _get_wg_mock(peer):
-    info_mock = mock.Mock()
-    info_mock.WGDEVICE_A_PEERS.value = [peer]
+def _get_wg_mock(key_name, stale_time):
+    pm = mock.Mock()
+    pm.get_attr.side_effect = [{"tv_sec": stale_time}, key_name.encode()]
+    peer_mock = mock.Mock()
+    peer_mock.get_attr.side_effect = [[pm]]
     wg_instance = WireGuard()
     wg_info_mock = wg_instance.__enter__.return_value
     wg_info_mock.set.return_value = {"WireGuard": "set"}
-    wg_info_mock.info.return_value = [info_mock]
+    wg_info_mock.info.return_value = [peer_mock]
     return wg_info_mock
 
 
@@ -53,12 +43,18 @@ class NetlinkTest(unittest.TestCase):
 
     def test_find_stale_wireguard_clients_success_with_non_stale_peer(self):
         """Tests find_stale_wireguard_clients no operation on non-stale peers."""
-        wg_info_mock = _get_wg_mock(_WG_PEER)
+        wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY",
+            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+        )
         self.assertListEqual([], netlink.find_stale_wireguard_clients("some_interface"))
 
     def test_find_stale_wireguard_clients_success_stale_peer(self):
         """Tests find_stale_wireguard_clients removal of stale peer"""
-        wg_info_mock = _get_wg_mock(_WG_PEER_STALE)
+        wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY_STALE",
+            int((datetime.now() - timedelta(hours=5)).timestamp()),
+        )
         self.assertListEqual(
             ["WGPEER_A_PUBLIC_KEY_STALE"],
             netlink.find_stale_wireguard_clients("some_interface"),
@@ -69,7 +65,7 @@ class NetlinkTest(unittest.TestCase):
         self.route_info_mock.route.return_value = {"key": "value"}
         self.assertDictEqual({"key": "value"}, netlink.route_handler(_WG_CLIENT_ADD))
         self.route_info_mock.route.assert_called_with(
-            "add", dst="fe80::282:6eff:fe9d:ecd3/128", oif=mock.ANY
+            "replace", dst="fe80::282:6eff:fe9d:ecd3/128", oif=mock.ANY
         )
 
     def test_route_handler_remove_success(self):
@@ -82,7 +78,10 @@ class NetlinkTest(unittest.TestCase):
 
     def test_update_wireguard_peer_success(self):
         """Test update_wireguard_peer for normal operation."""
-        wg_info_mock = _get_wg_mock(_WG_PEER)
+        wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY",
+            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+        )
         self.assertDictEqual(
             {"WireGuard": "set"}, netlink.update_wireguard_peer(_WG_CLIENT_ADD)
         )
@@ -102,9 +101,10 @@ class NetlinkTest(unittest.TestCase):
         self.assertEqual({"key": "value"}, netlink.bridge_fdb_handler(_WG_CLIENT_ADD))
         self.route_info_mock.fdb.assert_called_with(
             "append",
-            ifindex=mock.ANY,
             lladdr="00:00:00:00:00:00",
             dst="fe80::282:6eff:fe9d:ecd3",
+            ifindex=mock.ANY,
+            NDA_IFINDEX=mock.ANY,
         )
 
     def test_bridge_fdb_handler_del_success(self):
@@ -114,6 +114,7 @@ class NetlinkTest(unittest.TestCase):
         self.route_info_mock.fdb.assert_called_with(
             "del",
             ifindex=mock.ANY,
+            NDA_IFINDEX=mock.ANY,
             lladdr="00:00:00:00:00:00",
             dst="fe80::282:6eff:fe9d:ecd3",
         )
@@ -125,7 +126,10 @@ class NetlinkTest(unittest.TestCase):
             "Route": {"IPRoute": "route"},
             "Bridge FDB": {"IPRoute": "fdb"},
         }
-        wg_info_mock = _get_wg_mock(_WG_PEER)
+        wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY",
+            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+        )
         wg_info_mock.set.return_value = {"WireGuard": "set"}
         self.route_info_mock.fdb.return_value = {"IPRoute": "fdb"}
         self.route_info_mock.route.return_value = {"IPRoute": "route"}
@@ -133,11 +137,12 @@ class NetlinkTest(unittest.TestCase):
         self.route_info_mock.fdb.assert_called_with(
             "append",
             ifindex=mock.ANY,
+            NDA_IFINDEX=mock.ANY,
             lladdr="00:00:00:00:00:00",
             dst="fe80::282:6eff:fe9d:ecd3",
         )
         self.route_info_mock.route.assert_called_with(
-            "add", dst="fe80::282:6eff:fe9d:ecd3/128", oif=mock.ANY
+            "replace", dst="fe80::282:6eff:fe9d:ecd3/128", oif=mock.ANY
         )
         wg_info_mock.set.assert_called_with(
             "wg-add",
@@ -151,7 +156,10 @@ class NetlinkTest(unittest.TestCase):
 
     def test_wg_flush_stale_peers_not_stale_success(self):
         """Tests processing of non-stale WireGuard Peer."""
-        wg_info_mock = _get_wg_mock(_WG_PEER)
+        wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY",
+            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+        )
         self.route_info_mock.fdb.return_value = {"IPRoute": "fdb"}
         self.route_info_mock.route.return_value = {"IPRoute": "route"}
         self.assertListEqual([], netlink.wg_flush_stale_peers("domain"))
@@ -169,7 +177,10 @@ class NetlinkTest(unittest.TestCase):
         ]
         self.route_info_mock.fdb.return_value = {"IPRoute": "fdb"}
         self.route_info_mock.route.return_value = {"IPRoute": "route"}
-        wg_info_mock = _get_wg_mock(_WG_PEER_STALE)
+        wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY_STALE",
+            int((datetime.now() - timedelta(hours=5)).timestamp()),
+        )
         wg_info_mock.set.return_value = {"WireGuard": "set"}
         self.assertListEqual(expected, netlink.wg_flush_stale_peers("domain"))
         self.route_info_mock.route.assert_called_with(

@@ -11,7 +11,8 @@ py_library(
        requirement("paho-mqtt"),
        requirement("pyroute2"),
        "//wgkex/common:utils",
-       "//wgkex/common:logger"
+       "//wgkex/common:logger",
+       "//wgkex/config:config",
     ],
 )
 
@@ -33,8 +34,8 @@ py_library(
        requirement("paho-mqtt"),
        requirement("pyroute2"),
        "//wgkex/common:utils",
-       "//wgkex/config:config",
        "//wgkex/common:logger",
+       "//wgkex/config:config",
        ":netlink",
     ],
 )
