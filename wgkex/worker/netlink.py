@@ -70,7 +70,7 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
     stale_clients = [
         stale_client for stale_client in find_stale_wireguard_clients("wg-" + domain)
     ]
-    logger.debug("Found stable clients: %s", stale_clients)
+    logger.debug("Found stale clients: %s", stale_clients)
     logger.info("Searching for stale WireGuard clients.")
     stale_wireguard_clients = [
         WireGuardClient(public_key=stale_client, domain=domain, remove=True)
@@ -97,14 +97,18 @@ def link_handler(client: WireGuardClient) -> Dict:
     results = dict()
     # Updates WireGuard peers.
     results.update({"Wireguard": update_wireguard_peer(client)})
+    logger.debug("Handling links for %s", client)
     try:
         # Updates routes to the WireGuard Peer.
         results.update({"Route": route_handler(client)})
+        logger.info("Updated route for %s", client)
     except Exception as e:
         # TODO(ruairi): re-raise exception here.
+        logger.error("Failed to update route for %s (%s)", client, e)
         results.update({"Route": e})
     # Updates WireGuard FDB.
     results.update({"Bridge FDB": bridge_fdb_handler(client)})
+    logger.debug("Updated Bridge FDB for %s", client)
     return results
 
 
@@ -185,12 +189,17 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
     three_hrs_in_secs = int(
         (datetime.now() - timedelta(hours=_PEER_TIMEOUT_HOURS)).timestamp()
     )
+    logger.info(
+        "Starting search for stale wireguard peers for interface %s.", wg_interface
+    )
     with pyroute2.WireGuard() as wg:
         all_clients = []
-        infos = wg.info(wg_interface)
-        for info in infos:
-            clients = info.get_attr("WGDEVICE_A_PEERS")
-            if clients is not None:
+        peers_on_interface = wg.info(wg_interface)
+        logger.info("Got infos: %s.", peers_on_interface)
+        for peer in peers_on_interface:
+            clients = peer.get_attr("WGDEVICE_A_PEERS")
+            logger.info("Got clients: %s.", clients)
+            if clients:
                 all_clients.extend(clients)
         ret = [
             client.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
