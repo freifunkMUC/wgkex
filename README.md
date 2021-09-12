@@ -1,3 +1,5 @@
+[![Coverage Status](https://coveralls.io/repos/github/freifunkMUC/wgkex/badge.svg?branch=main)](https://coveralls.io/github/freifunkMUC/wgkex?branch=main)
+
 - [WireGuard Key Exchange](#wireguard-key-exchange)
   * [Overview](#overview)
     + [Frontend broker](#frontend-broker)
