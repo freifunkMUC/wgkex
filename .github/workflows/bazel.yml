@@ -16,7 +16,7 @@ jobs:
         run: bazel test ...:all --test_output=all --action_env=WGKEX_CONFIG_FILE=`pwd`/wgkex.yaml.example
       - name: Python coverage
         run: |
-          apt-get install -y lcov
+          sudo apt-get install -y lcov
           mkdir "${GITHUB_WORKSPACE}/src"
           cd "${GITHUB_WORKSPACE}/src"
           curl -L https://github.com/ulfjack/coveragepy/archive/lcov-support.tar.gz | tar xvz
