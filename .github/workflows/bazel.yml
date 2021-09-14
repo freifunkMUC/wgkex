@@ -16,6 +16,7 @@ jobs:
         run: bazel test ...:all --test_output=all --action_env=WGKEX_CONFIG_FILE=`pwd`/wgkex.yaml.example
       - name: Python coverage
         run: |
+          mkdir "${GITHUB_WORKSPACE}/src"
           cd "${GITHUB_WORKSPACE}/src"
           curl -L https://github.com/ulfjack/coveragepy/archive/lcov-support.tar.gz | tar xvz
           bazel coverage --javabase=@bazel_tools//tools/jdk:remote_jdk11 -t- --instrument_test_targets \
