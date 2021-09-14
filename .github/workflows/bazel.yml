@@ -16,6 +16,7 @@ jobs:
         run: bazel test ...:all --test_output=all --action_env=WGKEX_CONFIG_FILE=`pwd`/wgkex.yaml.example
       - name: Python coverage
         run: |
+          apt-get install -y lcov
           mkdir "${GITHUB_WORKSPACE}/src"
           cd "${GITHUB_WORKSPACE}/src"
           curl -L https://github.com/ulfjack/coveragepy/archive/lcov-support.tar.gz | tar xvz
@@ -26,4 +27,4 @@ jobs:
             --define=config_file=test ...:all
           # Unfortunately, coverage does not produce the hit information. Running
           # the compiled tests explicitly seems to work though.
-          find ./bazel-wgkex/ -size +1  -name "*coverage.dat" -exec ls -lh {} \;
+          lcov  $(find ./bazel-wgkex/ -size +1  -name "*coverage.dat" | sed 's/^/\-a\ /g') -o coverage.dat
