@@ -43,16 +43,14 @@ class AppTest(unittest.TestCase):
             app.main()
             connect_mock.assert_called_with()
 
-
     @mock.patch("time.sleep", side_effect=InterruptedError)
-    @mock.patch('app.wg_flush_stale_peers')
+    @mock.patch("app.wg_flush_stale_peers")
     def test_flush_workers(self, flush_mock, sleep_mock):
         """Ensure we fail when domains are badly formatted."""
         flush_mock.return_value = ""
         # Infinite loop in flush_workers has no exit value, so test will generate one, and test for that.
         with self.assertRaises(InterruptedError):
-            app.flush_workers('test_domain')
-
+            app.flush_workers("test_domain")
 
 
 if __name__ == "__main__":
