@@ -32,7 +32,6 @@ def mac2eui64(mac: str, prefix=None) -> str:
 
     if not prefix:
         return ":".join(re.findall(r".{4}", eui64))
-    else:
-        net = ipaddress.ip_network(prefix, strict=False)
-        euil = int(f"0x{eui64:16}", 16)
-        return f"{net[euil]}/{net.prefixlen}"
+    net = ipaddress.ip_network(prefix, strict=False)
+    euil = int(f"0x{eui64:16}", 16)
+    return f"{net[euil]}/{net.prefixlen}"
