@@ -21,7 +21,7 @@ wgkex is a WireGuard key exchange and management tool designed and run by FFMUC.
 
 ## Overview
 
-WireGuard Key Exchange is a tool consisting of two parts: a frontend (broker) and a backend (worker). These components 
+WireGuard Key Exchange is a tool consisting of two parts: a frontend (broker) and a backend (worker). These components
 communicate to each other via MQTT - a messaging bus.
 
 ![](Docs/architecture.png)
@@ -43,7 +43,7 @@ JSON POST'd to this endpoint should be in this format:
 
 ```json
 {
-  "domain": "CONFIGURED_DOMAIN", 
+  "domain": "CONFIGURED_DOMAIN",
   "public_key": "PUBLIC_KEY"
 }
 ```
@@ -53,9 +53,12 @@ The broker will validate the domain and public key, and if valid, will push the 
 ### Backend worker
 
 The backend (worker) waits for new keys to appear on the MQTT message bus. Once a new key appears, the worker performs
-validation task on the key, then injects those keys into a WireGuard instance(While also updating the VxLAN FDB). 
+validation task on the key, then injects those keys into a WireGuard instance(While also updating the VxLAN FDB).
+It reports metrics like number of connected peers and instance data like local address, WG listening port and
+external domain name (configured in config.yml) back to the broker.
+Each worker must run on a machine with a unique hostname, as it is used for separation of metrics.
 
-This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted 
+This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
 
 For further information, please see this [presentation on the architecture](https://www.slideshare.net/AnnikaWickert/ffmuc-goes-wild-infrastructure-recap-2020-rc3)
@@ -73,9 +76,9 @@ can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
 
 ## Running the broker
 
-* The broker web frontend can be started directly from a Git checkout:
+* The worker can be started directly from a Git checkout:
 
-```
+```sh
 # defaults to /etc/wgkex.yaml if not set
 export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
 bazel build //wgkex/worker:app
@@ -85,7 +88,7 @@ bazel build //wgkex/worker:app
 
 * The broker can also be built and run via [bazel](https://bazel.build):
 
-```shell
+```sh
 # defaults to /etc/wgkex.yaml if not set
 export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
 bazel build //wgkex/broker:app
@@ -112,6 +115,30 @@ push_key = requests.get(f'{broker_url}/api/v1/wg/key/exchange', json=key_data)
 print(f'Key push was: {push_key.json().get("Message")]}')
 ```
 
+### Worker
+
+You can set up dummy interfaces for the worker using this script:
+
+```sh
+interface_linklocal() {
+  # We generate a predictable v6 address
+  local macaddr="$(echo $1 | wg pubkey |md5sum|sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')"
+  local oldIFS="$IFS"; IFS=':'; set -- $macaddr; IFS="$oldIFS"
+  echo "fe80::$1$2:$3ff:fe$4:$5$6"
+}
+
+sudo ip link add wg-welt type wireguard
+wg genkey | sudo wg set wg-welt private-key /dev/stdin
+sudo wg set wg-welt listen-port 51820
+addr=$(interface_linklocal $(sudo wg show wg-welt private-key))
+sudo ip addr add $addr dev wg-welt
+sudo ip link add vx-welt type vxlan id 99 dstport 0 local $addr dev wg-welt
+sudo ip addr add fe80::1/64 dev vx-welt
+sudo ip link set wg-welt up
+sudo ip link set vx-welt up
+```
+
+
 ## Contact
 
-[wgkex - IRCNet](ircs://irc.ircnet.net:6697/wgkex)
+[Freifunk Munich Mattermost](https://chat.ffmuc.net)
