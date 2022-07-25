@@ -74,9 +74,11 @@ For further information, please see this [presentation on the architecture](http
 The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
 can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
 
-## Running the broker
+## Running the broker and worker
 
-* The worker can be started directly from a Git checkout:
+### Build using [Bazel](https://bazel.build)
+
+Worker:
 
 ```sh
 # defaults to /etc/wgkex.yaml if not set
@@ -86,7 +88,7 @@ bazel build //wgkex/worker:app
 ./bazel-bin/wgkex/worker/app
 ```
 
-* The broker can also be built and run via [bazel](https://bazel.build):
+Broker:
 
 ```sh
 # defaults to /etc/wgkex.yaml if not set
@@ -94,6 +96,21 @@ export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
 bazel build //wgkex/broker:app
 # Artifact will now be placed into ./bazel-bin/wgkex/broker/app
 ./bazel-bin/wgkex/broker/app
+```
+
+### Run using Python
+
+Broker:
+(Using Flask development server)
+
+```sh
+FLASK_ENV=development FLASK_DEBUG=1 FLASK_APP=wgkex/broker/app.py python3 -m flask run
+```
+
+Worker:
+
+```sh
+python3 -c 'from wgkex.worker.app import main; main()'
 ```
 
 ## Client usage
