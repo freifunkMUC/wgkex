@@ -1,4 +1,4 @@
-FROM gcr.io/cloud-marketplace-containers/google/bazel:2.5.0 AS builder
+FROM gcr.io/cloud-marketplace-containers/google/bazel:3.5.0 AS builder
 
 WORKDIR /wgkex
 
