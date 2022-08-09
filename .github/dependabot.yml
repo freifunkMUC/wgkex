@@ -3,7 +3,7 @@
 version: 2
 
 updates:
-  - package-ecosystem: python
+  - package-ecosystem: pip
     directory: /
     schedule: {interval: monthly}
     reviewers: [freifunkMUC/salt-stack]
