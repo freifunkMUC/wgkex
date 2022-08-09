@@ -11,7 +11,7 @@ jobs:
         with:
           path: "/home/runner/.cache/bazel"
           key: bazel
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Run Bazel tests
         run: bazel test ...:all --test_output=all --action_env=WGKEX_CONFIG_FILE=`pwd`/wgkex.yaml.example
       - name: Python coverage
