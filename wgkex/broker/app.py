@@ -160,4 +160,12 @@ def is_valid_domain(domain: str) -> str:
 
 
 if __name__ == "__main__":
-    app.run()
+    listen_host = None
+    listen_port = None
+
+    listen_config = config.fetch_from_config("broker_listen")
+    if listen_config is not None:
+        listen_host = listen_config.get("host")
+        listen_port = listen_config.get("port")
+
+    app.run(host=listen_host, port=listen_port)

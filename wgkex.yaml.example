@@ -18,6 +18,9 @@ mqtt:
   password: SECRET
   keepalive: 5
   tls: False
+broker_listen:
+  host: 0.0.0.0
+  port: 5000
 domain_prefix: myprefix-
 logging_config:
     formatters:
