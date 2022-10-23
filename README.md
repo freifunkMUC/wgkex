@@ -37,6 +37,16 @@ The frontend broker exposes the following API endpoints for use:
 /api/v1/wg/key/exchange
 ```
 
+The listen address and port for the Flask server can be configured in `wgkex.yaml` under the `broker_listen` key:
+
+```yaml
+broker_listen:
+  # host defaults to 127.0.0.1 if unspecified
+  host: 0.0.0.0
+  # port defaults to 5000 if unspecified
+  port: 5000
+```
+
 #### POST /api/v1/wg/key/exchange
 
 JSON POST'd to this endpoint should be in this format:
