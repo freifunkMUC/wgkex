@@ -12,7 +12,7 @@ services:
      - "9001:9001"
 
   broker:
-    image: ghcr.io/freifunkmuc/wgkex:latest
+    image: ghcr.io/freifunkmuc/wgkex:main
     command: broker
     restart: unless-stopped
     ports:
@@ -31,7 +31,7 @@ services:
       MQTT_TLS: ${MQTT_TLS-False}
 
   worker:
-    image: ghcr.io/freifunkmuc/wgkex:latest
+    image: ghcr.io/freifunkmuc/wgkex:main
     command: worker
     restart: unless-stopped
     #volumes:
