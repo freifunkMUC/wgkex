@@ -1,4 +1,4 @@
-FROM python:3.11.0-bullseye AS builder
+FROM python:3.11.1-bullseye AS builder
 
 RUN apt-get update && apt-get install -y apt-transport-https curl gnupg \
     && curl -fsSL https://bazel.build/bazel-release.pub.gpg | gpg --dearmor >/usr/share/keyrings/bazel-archive-keyring.gpg \
@@ -15,7 +15,7 @@ RUN ["bazel", "build", "//wgkex/broker:app"]
 RUN ["bazel", "build", "//wgkex/worker:app"]
 RUN ["cp", "-rL", "bazel-bin", "bazel"]
 
-FROM python:3.11.0-bullseye
+FROM python:3.11.1-bullseye
 WORKDIR /wgkex
 
 COPY --from=builder /wgkex/bazel /wgkex/
