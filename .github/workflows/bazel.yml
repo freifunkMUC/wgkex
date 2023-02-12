@@ -19,7 +19,6 @@ jobs:
           sudo apt-get install -y lcov
           bazel coverage --javabase=@bazel_tools//tools/jdk:remote_jdk11 -t- --instrument_test_targets \
             --experimental_cc_coverage --test_output=errors --linkopt=--coverage --linkopt=-lc \
-            --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coveragepy-lcov-support/__main__.py  \
             --define=config_file=test ...:all
           # Combine all generated reports into a single merged coverage.dat
           lcov  $(find ./bazel-wgkex/ -size +1  -name "*coverage.dat" | sed 's/^/\-a\ /g') -o combined.dat
