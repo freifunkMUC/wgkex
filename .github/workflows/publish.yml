@@ -7,32 +7,8 @@ on:
       - '*.*.*'
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v3
-      with:
-        fetch-depth: 0
-    - uses: actions/setup-python@v4
-    # https://github.com/marketplace/actions/python-poetry-action
-    - uses: abatilo/actions-poetry@v2.2.0
-    - name: Install dependencies
-      run: |
-        poetry install --no-dev
-    - name: Build project
-      run: |
-        poetry run poetry build
-    - name: Collect artifacts
-      run: |
-        cp -v CHANGELOG.md dist/
-    - name: Upload artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: dist
-        path: dist
-    - name: Publish package
-      env:
-        # https://python-poetry.org/docs/repositories/#configuring-credentials
-        POETRY_PYPI_TOKEN_PYPI: ${{ secrets.pypi_password }}
-      run: |
-        poetry publish --build
+  - name: Publish package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
+    uses: pypa/gh-action-pypi-publish@release/v1
+    with:
+      password: ${{ secrets.PYPI_PASSWORD }}
