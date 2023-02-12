@@ -21,7 +21,7 @@ jobs:
             --experimental_cc_coverage --test_output=errors --linkopt=--coverage --linkopt=-lc \
             --define=config_file=test ...:all
           # Combine all generated reports into a single merged coverage.dat
-          lcov  $(find ./bazel-wgkex/ -size +1  -name "*coverage.dat" | sed 's/^/\-a\ /g') -o combined.dat
+          lcov  $(find ./bazel-wgkex/ -name "*coverage.dat" | sed 's/^/\-a\ /g') -o combined.dat
           lcov --extract combined.dat '*/__main__/wgkex/*' | sed 's/^SF\:.*__main__\//SF\:/g' > coverage.dat
       - name: Coveralls
         uses: coverallsapp/github-action@master
