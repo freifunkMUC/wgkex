@@ -17,10 +17,6 @@ jobs:
       - name: Python coverage
         run: |
           sudo apt-get install -y lcov
-          mkdir "${GITHUB_WORKSPACE}/src"
-          cd "${GITHUB_WORKSPACE}/src"
-          curl -L https://github.com/ulfjack/coveragepy/archive/lcov-support.tar.gz | tar xvz
-          cd "${GITHUB_WORKSPACE}"
           bazel coverage --javabase=@bazel_tools//tools/jdk:remote_jdk11 -t- --instrument_test_targets \
             --experimental_cc_coverage --test_output=errors --linkopt=--coverage --linkopt=-lc \
             --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coveragepy-lcov-support/__main__.py  \
