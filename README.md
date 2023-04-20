@@ -24,7 +24,11 @@ wgkex is a WireGuard key exchange and management tool designed and run by FFMUC.
 WireGuard Key Exchange is a tool consisting of two parts: a frontend (broker) and a backend (worker). These components
 communicate to each other via MQTT - a messaging bus.
 
-![](Docs/architecture.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="Docs/architecture-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="Docs/architecture.png">
+  <img src="Docs/architecture.png" alt="Architectural Diagram">
+</picture>
 
 ### Frontend broker
 
