@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any, Union
 from wgkex.common import logger
 from wgkex.worker.msg_queue import q
 
+
 def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
     """Fetches values from configuration file.
 
