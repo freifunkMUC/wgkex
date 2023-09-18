@@ -7,11 +7,12 @@ import paho.mqtt.client as mqtt
 from wgkex.config.config import load_config
 import socket
 import re
-from wgkex.worker.netlink import link_handler
-from wgkex.worker.netlink import WireGuardClient
-from typing import Optional, Dict, List, Any, Union
+from typing import Optional, Dict, Any, Union
 from wgkex.common import logger
+import queue
 
+
+q = queue.Queue()
 
 def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
     """Fetches values from configuration file.
@@ -93,13 +94,8 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
         )
     domain = domain.group(1)
     logger.debug("Found domain %s", domain)
-    client = WireGuardClient(
-        public_key=str(message.payload.decode("utf-8")),
-        domain=domain,
-        remove=False,
-    )
+
     logger.info(
         f"Received create message for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
     )
-    # TODO(ruairi): Verify return type here.
-    logger.debug(link_handler(client))
+    q.put(domain, message.payload.decode("utf-8"))
