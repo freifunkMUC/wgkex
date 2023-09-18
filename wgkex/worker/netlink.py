@@ -11,7 +11,6 @@ import pyroute2
 from wgkex.common.utils import mac2eui64
 from wgkex.common import logger
 
-_PERSISTENT_KEEPALIVE_SECONDS = 15
 _PEER_TIMEOUT_HOURS = 3
 
 
@@ -149,7 +148,6 @@ def update_wireguard_peer(client: WireGuardClient) -> Dict:
     with pyroute2.WireGuard() as wg:
         wg_peer = {
             "public_key": client.public_key,
-            "persistent_keepalive": _PERSISTENT_KEEPALIVE_SECONDS,
             "allowed_ips": [client.lladdr],
             "remove": client.remove,
         }
