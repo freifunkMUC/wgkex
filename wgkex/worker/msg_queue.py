@@ -9,7 +9,7 @@ from wgkex.worker.netlink import WireGuardClient
 
 class UniqueQueue(Queue):
     def put(self, item, block=True, timeout=None):
-        if item not in self.queue:  # fix join bug
+        if item not in self.queue:
             Queue.put(self, item, block, timeout)
 
     def _init(self, maxsize):
