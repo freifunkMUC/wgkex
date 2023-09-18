@@ -60,9 +60,9 @@ def main():
     domains = config.load_config().get("domains")
     if not domains:
         raise DomainsNotInConfig("Could not locate domains in configuration.")
-    watch_queue()
     clean_up_worker(domains)
     mqtt.connect()
+    watch_queue()
 
 
 if __name__ == "__main__":
