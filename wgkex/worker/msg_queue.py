@@ -21,5 +21,8 @@ def pick_from_queue() -> None:
         domain=domain,
         remove=False,
     )
+    logger.info(
+        f"Processing queue for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
+    )
     logger.debug(link_handler(client))
     q.task_done()
