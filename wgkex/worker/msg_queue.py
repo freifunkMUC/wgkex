@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import threading
 from queue import Queue
+from time import sleep
 from wgkex.common import logger
 from wgkex.worker.netlink import link_handler
 from wgkex.worker.netlink import WireGuardClient
@@ -50,3 +51,4 @@ def pick_from_queue() -> None:
             q.task_done()
         else:
             logger.debug("Queue is empty")
+            sleep(1)
