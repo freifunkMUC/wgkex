@@ -15,16 +15,17 @@ def watch_queue() -> None:
 def pick_from_queue() -> None:
     """Picks a message from the queue and processes it."""
     logger.debug("Starting queue processor")
-    while q.empty() is False:
-        domain, message = q.get()
-        logger.debug("Processing queue item %s for domain %s", message, domain)
-        client = WireGuardClient(
-            public_key=str(message.payload.decode("utf-8")),
-            domain=domain,
-            remove=False,
-        )
-        logger.info(
-            f"Processing queue for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
-        )
-        logger.debug(link_handler(client))
-        q.task_done()
+    while True:
+        if not q.empty():
+            domain, message = q.get()
+            logger.debug("Processing queue item %s for domain %s", message, domain)
+            client = WireGuardClient(
+                public_key=str(message.payload.decode("utf-8")),
+                domain=domain,
+                remove=False,
+            )
+            logger.info(
+                f"Processing queue for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
+            )
+            logger.debug(link_handler(client))
+            q.task_done()
