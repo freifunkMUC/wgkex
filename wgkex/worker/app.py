@@ -2,9 +2,10 @@
 
 import wgkex.config.config as config
 from wgkex.worker import mqtt
+from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
-import threading
 import time
+import threading
 from wgkex.common import logger
 from typing import List, Text
 
@@ -60,6 +61,7 @@ def main():
     if not domains:
         raise DomainsNotInConfig("Could not locate domains in configuration.")
     clean_up_worker(domains)
+    watch_queue()
     mqtt.connect()
 
 

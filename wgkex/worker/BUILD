@@ -16,6 +16,7 @@ py_library(
     ],
 )
 
+
 py_test(
     name = "netlink_test",
     srcs = ["netlink_test.py"],
@@ -36,6 +37,7 @@ py_library(
        "//wgkex/common:utils",
        "//wgkex/common:logger",
        "//wgkex/config:config",
+       ":msg_queue",
        ":netlink",
     ],
 )
@@ -45,6 +47,7 @@ py_test(
     srcs = ["mqtt_test.py"],
     deps = [
        ":mqtt",
+       ":msg_queue",
        requirement("mock"),
     ],
 )
@@ -54,6 +57,7 @@ py_binary(
     srcs = ["app.py"],
     deps = [
        ":mqtt",
+       ":msg_queue",
        "//wgkex/config:config",
        "//wgkex/common:logger",
     ],
@@ -64,6 +68,16 @@ py_test(
     srcs = ["app_test.py"],
     deps = [
        ":app",
+       ":msg_queue",
        requirement("mock"),
+    ],
+)
+
+py_library(
+    name = "msg_queue",
+    srcs = ["msg_queue.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
     ],
 )
