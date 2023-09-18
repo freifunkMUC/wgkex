@@ -48,3 +48,5 @@ def pick_from_queue() -> None:
             )
             logger.debug(link_handler(client))
             q.task_done()
+        else:
+            logger.debug("Queue is empty")
