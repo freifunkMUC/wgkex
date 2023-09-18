@@ -95,4 +95,4 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     logger.info(
         f"Received create message for key {str(message.payload.decode('utf-8'))} on domain {domain}"
     )
-    q.put((domain, message.payload.decode("utf-8")))
+    q.put((domain, str(message.payload.decode("utf-8"))))

@@ -20,7 +20,7 @@ def pick_from_queue() -> None:
             domain, message = q.get()
             logger.debug("Processing queue item %s for domain %s", message, domain)
             client = WireGuardClient(
-                public_key=str(message.payload.decode("utf-8")),
+                public_key=message,
                 domain=domain,
                 remove=False,
             )
