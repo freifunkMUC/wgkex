@@ -5,6 +5,7 @@ from wgkex.worker import mqtt
 from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
 import time
+import threading
 from wgkex.common import logger
 from typing import List, Text
 
