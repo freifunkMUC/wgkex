@@ -89,7 +89,6 @@ class NetlinkTest(unittest.TestCase):
             "wg-add",
             peer={
                 "public_key": "public_key",
-                "persistent_keepalive": 15,
                 "allowed_ips": ["fe80::282:6eff:fe9d:ecd3/128"],
                 "remove": False,
             },
