@@ -17,6 +17,7 @@ def pick_from_queue() -> None:
     logger.debug("Starting queue processor")
     while True:
         if not q.empty():
+            logger.debug("Queue is not empty current size is %i", q.qsize())
             domain, message = q.get()
             logger.debug("Processing queue item %s for domain %s", message, domain)
             client = WireGuardClient(
