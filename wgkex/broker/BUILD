@@ -9,6 +9,7 @@ py_binary(
     deps=[
         requirement("flask"),
         requirement("flask-mqtt"),
+        requirement("waitress"),
         "//wgkex/config:config",
     ],
 )

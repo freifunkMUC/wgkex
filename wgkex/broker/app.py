@@ -13,6 +13,7 @@ from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
 import paho.mqtt.client as mqtt_client
 
+from waitress import serve
 from wgkex.config import config
 from wgkex.common import logger
 
@@ -168,4 +169,4 @@ if __name__ == "__main__":
         listen_host = listen_config.get("host")
         listen_port = listen_config.get("port")
 
-    app.run(host=listen_host, port=listen_port)
+    serve(app, host=listen_host, port=listen_port)
