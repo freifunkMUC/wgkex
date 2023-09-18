@@ -9,9 +9,7 @@ q = queue.Queue()
 
 def watch_queue() -> None:
     """Watches the queue for new messages."""
-    threading.Thread(target=worker, daemon=True).start()
-    while q.empty() != True:
-        pick_from_queue()
+    threading.Thread(target=pick_from_queue, daemon=True).start()
 
 def pick_from_queue() -> None:
     """Picks a message from the queue and processes it."""
