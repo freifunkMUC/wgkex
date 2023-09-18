@@ -3,6 +3,7 @@ flask-mqtt
 pyroute2
 PyYAML
 Flask
+waitress
 
 # Common
 ipaddress
