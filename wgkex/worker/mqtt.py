@@ -96,6 +96,6 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     logger.debug("Found domain %s", domain)
 
     logger.info(
-        f"Received create message for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
+        f"Received create message for key {str(message.payload.decode('utf-8'))} on domain {domain} with lladdr {client.lladdr}"
     )
     q.put(domain, message.payload.decode("utf-8"))
