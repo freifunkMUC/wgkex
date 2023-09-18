@@ -61,8 +61,8 @@ def main():
     if not domains:
         raise DomainsNotInConfig("Could not locate domains in configuration.")
     clean_up_worker(domains)
-    mqtt.connect()
     watch_queue()
+    mqtt.connect()
 
 
 if __name__ == "__main__":
