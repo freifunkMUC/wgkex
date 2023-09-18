@@ -9,10 +9,7 @@ import socket
 import re
 from typing import Optional, Dict, Any, Union
 from wgkex.common import logger
-import queue
-
-
-q = queue.Queue()
+from wgkex.worker.msg_queue import q
 
 def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
     """Fetches values from configuration file.
