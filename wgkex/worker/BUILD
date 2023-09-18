@@ -37,6 +37,7 @@ py_library(
        "//wgkex/common:utils",
        "//wgkex/common:logger",
        "//wgkex/config:config",
+       ":msg_queue",
        ":netlink",
     ],
 )
@@ -46,6 +47,7 @@ py_test(
     srcs = ["mqtt_test.py"],
     deps = [
        ":mqtt",
+       ":msg_queue",
        requirement("mock"),
     ],
 )
@@ -66,6 +68,7 @@ py_test(
     srcs = ["app_test.py"],
     deps = [
        ":app",
+       ":msg_queue",
        requirement("mock"),
     ],
 )
