@@ -41,6 +41,7 @@ class MQTTTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             mqtt.connect()
 
+
 """     @mock.patch.object(msg_queue, "link_handler")
     @mock.patch.object(mqtt, "load_config")
     def test_on_message_success(self, config_mock, link_mock):
