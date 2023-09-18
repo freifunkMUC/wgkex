@@ -2,6 +2,7 @@
 import unittest
 import mock
 import mqtt
+import msg_queue
 
 
 class MQTTTest(unittest.TestCase):
@@ -40,7 +41,7 @@ class MQTTTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             mqtt.connect()
 
-    @mock.patch.object(mqtt, "link_handler")
+    @mock.patch.object(msg_queue, "link_handler")
     @mock.patch.object(mqtt, "load_config")
     def test_on_message_success(self, config_mock, link_mock):
         """Tests on_message for success."""
@@ -61,7 +62,7 @@ class MQTTTest(unittest.TestCase):
             any_order=True,
         )
 
-    @mock.patch.object(mqtt, "link_handler")
+    @mock.patch.object(msg_queue, "link_handler")
     @mock.patch.object(mqtt, "load_config")
     def test_on_message_fails_no_domain(self, config_mock, link_mock):
         """Tests on_message for failure to parse domain."""
