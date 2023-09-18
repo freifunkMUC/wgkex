@@ -5,8 +5,15 @@ from wgkex.common import logger
 from wgkex.worker.netlink import link_handler
 from wgkex.worker.netlink import WireGuardClient
 
-q = queue.Queue()
+class UniqueQueue(queue.Queue):
+    def _init(self, maxsize):
+        self.queue = set()
+    def _put(self, item):
+        self.queue.add(item)
+    def _get(self):
+        return self.queue.pop()
 
+q = UniqueQueue()
 
 def watch_queue() -> None:
     """Watches the queue for new messages."""
