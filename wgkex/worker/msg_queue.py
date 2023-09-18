@@ -3,18 +3,22 @@ import threading
 from queue import Queue
 from wgkex.common import logger
 from wgkex.worker.netlink import link_handler
-from wgkex.worker.netlink import WireGuardClient        
+from wgkex.worker.netlink import WireGuardClient
 
-class UniqueQueue(Queue):                                                                                                                                                                                  
-     def put(self, item, block=True, timeout=None):                                                                                                                                                         
-         if item not in self.queue: # fix join bug                                                                                                                                                          
-             Queue.put(self, item, block, timeout)                                                                                                                                                          
-     def _init(self, maxsize):                                                                                                                                                                              
-         self.queue = set()                                                                                                                                                                                 
-     def _put(self, item):                                                                                                                                                                                  
-         self.queue.add(item)                                                                                                                                                                               
-     def _get(self):                                                                                                                                                                                        
-         return self.queue.pop() 
+
+class UniqueQueue(Queue):
+    def put(self, item, block=True, timeout=None):
+        if item not in self.queue:  # fix join bug
+            Queue.put(self, item, block, timeout)
+
+    def _init(self, maxsize):
+        self.queue = set()
+
+    def _put(self, item):
+        self.queue.add(item)
+
+    def _get(self):
+        return self.queue.pop()
 
 
 q = UniqueQueue()
