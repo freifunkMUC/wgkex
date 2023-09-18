@@ -15,7 +15,7 @@ def watch_queue() -> None:
 def pick_from_queue() -> None:
     """Picks a message from the queue and processes it."""
     logger.debug("Starting queue processor")
-    while True:
+    while q.empty() is False:
         domain, message = q.get()
         logger.debug("Processing queue item %s for domain %s", message, domain)
         client = WireGuardClient(
