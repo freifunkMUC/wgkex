@@ -9,6 +9,7 @@ q = queue.Queue()
 
 def watch_queue() -> None:
     """Watches the queue for new messages."""
+    logger.debug("Starting queue watcher")
     threading.Thread(target=pick_from_queue, daemon=True).start()
 
 def pick_from_queue() -> None:
