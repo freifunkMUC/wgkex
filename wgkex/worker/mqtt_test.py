@@ -54,7 +54,7 @@ class MQTTTest(unittest.TestCase):
         link_mock.assert_has_calls(
             [
                 mock.call(
-                    mqtt.WireGuardClient(
+                    msg_queue.WireGuardClient(
                         public_key="PUB_KEY", domain="domain1", remove=False
                     )
                 )
