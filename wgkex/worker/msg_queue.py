@@ -35,7 +35,7 @@ def pick_from_queue() -> None:
     """Picks a message from the queue and processes it."""
     logger.debug("Starting queue processor")
     while True:
-        if not q.empty():
+        if q.size == 0:
             logger.debug("Queue is not empty current size is %i", q.qsize())
             domain, message = q.get()
             logger.debug("Processing queue item %s for domain %s", message, domain)
