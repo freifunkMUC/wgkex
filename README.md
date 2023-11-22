@@ -4,15 +4,18 @@
 [![Bazel tests](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml)
 
 - [WireGuard Key Exchange](#wireguard-key-exchange)
-  * [Overview](#overview)
-    + [Frontend broker](#frontend-broker)
-      - [POST /api/v1/wg/key/exchange](#post--api-v1-wg-key-exchange)
-    + [Backend worker](#backend-worker)
-  * [Installation](#installation)
-  * [Configuration](#configuration)
-  * [Running the broker](#running-the-broker)
-  * [Client usage](#client-usage)
-  * [Contact](#contact)
+  - [Overview](#overview)
+    - [Frontend broker](#frontend-broker)
+      - [POST /api/v1/wg/key/exchange](#post-apiv1wgkeyexchange)
+    - [Backend worker](#backend-worker)
+  - [Installation](#installation)
+  - [Configuration](#configuration)
+  - [Running the broker and worker](#running-the-broker-and-worker)
+    - [Build using Bazel](#build-using-bazel)
+    - [Run using Python](#run-using-python)
+  - [Client usage](#client-usage)
+    - [Worker](#worker)
+  - [Contact](#contact)
 
 
 # WireGuard Key Exchange
