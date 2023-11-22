@@ -17,7 +17,6 @@
     - [Worker](#worker)
   - [Contact](#contact)
 
-
 # WireGuard Key Exchange
 
 wgkex is a WireGuard key exchange and management tool designed and run by FFMUC.
@@ -82,11 +81,11 @@ For further information, please see this [presentation on the architecture](http
 
 ## Installation
 
-* TBA
+- TBA
 
 ## Configuration
 
-* Configuration file
+- Configuration file
 
 The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
 can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
@@ -133,6 +132,7 @@ python3 -c 'from wgkex.worker.app import main; main()'
 ## Client usage
 
 The client can be used via CLI:
+
 ```
 $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}'   --header='Content-Type:application/json'   'http://127.0.0.1:5000/api/v1/wg/key/exchange'
 {
@@ -141,6 +141,7 @@ $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUS
 ```
 
 Or via python:
+
 ```python
 import requests
 key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}
@@ -171,7 +172,6 @@ sudo ip addr add fe80::1/64 dev vx-welt
 sudo ip link set wg-welt up
 sudo ip link set vx-welt up
 ```
-
 
 ## Contact
 
