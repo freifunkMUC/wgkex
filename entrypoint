@@ -2,7 +2,7 @@
 set -e
 
 : ${WGKEX_DOMAINS:="ffmuc_freising, ffmuc_gauting, ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_uml_nord, ffmuc_uml_ost, ffmuc_uml_sued, ffmuc_uml_west, ffmuc_welt"}
-: ${WGKEX_DOMAIN_PREFIX:="ffmuc_"}
+: ${WGKEX_DOMAIN_PREFIX:="ffmuc_"}  # ToDo
 : ${WGKEX_DEBUG:="DEBUG"}
 : ${MQTT_BROKER_URL:="mqtt"}
 : ${MQTT_BROKER_PORT:="1883"}
@@ -21,7 +21,7 @@ for i in $WGKEX_DOMAINS; do
 done
 cat <<EOF
 log_level: $WGKEX_DEBUG
-domain_prefix: $WGKEX_DOMAIN_PREFIX
+domain_prefix: $WGKEX_DOMAIN_PREFIX  # maybe ToDo
 mqtt:
   broker_url: $MQTT_BROKER_URL
   broker_port: $MQTT_BROKER_PORT

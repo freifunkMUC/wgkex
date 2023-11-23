@@ -60,12 +60,12 @@ class Config:
     Attributes:
         domains: The list of domains to listen for.
         mqtt: The MQTT configuration.
-        domain_prefix: The prefix to pre-pend to a given domain.
+        domain_prefix: The prefix to pre-pend to a given domain.  # ToDo
     """
 
     domains: List[str]
     mqtt: MQTT
-    domain_prefix: str
+    domain_prefix: str  # ToDo
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, str]) -> "Config":
@@ -79,7 +79,7 @@ class Config:
         return cls(
             domains=cfg["domains"],
             mqtt=mqtt_cfg,
-            domain_prefix=cfg["domain_prefix"],
+            domain_prefix=cfg["domain_prefix"],  # probably ToDo
         )
 
 

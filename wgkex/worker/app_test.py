@@ -13,7 +13,7 @@ class AppTest(unittest.TestCase):
     def test_main_success(self, connect_mock, config_mock):
         """Ensure we can execute main."""
         connect_mock.return_value = None
-        test_prefix = "TEST_PREFIX_"
+        test_prefix = "TEST_PREFIX_"  # probably ToDo
         config_mock.return_value = dict(
             domains=[f"{test_prefix}domain.one"], domain_prefix=test_prefix
         )

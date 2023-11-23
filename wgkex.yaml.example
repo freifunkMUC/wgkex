@@ -21,7 +21,7 @@ mqtt:
 broker_listen:
   host: 0.0.0.0
   port: 5000
-domain_prefix: myprefix-
+domain_prefix: ffmuc_
 logging_config:
     formatters:
       standard:

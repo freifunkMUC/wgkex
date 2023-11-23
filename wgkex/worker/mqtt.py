@@ -84,7 +84,7 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     """
     # TODO(ruairi): Check bounds and raise exception here.
     logger.debug("Got message %s from MTQQ", message)
-    domain_prefix = load_config().get("domain_prefix")
+    domain_prefix = load_config().get("domain_prefix")  # ToDo
     domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic)
     if not domain:
         raise ValueError(

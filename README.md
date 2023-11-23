@@ -6,11 +6,11 @@
 - [WireGuard Key Exchange](#wireguard-key-exchange)
   * [Overview](#overview)
     + [Frontend broker](#frontend-broker)
-      - [POST /api/v1/wg/key/exchange](#post--api-v1-wg-key-exchange)
+      - [POST /api/v1/wg/key/exchange](#post-apiv1wgkeyexchange)
     + [Backend worker](#backend-worker)
   * [Installation](#installation)
   * [Configuration](#configuration)
-  * [Running the broker](#running-the-broker)
+  * [Running the broker](#running-the-broker-and-worker)
   * [Client usage](#client-usage)
   * [Contact](#contact)
 
@@ -143,7 +143,7 @@ import requests
 key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}
 broker_url = "http://127.0.0.1:5000"
 push_key = requests.get(f'{broker_url}/api/v1/wg/key/exchange', json=key_data)
-print(f'Key push was: {push_key.json().get("Message")]}')
+print(f'Key push was: {push_key.json().get("Message")}')
 ```
 
 ### Worker
