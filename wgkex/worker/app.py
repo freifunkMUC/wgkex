@@ -43,7 +43,7 @@ def clean_up_worker(domains: List[Text]) -> None:
         domains: list of domains.
     """
     logger.debug("Cleaning up the following domains: %s", domains)
-    prefixes = config.load_config().get("domain_prefix")
+    prefixes = config.load_config().get("domain_prefixes")
     cleanup_counter = 0
     # ToDo: do we need a check if every domain got gleaned?
     for prefix in prefixes:
@@ -75,7 +75,7 @@ def check_all_domains_unique(domains):
     Returns:
         boolean
     """
-    prefixes = config.load_config().get("prefixes")
+    prefixes = config.load_config().get("domain_prefixes")
     if not prefixes:
         raise PrefixesNotInConfig("Could not locate prefixes in configuration.")
     unique_domains = []
