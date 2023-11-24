@@ -41,6 +41,14 @@ class MQTT:
 
     @classmethod
     def from_dict(cls, mqtt_cfg: Dict[str, str]) -> "MQTT":
+        """seems to generate a mqtt config object from dictionary
+
+        Args:
+            mqtt_cfg ():
+
+        Returns:
+            mqtt config object
+        """
         return cls(
             broker_url=mqtt_cfg["broker_url"],
             username=mqtt_cfg["username"],
@@ -60,12 +68,11 @@ class Config:
     Attributes:
         domains: The list of domains to listen for.
         mqtt: The MQTT configuration.
-        domain_prefix: The prefix to pre-pend to a given domain.  # ToDo
-    """
+        domain_prefixes: The list of prefixes to pre-pend to a given domain."""
 
     domains: List[str]
     mqtt: MQTT
-    domain_prefix: str  # ToDo
+    domain_prefixes: List[str]
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, str]) -> "Config":
@@ -79,7 +86,7 @@ class Config:
         return cls(
             domains=cfg["domains"],
             mqtt=mqtt_cfg,
-            domain_prefix=cfg["domain_prefix"],  # probably ToDo
+            domain_prefixes=cfg["domain_prefixes"],
         )
 
 
