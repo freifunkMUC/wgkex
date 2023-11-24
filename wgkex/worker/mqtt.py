@@ -84,15 +84,19 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     """
     # TODO(ruairi): Check bounds and raise exception here.
     logger.debug("Got message %s from MTQQ", message)
-    domain_prefix = load_config().get("domain_prefix")  # ToDo
-    domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic)
+    domain_prefixes = load_config().get("domain_prefixes")
+    domain = None
+    for domain_prefix in domain_prefixes:
+        domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic)
+        if domain:
+            break
     if not domain:
         raise ValueError(
-            "Could not find a match for %s on %s", domain_prefix, message.topic
+            "Could not find a match for %s on %s", repr(domain_prefixes), message.topic
         )
+    # this will not work, if we have non-unique prefix stripped domains
     domain = domain.group(1)
     logger.debug("Found domain %s", domain)
-
     logger.info(
         f"Received create message for key {str(message.payload.decode('utf-8'))} on domain {domain} adding to queue"
     )

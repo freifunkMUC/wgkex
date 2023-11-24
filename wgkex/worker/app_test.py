@@ -13,9 +13,9 @@ class AppTest(unittest.TestCase):
     def test_main_success(self, connect_mock, config_mock):
         """Ensure we can execute main."""
         connect_mock.return_value = None
-        test_prefix = "TEST_PREFIX_"  # probably ToDo
+        test_prefixes = "TEST_PREFIX_, TEST_PREFIX2_"
         config_mock.return_value = dict(
-            domains=[f"{test_prefix}domain.one"], domain_prefix=test_prefix
+            domains=[f"{test_prefixes[1]}domain.one"], domain_prefix=test_prefixes
         )
         with mock.patch("app.flush_workers", return_value=None):
             app.main()
@@ -34,9 +34,9 @@ class AppTest(unittest.TestCase):
     @mock.patch.object(app.mqtt, "connect", autospec=True)
     def test_main_fails_bad_domain(self, connect_mock, config_mock):
         """Ensure we fail when domains are badly formatted."""
-        test_prefix = "TEST_PREFIX_"
+        test_prefixes = "TEST_PREFIX_, TEST_PREFIX2_"
         config_mock.return_value = dict(
-            domains=[f"cant_split_domain"], domain_prefix=test_prefix
+            domains=[f"cant_split_domain"], domain_prefix=test_prefixes
         )
         connect_mock.return_value = None
         with mock.patch("app.flush_workers", return_value=None):

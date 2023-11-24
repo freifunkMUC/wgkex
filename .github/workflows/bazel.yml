@@ -1,6 +1,6 @@
 name: Bazel tests
 
-on: [push, pull_request]
+on: [ push, pull_request ]
 
 jobs:
   bazel-run:

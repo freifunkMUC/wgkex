@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""wgkex broker"""
 import re
 import dataclasses
 import logging
@@ -16,7 +17,6 @@ import paho.mqtt.client as mqtt_client
 from waitress import serve
 from wgkex.config import config
 from wgkex.common import logger
-
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
@@ -99,7 +99,7 @@ def wg_key_exchange() -> Tuple[str, int]:
 
 @mqtt.on_connect()
 def handle_mqtt_connect(
-    client: mqtt_client.Client, userdata: bytes, flags: Any, rc: Any
+        client: mqtt_client.Client, userdata: bytes, flags: Any, rc: Any
 ) -> None:
     """Prints status of connect message."""
     # TODO(ruairi): Clarify current usage of this function.
@@ -113,7 +113,7 @@ def handle_mqtt_connect(
 
 @mqtt.on_message()
 def handle_mqtt_message(
-    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+        client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
     """Prints message contents."""
     # TODO(ruairi): Clarify current usage of this function.

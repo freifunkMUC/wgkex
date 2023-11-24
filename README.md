@@ -14,7 +14,6 @@
   * [Client usage](#client-usage)
   * [Contact](#contact)
 
-
 # WireGuard Key Exchange
 
 wgkex is a WireGuard key exchange and management tool designed and run by FFMUC.
@@ -75,7 +74,8 @@ Each worker must run on a machine with a unique hostname, as it is used for sepa
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
 
-For further information, please see this [presentation on the architecture](https://www.slideshare.net/AnnikaWickert/ffmuc-goes-wild-infrastructure-recap-2020-rc3)
+For further information, please see
+this [presentation on the architecture](https://www.slideshare.net/AnnikaWickert/ffmuc-goes-wild-infrastructure-recap-2020-rc3)
 
 ## Installation
 
@@ -130,6 +130,7 @@ python3 -c 'from wgkex.worker.app import main; main()'
 ## Client usage
 
 The client can be used via CLI:
+
 ```
 $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}'   --header='Content-Type:application/json'   'http://127.0.0.1:5000/api/v1/wg/key/exchange'
 {
@@ -138,6 +139,7 @@ $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUS
 ```
 
 Or via python:
+
 ```python
 import requests
 key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}
@@ -168,7 +170,6 @@ sudo ip addr add fe80::1/64 dev vx-welt
 sudo ip link set wg-welt up
 sudo ip link set vx-welt up
 ```
-
 
 ## Contact
 
