@@ -19,13 +19,12 @@ IFS=", "
 for i in $WGKEX_DOMAINS; do
   echo "  - $i"
 done
-# cat <<EOF
-log_level: $WGKEX_DEBUG
 echo "domain_prefixes:"
 for i in WGKEX_DOMAIN_PREFIXES; do
   echo "  - $i"
 done
 cat <<EOF
+log_level: $WGKEX_DEBUG
 mqtt:
   broker_url: $MQTT_BROKER_URL
   broker_port: $MQTT_BROKER_PORT
