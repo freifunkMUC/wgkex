@@ -19,10 +19,9 @@ IFS=", "
 for i in $WGKEX_DOMAINS; do
   echo "  - $i"
 done
-cat <<EOF
+# cat <<EOF
 log_level: $WGKEX_DEBUG
 echo "domain_prefixes:"
-IFS=", "
 for i in WGKEX_DOMAIN_PREFIXES; do
   echo "  - $i"
 done
