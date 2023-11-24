@@ -75,7 +75,7 @@ def check_all_domains_unique(domains):
     Returns:
         boolean
     """
-    prefixes = config.load_config().get("prefixes")
+    prefixes = config.load_config().get("domain_prefixes")
     if not prefixes:
         raise PrefixesNotInConfig("Could not locate prefixes in configuration.")
     unique_domains = []
