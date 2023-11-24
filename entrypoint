@@ -20,7 +20,7 @@ for i in $WGKEX_DOMAINS; do
   echo "  - $i"
 done
 echo "domain_prefixes:"
-for i in WGKEX_DOMAIN_PREFIXES; do
+for i in $WGKEX_DOMAIN_PREFIXES; do
   echo "  - $i"
 done
 cat <<EOF
