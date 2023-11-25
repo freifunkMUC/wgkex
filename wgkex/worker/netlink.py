@@ -203,6 +203,6 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
             client.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
             for client in all_clients
             if client.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME").get("tv_sec", int())
-               < three_hrs_in_secs
+            < three_hrs_in_secs
         ]
         return ret

@@ -64,7 +64,10 @@ def clean_up_worker(domains: List[Text]) -> None:
                 thread.start()
     if cleanup_counter < len(domains):
         logger.error(
-            "Not every domain got cleaned. Check domains for missing prefixes", repr(domains), repr(prefixes), )
+            "Not every domain got cleaned. Check domains for missing prefixes",
+            repr(domains),
+            repr(prefixes),
+        )
 
 
 def check_all_domains_unique(domains):

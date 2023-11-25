@@ -1,4 +1,5 @@
 """Configuration handling class."""
+import logging
 import os
 import sys
 import yaml
@@ -131,6 +132,7 @@ def fetch_config_from_disk() -> str:
         The file contents as string.
     """
     config_file = os.environ.get(WG_CONFIG_OS_ENV, WG_CONFIG_DEFAULT_LOCATION)
+    logging.debug("getting config_file: %s", repr(config_file))
     try:
         with open(config_file, "r") as stream:
             return stream.read()

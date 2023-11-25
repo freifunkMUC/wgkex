@@ -6,9 +6,12 @@ import yaml
 
 _VALID_CFG = (
     "domain_prefixes:\n- ffmuc_\n- ffdon_\n- ffwert_\nlog_level: DEBUG\ndomains:\n- a\n- b\nmqtt:\n  broker_port: 1883"
-    "\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n")
-_INVALID_LINT = ("domain_prefixes: ffmuc_\nBAD_KEY_FOR_DOMAIN:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: "
-                 "mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n")
+    "\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+)
+_INVALID_LINT = (
+    "domain_prefixes: ffmuc_\nBAD_KEY_FOR_DOMAIN:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: "
+    "mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+)
 _INVALID_CFG = "asdasdasdasd"
 
 
