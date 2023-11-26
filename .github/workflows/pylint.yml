@@ -1,12 +1,12 @@
-on: [ push, pull_request ]
+on: [push, pull_request]
 name: pylint
 jobs:
   gitHubActionForPylint:
     name: GitHub Action for pylint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: GitHub Action for pylint
-        uses: cclauss/GitHub-Action-for-pylint@master
-        with:
-          args: pylint **/*.py
+    - uses: actions/checkout@v4
+    - name: GitHub Action for pylint
+      uses: cclauss/GitHub-Action-for-pylint@master
+      with:
+        args: pylint **/*.py
