@@ -6,13 +6,14 @@
 - [WireGuard Key Exchange](#wireguard-key-exchange)
   * [Overview](#overview)
     + [Frontend broker](#frontend-broker)
-      - [POST /api/v1/wg/key/exchange](#post-apiv1wgkeyexchange)
+      - [POST /api/v1/wg/key/exchange](#post--api-v1-wg-key-exchange)
     + [Backend worker](#backend-worker)
   * [Installation](#installation)
   * [Configuration](#configuration)
-  * [Running the broker](#running-the-broker-and-worker)
+  * [Running the broker](#running-the-broker)
   * [Client usage](#client-usage)
   * [Contact](#contact)
+
 
 # WireGuard Key Exchange
 
@@ -74,8 +75,7 @@ Each worker must run on a machine with a unique hostname, as it is used for sepa
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
 
-For further information, please see
-this [presentation on the architecture](https://www.slideshare.net/AnnikaWickert/ffmuc-goes-wild-infrastructure-recap-2020-rc3)
+For further information, please see this [presentation on the architecture](https://www.slideshare.net/AnnikaWickert/ffmuc-goes-wild-infrastructure-recap-2020-rc3)
 
 ## Installation
 
@@ -130,7 +130,6 @@ python3 -c 'from wgkex.worker.app import main; main()'
 ## Client usage
 
 The client can be used via CLI:
-
 ```
 $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}'   --header='Content-Type:application/json'   'http://127.0.0.1:5000/api/v1/wg/key/exchange'
 {
@@ -139,13 +138,12 @@ $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUS
 ```
 
 Or via python:
-
 ```python
 import requests
 key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}
 broker_url = "http://127.0.0.1:5000"
 push_key = requests.get(f'{broker_url}/api/v1/wg/key/exchange', json=key_data)
-print(f'Key push was: {push_key.json().get("Message")}')
+print(f'Key push was: {push_key.json().get("Message")]}')
 ```
 
 ### Worker
@@ -170,6 +168,7 @@ sudo ip addr add fe80::1/64 dev vx-welt
 sudo ip link set wg-welt up
 sudo ip link set vx-welt up
 ```
+
 
 ## Contact
 
