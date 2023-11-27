@@ -1,19 +1,11 @@
 domains:
-  - ffmuc_augsburg
-  - ffmuc_freising
-  - ffmuc_gauting
   - ffmuc_muc_cty
   - ffmuc_muc_nord
   - ffmuc_muc_ost
   - ffmuc_muc_sued
   - ffmuc_muc_west
-  - ffmuc_uml_nord
-  - ffmuc_uml_ost
-  - ffmuc_uml_sued
-  - ffmuc_uml_west
   - ffmuc_welt
   - ffwert_city
-  - ffwert_events
 mqtt:
   broker_url: broker.hivemq.com
   broker_port: 1883

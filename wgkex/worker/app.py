@@ -70,7 +70,7 @@ def clean_up_worker(domains: List[Text]) -> None:
         )
 
 
-def check_all_domains_unique(domains):
+def check_all_domains_unique(domains, prefixes):
     """strips off prefixes and checks if domains are unique
 
     Args:
@@ -78,9 +78,10 @@ def check_all_domains_unique(domains):
     Returns:
         boolean
     """
-    prefixes = config.load_config().get("domain_prefixes")
     if not prefixes:
         raise PrefixesNotInConfig("Could not locate prefixes in configuration.")
+    if not isinstance(prefixes, list):
+        raise TypeError("prefixes is not a list")
     unique_domains = []
     for domain in domains:
         for prefix in prefixes:
@@ -92,8 +93,7 @@ def check_all_domains_unique(domains):
                         domain,
                     )
                     return False
-                else:
-                    unique_domains.append(stripped_domain)
+                unique_domains.append(stripped_domain)
     return True
 
 
@@ -105,9 +105,10 @@ def main():
         DomainsAreNotUnique: If there were non-unique domains after stripping prefix
     """
     domains = config.load_config().get("domains")
+    prefixes = config.load_config().get("domain_prefixes")
     if not domains:
         raise DomainsNotInConfig("Could not locate domains in configuration.")
-    if not check_all_domains_unique(domains):
+    if not check_all_domains_unique(domains, prefixes):
         raise DomainsAreNotUnique("There are non-unique domains! Check config.")
     clean_up_worker(domains)
     watch_queue()
