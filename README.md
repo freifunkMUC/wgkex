@@ -4,16 +4,18 @@
 [![Bazel tests](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml)
 
 - [WireGuard Key Exchange](#wireguard-key-exchange)
-  * [Overview](#overview)
-    + [Frontend broker](#frontend-broker)
-      - [POST /api/v1/wg/key/exchange](#post--api-v1-wg-key-exchange)
-    + [Backend worker](#backend-worker)
-  * [Installation](#installation)
-  * [Configuration](#configuration)
-  * [Running the broker](#running-the-broker)
-  * [Client usage](#client-usage)
-  * [Contact](#contact)
-
+  - [Overview](#overview)
+    - [Frontend broker](#frontend-broker)
+      - [POST /api/v1/wg/key/exchange](#post-apiv1wgkeyexchange)
+    - [Backend worker](#backend-worker)
+  - [Installation](#installation)
+  - [Configuration](#configuration)
+  - [Running the broker and worker](#running-the-broker-and-worker)
+    - [Build using Bazel](#build-using-bazel)
+    - [Run using Python](#run-using-python)
+  - [Client usage](#client-usage)
+    - [Worker](#worker)
+  - [Contact](#contact)
 
 # WireGuard Key Exchange
 
@@ -79,11 +81,11 @@ For further information, please see this [presentation on the architecture](http
 
 ## Installation
 
-* TBA
+- TBA
 
 ## Configuration
 
-* Configuration file
+- Configuration file
 
 The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
 can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
@@ -130,6 +132,7 @@ python3 -c 'from wgkex.worker.app import main; main()'
 ## Client usage
 
 The client can be used via CLI:
+
 ```
 $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}'   --header='Content-Type:application/json'   'http://127.0.0.1:5000/api/v1/wg/key/exchange'
 {
@@ -138,12 +141,13 @@ $ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUS
 ```
 
 Or via python:
+
 ```python
 import requests
 key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}
 broker_url = "http://127.0.0.1:5000"
 push_key = requests.get(f'{broker_url}/api/v1/wg/key/exchange', json=key_data)
-print(f'Key push was: {push_key.json().get("Message")]}')
+print(f'Key push was: {push_key.json().get("Message")}')
 ```
 
 ### Worker
@@ -168,7 +172,6 @@ sudo ip addr add fe80::1/64 dev vx-welt
 sudo ip link set wg-welt up
 sudo ip link set vx-welt up
 ```
-
 
 ## Contact
 
