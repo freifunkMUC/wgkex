@@ -20,6 +20,14 @@ class DomainsNotInConfig(Error):
     """If no domains exist in configuration file."""
 
 
+class PrefixesNotInConfig(Error):
+    """If no prefixes exist in configuration file."""
+
+
+class DomainsAreNotUnique(Error):
+    """If non-unique domains exist in configuration file."""
+
+
 def flush_workers(domain: Text) -> None:
     """Calls peer flush every _CLEANUP_TIME interval."""
     while True:
@@ -35,20 +43,58 @@ def clean_up_worker(domains: List[Text]) -> None:
         domains: list of domains.
     """
     logger.debug("Cleaning up the following domains: %s", domains)
-    prefix = config.load_config().get("domain_prefix")
+    prefixes = config.load_config().get("domain_prefixes")
+    cleanup_counter = 0
+    # ToDo: do we need a check if every domain got gleaned?
+    for prefix in prefixes:
+        for domain in domains:
+            if prefix in domain:
+                logger.info("Scheduling cleanup task for %s, ", domain)
+                try:
+                    cleaned_domain = domain.split(prefix)[1]
+                    cleanup_counter += 1
+                except IndexError:
+                    logger.error(
+                        "Cannot strip domain with prefix %s from passed value %s. Skipping cleanup operation",
+                        prefix,
+                        domain,
+                    )
+                    continue
+                thread = threading.Thread(target=flush_workers, args=(cleaned_domain,))
+                thread.start()
+    if cleanup_counter < len(domains):
+        logger.error(
+            "Not every domain got cleaned. Check domains for missing prefixes",
+            repr(domains),
+            repr(prefixes),
+        )
+
+
+def check_all_domains_unique(domains, prefixes):
+    """strips off prefixes and checks if domains are unique
+
+    Args:
+        domains: [str]
+    Returns:
+        boolean
+    """
+    if not prefixes:
+        raise PrefixesNotInConfig("Could not locate prefixes in configuration.")
+    if not isinstance(prefixes, list):
+        raise TypeError("prefixes is not a list")
+    unique_domains = []
     for domain in domains:
-        logger.info("Scheduling cleanup task for %s, ", domain)
-        try:
-            cleaned_domain = domain.split(prefix)[1]
-        except IndexError:
-            logger.error(
-                "Cannot strip domain with prefix %s from passed value %s. Skipping cleanup operation",
-                prefix,
-                domain,
-            )
-            continue
-        thread = threading.Thread(target=flush_workers, args=(cleaned_domain,))
-        thread.start()
+        for prefix in prefixes:
+            if prefix in domain:
+                stripped_domain = domain.split(prefix)[1]
+                if stripped_domain in unique_domains:
+                    logger.error(
+                        "We have a non-unique domain here",
+                        domain,
+                    )
+                    return False
+                unique_domains.append(stripped_domain)
+    return True
 
 
 def main():
@@ -56,10 +102,14 @@ def main():
 
     Raises:
         DomainsNotInConfig: If no domains were found in configuration file.
+        DomainsAreNotUnique: If there were non-unique domains after stripping prefix
     """
     domains = config.load_config().get("domains")
+    prefixes = config.load_config().get("domain_prefixes")
     if not domains:
         raise DomainsNotInConfig("Could not locate domains in configuration.")
+    if not check_all_domains_unique(domains, prefixes):
+        raise DomainsAreNotUnique("There are non-unique domains! Check config.")
     clean_up_worker(domains)
     watch_queue()
     mqtt.connect()

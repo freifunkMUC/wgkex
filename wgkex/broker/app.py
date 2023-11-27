@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""wgkex broker"""
 import re
 import dataclasses
 import logging
@@ -16,7 +17,6 @@ import paho.mqtt.client as mqtt_client
 from waitress import serve
 from wgkex.config import config
 from wgkex.common import logger
-
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 

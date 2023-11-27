@@ -1,4 +1,5 @@
 """Configuration handling class."""
+import logging
 import os
 import sys
 import yaml
@@ -41,6 +42,14 @@ class MQTT:
 
     @classmethod
     def from_dict(cls, mqtt_cfg: Dict[str, str]) -> "MQTT":
+        """seems to generate a mqtt config object from dictionary
+
+        Args:
+            mqtt_cfg ():
+
+        Returns:
+            mqtt config object
+        """
         return cls(
             broker_url=mqtt_cfg["broker_url"],
             username=mqtt_cfg["username"],
@@ -60,12 +69,11 @@ class Config:
     Attributes:
         domains: The list of domains to listen for.
         mqtt: The MQTT configuration.
-        domain_prefix: The prefix to pre-pend to a given domain.
-    """
+        domain_prefixes: The list of prefixes to pre-pend to a given domain."""
 
     domains: List[str]
     mqtt: MQTT
-    domain_prefix: str
+    domain_prefixes: List[str]
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, str]) -> "Config":
@@ -79,7 +87,7 @@ class Config:
         return cls(
             domains=cfg["domains"],
             mqtt=mqtt_cfg,
-            domain_prefix=cfg["domain_prefix"],
+            domain_prefixes=cfg["domain_prefixes"],
         )
 
 
@@ -124,6 +132,7 @@ def fetch_config_from_disk() -> str:
         The file contents as string.
     """
     config_file = os.environ.get(WG_CONFIG_OS_ENV, WG_CONFIG_DEFAULT_LOCATION)
+    logging.debug("getting config_file: %s", repr(config_file))
     try:
         with open(config_file, "r") as stream:
             return stream.read()

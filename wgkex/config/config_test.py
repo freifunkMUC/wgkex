@@ -1,10 +1,17 @@
+"""Tests for configuration handling class."""
 import unittest
 import mock
 import config
 import yaml
 
-_VALID_CFG = "domain_prefix: ffmuc_\nlog_level: DEBUG\ndomains:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
-_INVALID_LINT = "domain_prefix: ffmuc_\nBAD_KEY_FOR_DOMAIN:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+_VALID_CFG = (
+    "domain_prefixes:\n- ffmuc_\n- ffdon_\n- ffwert_\nlog_level: DEBUG\ndomains:\n- a\n- b\nmqtt:\n  broker_port: 1883"
+    "\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+)
+_INVALID_LINT = (
+    "domain_prefixes: ffmuc_\nBAD_KEY_FOR_DOMAIN:\n- a\n- b\nmqtt:\n  broker_port: 1883\n  broker_url: "
+    "mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+)
 _INVALID_CFG = "asdasdasdasd"
 
 
@@ -52,7 +59,7 @@ class TestConfig(unittest.TestCase):
             self.assertListEqual(["a", "b"], config.fetch_from_config("domains"))
 
     def test_fetch_from_config_no_key_in_config(self):
-        """Test fetch non existent key from configuration."""
+        """Test fetch non-existent key from configuration."""
         mock_open = mock.mock_open(read_data=_VALID_CFG)
         with mock.patch("builtins.open", mock_open):
             self.assertIsNone(config.fetch_from_config("key_does_not_exist"))
