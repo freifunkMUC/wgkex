@@ -1,8 +1,13 @@
 """Unit tests for mqtt.py"""
+import socket
 import threading
 import unittest
-import mock
+from time import sleep
 
+import mock
+import paho.mqtt.client
+
+from wgkex.common.mqtt import TOPIC_CONNECTED_PEERS
 from wgkex.worker import mqtt
 
 
@@ -50,6 +55,44 @@ class MQTTTest(unittest.TestCase):
             mqtt.connect(threading.Event())
 
 
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_connected_peers_count")
+    def test_publish_metrics_loop_success(self, conn_peers_mock, config_mock):
+        config_mock.return_value = _get_config_mock()
+        conn_peers_mock.return_value = 20
+        mqtt_client = mock.MagicMock(spec=paho.mqtt.client.Client)
+
+        ee = threading.Event()
+        thread = threading.Thread(
+            target=mqtt.publish_metrics_loop,
+            args=(ee, mqtt_client, "_ffmuc_domain.one"),
+        )
+        thread.start()
+
+        i = 0
+        while i < 20 and not mqtt_client.publish.called:
+            i += 1
+            sleep(0.1)
+
+        conn_peers_mock.assert_called_with("wg-domain.one")
+        mqtt_client.publish.assert_called_with(
+            TOPIC_CONNECTED_PEERS.format(
+                domain="_ffmuc_domain.one", worker=socket.gethostname()
+            ),
+            20,
+            retain=True,
+        )
+
+        ee.set()
+
+        i = 0
+        while i < 20 and thread.is_alive():
+            i += 1
+            sleep(0.1)
+
+        self.assertFalse(thread.is_alive())
+
+
 """ @mock.patch.object(msg_queue, "link_handler")
     @mock.patch.object(mqtt, "get_config")
     def test_on_message_wireguard_success(self, config_mock, link_mock):
@@ -91,6 +134,7 @@ class MQTTTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             mqtt.on_message_wireguard(None, None, mqtt_msg)
 """
+
 
 if __name__ == "__main__":
     unittest.main()
