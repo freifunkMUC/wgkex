@@ -238,13 +238,11 @@ def wg_interface_name(domain: str) -> Optional[str]:
     cleaned_domain = None
     for prefix in domain_prefixes:
         try:
-            cleaned_domain = domain.split(prefix[1])
+            cleaned_domain = domain.split(prefix)[1]
         except IndexError:
             continue
         break
     if not cleaned_domain:
-        raise ValueError(
-            f"Could not find a match for {domain_prefixes} on {domain}"
-        )
+        raise ValueError(f"Could not find a match for {domain_prefixes} on {domain}")
     # this will not work, if we have non-unique prefix stripped domains
     return f"wg-{cleaned_domain}"

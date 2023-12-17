@@ -12,12 +12,12 @@ from wgkex.worker import mqtt
 
 
 def _get_config_mock(domains=None, mqtt=None):
-    test_prefix = "_ffmuc_"
+    test_prefixes = ["_ffmuc_", "_TEST_PREFIX2_"]
     config_mock = mock.MagicMock()
     config_mock.domains = (
-        domains if domains is not None else [f"{test_prefix}domain.one"]
+        domains if domains is not None else [f"{test_prefixes[0]}domain.one"]
     )
-    config_mock.domain_prefix = test_prefix
+    config_mock.domain_prefixes = test_prefixes
     if mqtt:
         config_mock.mqtt = mqtt
     return config_mock
@@ -53,7 +53,6 @@ class MQTTTest(unittest.TestCase):
         config_mock.return_value = _get_config_mock(mqtt=config_mqtt_mock)
         with self.assertRaises(ValueError):
             mqtt.connect(threading.Event())
-
 
     @mock.patch.object(mqtt, "get_config")
     @mock.patch.object(mqtt, "get_connected_peers_count")

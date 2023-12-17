@@ -12,7 +12,7 @@ class TestMetrics(unittest.TestCase):
         test_config = config.Config.from_dict(
             {
                 "domains": [],
-                "domain_prefix": "",
+                "domain_prefixes": "",
                 "workers": {},
                 "mqtt": {"broker_url": "", "username": "", "password": ""},
             }
