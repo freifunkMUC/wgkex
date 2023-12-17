@@ -7,6 +7,7 @@
   - [Overview](#overview)
     - [Frontend broker](#frontend-broker)
       - [POST /api/v1/wg/key/exchange](#post-apiv1wgkeyexchange)
+      - [POST /api/v2/wg/key/exchange](#post-apiv2wgkeyexchange)
     - [Backend worker](#backend-worker)
   - [Installation](#installation)
   - [Configuration](#configuration)
@@ -41,6 +42,7 @@ The frontend broker exposes the following API endpoints for use:
 
 ```
 /api/v1/wg/key/exchange
+/api/v2/wg/key/exchange
 ```
 
 The listen address and port for the Flask server can be configured in `wgkex.yaml` under the `broker_listen` key:
@@ -65,6 +67,35 @@ JSON POST'd to this endpoint should be in this format:
 ```
 
 The broker will validate the domain and public key, and if valid, will push the key onto the MQTT bus.
+
+
+#### POST /api/v2/wg/key/exchange
+
+JSON POST'd to this endpoint should be in this format:
+
+```json
+{
+  "domain": "CONFIGURED_DOMAIN",
+  "public_key": "PUBLIC_KEY"
+}
+```
+
+The broker will validate the domain and public key, and if valid, will push the key onto the MQTT bus.
+Additionally it chooses a worker (aka gateway, endpoint) that the client should connect to.
+The response is JSON data containing the connection details for the chosen gateway:
+
+```json
+{
+  "Endpoint": {
+    "Address": "GATEWAY_ADDRESS",
+    "Port": "GATEWAY_WIREGUARD_PORT",
+    "AllowedIPs": [
+      "GATEWAY_WIREGUARD_INTERFACE_ADDRESS"
+    ],
+    "PublicKey": "GATEWAY_PUBLIC_KEY"
+  }
+}
+```
 
 ### Backend worker
 
@@ -141,8 +172,13 @@ The test can be run using `bazel test ... --test_output=all` or `python3 -m unit
 The client can be used via CLI:
 
 ```
-$ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}'   --header='Content-Type:application/json'   'http://127.0.0.1:5000/api/v1/wg/key/exchange'
+$ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}'   --header='Content-Type:application/json'   'http://127.0.0.1:5000/api/v2/wg/key/exchange'
 {
+  "Endpoint": {
+    "Address": "gw04.ext.ffmuc.net:40011",
+    "LinkAddress": "fe80::27c:16ff:fec0:6c74",
+    "PublicKey": "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g="
+  },
   "Message": "OK"
 }
 ```
@@ -153,7 +189,7 @@ Or via python:
 import requests
 key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}
 broker_url = "http://127.0.0.1:5000"
-push_key = requests.get(f'{broker_url}/api/v1/wg/key/exchange', json=key_data)
+push_key = requests.get(f'{broker_url}/api/v2/wg/key/exchange', json=key_data)
 print(f'Key push was: {push_key.json().get("Message")}')
 ```
 
@@ -179,6 +215,13 @@ sudo ip addr add fe80::1/64 dev vx-welt
 sudo ip link set wg-welt up
 sudo ip link set vx-welt up
 ```
+
+### MQTT topics
+
+Publishing keys broker->worker: `wireguard/{domain}/{worker}`
+Publishing metrics worker->broker: `wireguard-metrics/{domain}/{worker}/connected_peers`
+Publishing worker status: `wireguard-worker/{worker}/status`
+Publishing worker data: `wireguard-worker/{worker}/{domain}/data`
 
 ## Contact
 

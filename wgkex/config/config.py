@@ -21,6 +21,55 @@ WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
 
 
 @dataclasses.dataclass
+class Worker:
+    """A representation of the values of the 'workers' dict in the configuration file.
+
+    Attributes:
+        weight: The relative weight of a worker, defaults to 1.
+    """
+
+    weight: int
+
+    @classmethod
+    def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
+        return cls(
+            weight=int(worker_cfg["weight"]) if worker_cfg["weight"] else 1,
+        )
+
+
+@dataclasses.dataclass
+class Workers:
+    """A representation of the 'workers' key in the configuration file.
+
+    Attributes:
+        total_weight: Calculated on init, the total weight of all configured workers.
+    """
+
+    total_weight: int
+    _workers: Dict[str, Worker]
+
+    @classmethod
+    def from_dict(cls, workers_cfg: Dict[str, Dict[str, Any]]) -> "Workers":
+        d = {key: Worker.from_dict(value) for (key, value) in workers_cfg.items()}
+
+        total = 0
+        for worker in d.values():
+            total += worker.weight
+        total = max(total, 1)
+
+        return cls(total_weight=total, _workers=d)
+
+    def get(self, worker: str) -> Optional[Worker]:
+        return self._workers.get(worker)
+
+    def relative_worker_weight(self, worker_name: str) -> float:
+        worker = self.get(worker_name)
+        if worker is None:
+            return 1 / self.total_weight
+        return worker.weight / self.total_weight
+
+
+@dataclasses.dataclass
 class BrokerListen:
     """A representation of the 'broker_listen' key in Configuration file.
 
@@ -88,6 +137,8 @@ class Config:
         domains: The list of domains to listen for.
         domain_prefixes: The list of prefixes to pre-pend to a given domain.
         mqtt: The MQTT configuration.
+        workers: The worker weights configuration (broker-only).
+        externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
     """
 
     raw: Dict[str, Any]
@@ -95,6 +146,8 @@ class Config:
     domain_prefixes: List[str]
     broker_listen: BrokerListen
     mqtt: MQTT
+    workers: Workers
+    external_name: Optional[str]
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
@@ -106,12 +159,15 @@ class Config:
         """
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
+        workers_cfg = Workers.from_dict(cfg.get("workers", {}))
         return cls(
             raw=cfg,
             domains=cfg["domains"],
             domain_prefixes=cfg["domain_prefixes"],
             broker_listen=broker_listen,
             mqtt=mqtt_cfg,
+            workers=workers_cfg,
+            external_name=cfg.get("externalName"),
         )
 
     def get(self, key: str) -> Any:

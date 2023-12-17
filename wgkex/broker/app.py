@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 """wgkex broker"""
-import re
 import dataclasses
-from typing import Tuple, Any
+import json
+import re
+from typing import Dict, Tuple, Any
 
-from flask import Flask
-from flask import abort
-from flask import jsonify
-from flask import render_template
-from flask import request
+import paho.mqtt.client as mqtt_client
+from flask import Flask, render_template, request, Response
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
-import paho.mqtt.client as mqtt_client
 
 from waitress import serve
 from wgkex.config import config
 from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
+from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.common.mqtt import (
+    CONNECTED_PEERS_METRIC,
+    TOPIC_WORKER_STATUS,
+    TOPIC_WORKER_WG_DATA,
+)
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
@@ -68,34 +71,86 @@ def _fetch_app_config() -> Flask_app:
 
 app = _fetch_app_config()
 mqtt = Mqtt(app)
+worker_metrics = WorkerMetricsCollection()
+worker_data: Dict[Tuple[str, str], Dict] = {}
 
 
 @app.route("/", methods=["GET"])
-def index() -> None:
+def index() -> str:
     """Returns main page"""
     return render_template("index.html")
 
 
 @app.route("/api/v1/wg/key/exchange", methods=["POST"])
-def wg_key_exchange() -> Tuple[str, int]:
+def wg_api_v1_key_exchange() -> Tuple[Response | Dict, int]:
     """Retrieves a new key and validates.
-
     Returns:
         Status message.
     """
     try:
         data = KeyExchange.from_dict(request.get_json(force=True))
-    except TypeError as ex:
-        return abort(400, jsonify({"error": {"message": str(ex)}}))
+    except Exception as ex:
+        return {"error": {"message": str(ex)}}, 400
 
     key = data.public_key
     domain = data.domain
     # in case we want to decide here later we want to publish it only to dedicated gateways
     gateway = "all"
-    logger.info(f"wg_key_exchange: Domain: {domain}, Key:{key}")
+    logger.info(f"wg_api_v1_key_exchange: Domain: {domain}, Key:{key}")
 
     mqtt.publish(f"wireguard/{domain}/{gateway}", key)
-    return jsonify({"Message": "OK"}), 200
+    return {"Message": "OK"}, 200
+
+
+@app.route("/api/v2/wg/key/exchange", methods=["POST"])
+def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
+    """Retrieves a new key, validates it and responds with a worker/gateway the client should connect to.
+
+    Returns:
+        Status message, Endpoint with address/domain, port pubic key and link address.
+    """
+    try:
+        data = KeyExchange.from_dict(request.get_json(force=True))
+    except Exception as ex:
+        return {"error": {"message": str(ex)}}, 400
+
+    key = data.public_key
+    domain = data.domain
+    # in case we want to decide here later we want to publish it only to dedicated gateways
+    gateway = "all"
+    logger.info(f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}")
+
+    mqtt.publish(f"wireguard/{domain}/{gateway}", key)
+
+    best_worker, diff, current_peers = worker_metrics.get_best_worker(domain)
+    if best_worker is None:
+        logger.warning(f"No worker online for domain {domain}")
+        return {
+            "error": {
+                "message": "no gateway online for this domain, please check the domain value and try again later"
+            }
+        }, 400
+
+    worker_metrics.update(
+        best_worker, domain, CONNECTED_PEERS_METRIC, current_peers + 1
+    )
+    logger.debug(
+        f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
+    )
+
+    w_data = worker_data.get((best_worker, domain), None)
+    if w_data is None:
+        logger.error(f"Couldn't get worker endpoint data for {best_worker}/{domain}")
+        return {"error": {"message": "could not get gateway data"}}, 500
+
+    endpoint = {
+        "Address": w_data.get("ExternalAddress"),
+        "Port": str(w_data.get("Port")),
+        "AllowedIPs": [w_data.get("LinkAddress")],
+        "PublicKey": w_data.get("PublicKey"),
+    }
+
+    return {"Endpoint": endpoint}, 200
 
 
 @mqtt.on_connect()
@@ -109,7 +164,69 @@ def handle_mqtt_connect(
             app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
         )
     )
-    # mqtt.subscribe("wireguard/#")
+    mqtt.subscribe("wireguard-metrics/#")
+    mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
+    mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+
+
+@mqtt.on_topic("wireguard-metrics/#")
+def handle_mqtt_message_metrics(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes published metrics from workers."""
+    logger.debug(
+        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+    )
+    _, domain, worker, metric = message.topic.split("/", 3)
+    if not is_valid_domain(domain):
+        logger.error(f"Domain {domain} not in configured domains")
+        return
+
+    if not worker or not metric:
+        logger.error("Ignored MQTT message with empty worker or metrics label")
+        return
+
+    data = int(message.payload)
+
+    logger.info(f"Update worker metrics: {metric} on {worker}/{domain} = {data}")
+    worker_metrics.update(worker, domain, metric, data)
+
+
+@mqtt.on_topic(TOPIC_WORKER_STATUS.format(worker="+"))
+def handle_mqtt_message_status(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes status messages from workers."""
+    _, worker, _ = message.topic.split("/", 2)
+
+    status = int(message.payload)
+    if status < 1:
+        logger.warning(f"Marking worker as offline: {worker}")
+        worker_metrics.set_offline(worker)
+    else:
+        logger.warning(f"Marking worker as online: {worker}")
+        worker_metrics.set_online(worker)
+
+
+@mqtt.on_topic(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+def handle_mqtt_message_data(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes data messages from workers.
+
+    Stores them in a local dict"""
+    _, worker, domain, _ = message.topic.split("/", 3)
+    if not is_valid_domain(domain):
+        logger.error(f"Domain {domain} not in configured domains.")
+        return
+
+    data = json.loads(message.payload)
+    if not isinstance(data, dict):
+        logger.error("Invalid worker data received for %s/%s: %s", worker, domain, data)
+        return
+
+    logger.info("Worker data received for %s/%s: %s", worker, domain, data)
+    worker_data[(worker, domain)] = data
 
 
 @mqtt.on_message()
@@ -117,7 +234,6 @@ def handle_mqtt_message(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
     """Prints message contents."""
-    # TODO(ruairi): Clarify current usage of this function.
     logger.debug(
         f"MQTT message received on {message.topic}: {message.payload.decode()}"
     )
@@ -139,6 +255,19 @@ def is_valid_wg_pubkey(pubkey: str) -> str:
     if WG_PUBKEY_PATTERN.match(pubkey) is None:
         raise ValueError(f"Not a valid Wireguard public key: {pubkey}.")
     return pubkey
+
+
+def join_host_port(host: str, port: str) -> str:
+    """Concatenate a port string with a host string using a colon.
+    The host may be either a hostname, IPv4 or IPv6 address.
+    An IPv6 address as host will be automatically encapsulated in square brackets.
+
+    Returns:
+        The joined host:port string
+    """
+    if host.find(":") >= 0:
+        return "[" + host + "]:" + port
+    return host + ":" + port
 
 
 if __name__ == "__main__":

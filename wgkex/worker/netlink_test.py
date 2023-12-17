@@ -11,6 +11,8 @@ import sys
 sys.modules["pyroute2"] = mock.MagicMock()
 sys.modules["pyroute2.WireGuard"] = mock.MagicMock()
 sys.modules["pyroute2.IPRoute"] = mock.MagicMock()
+sys.modules["pyroute2.NDB"] = mock.MagicMock()
+sys.modules["pyroute2.netlink"] = mock.MagicMock()
 from pyroute2 import WireGuard
 from pyroute2 import IPRoute
 

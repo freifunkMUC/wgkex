@@ -2,7 +2,6 @@
 import unittest
 import mock
 
-import wgkex.config.config
 from wgkex.worker import app
 
 
@@ -72,7 +71,7 @@ class AppTest(unittest.TestCase):
 
     @mock.patch.object(app.config, "get_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)
-    def test_main_fails_no_domain(self, connect_mock, config_mock, config_fetch_mock):
+    def test_main_fails_no_domain(self, connect_mock, config_mock):
         """Ensure we fail when domains are not configured."""
         config_mock.return_value = _get_config_mock(domains=[])
         connect_mock.return_value = None
@@ -81,7 +80,7 @@ class AppTest(unittest.TestCase):
 
     @mock.patch.object(app.config, "get_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)
-    def test_main_fails_bad_domain(self, connect_mock, config_mock, config_fetch_mock):
+    def test_main_fails_bad_domain(self, connect_mock, config_mock):
         """Ensure we fail when domains are badly formatted."""
         config_mock.return_value = _get_config_mock(domains=["cant_split_domain"])
         connect_mock.return_value = None

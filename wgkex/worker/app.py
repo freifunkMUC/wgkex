@@ -1,5 +1,7 @@
 """Initialises the MQTT worker."""
 
+import signal
+import sys
 import threading
 import time
 from typing import Text
@@ -67,7 +69,9 @@ def clean_up_worker() -> None:
                         domain,
                     )
                     continue
-                thread = threading.Thread(target=flush_workers, args=(cleaned_domain,))
+                thread = threading.Thread(
+                    target=flush_workers, args=(cleaned_domain,), daemon=True
+                )
                 thread.start()
     if cleanup_counter < len(domains):
         logger.error(
@@ -111,6 +115,16 @@ def main():
         DomainsNotInConfig: If no domains were found in configuration file.
         DomainsAreNotUnique: If there were non-unique domains after stripping prefix
     """
+    exit_event = threading.Event()
+
+    def on_exit(sig_number, stack_frame) -> None:
+        logger.info("Shutting down...")
+        exit_event.set()
+        time.sleep(2)
+        sys.exit()
+
+    signal.signal(signal.SIGINT, on_exit)
+
     domains = config.get_config().domains
     prefixes = config.get_config().domain_prefixes
     if not domains:
@@ -122,7 +136,7 @@ def main():
             raise InvalidDomain(f"Domain {domain} has invalid prefix.")
     clean_up_worker()
     watch_queue()
-    mqtt.connect()
+    mqtt.connect(exit_event)
 
 
 if __name__ == "__main__":
