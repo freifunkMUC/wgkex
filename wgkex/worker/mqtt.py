@@ -1,46 +1,25 @@
 #!/usr/bin/env python3
 """Process messages from MQTT."""
 
-import paho.mqtt.client as mqtt
-
 # TODO(ruairi): Deprecate __init__.py from config, as it masks namespace.
-from wgkex.config.config import load_config
 import socket
 import re
-from typing import Optional, Dict, Any, Union
+from typing import Any
+
+import paho.mqtt.client as mqtt
+
 from wgkex.common import logger
+from wgkex.config.config import get_config
 from wgkex.worker.msg_queue import q
-
-
-def fetch_from_config(var: str) -> Optional[Union[Dict[str, str], str]]:
-    """Fetches values from configuration file.
-
-    Arguments:
-        var: The variable to fetch from config.
-
-    Raises:
-        ValueError: If given key cannot be found in configuration.
-
-    Returns:
-        The given variable from configuration.
-    """
-    config = load_config()
-    ret = config.get(var)
-    if not ret:
-        raise ValueError("Failed to get %s from configuration, failing", var)
-    return config.get(var)
+from wgkex.worker.netlink import link_handler, WireGuardClient
 
 
 def connect() -> None:
-    """Connect to MQTT for the given domains.
-
-    Argument:
-        domains: The domains to connect to.
-    """
-    base_config = fetch_from_config("mqtt")
-    broker_address = base_config.get("broker_url")
-    broker_port = base_config.get("broker_port")
-    broker_keepalive = base_config.get("keepalive")
+    """Connect to MQTT."""
+    base_config = get_config().mqtt
+    broker_address = base_config.broker_url
+    broker_port = base_config.broker_port
+    broker_keepalive = base_config.keepalive
     # TODO(ruairi): Move the hostname to a global variable.
     client = mqtt.Client(socket.gethostname())
 
@@ -64,7 +43,7 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         rc: The MQTT rc.
     """
     logger.debug("Connected with result code " + str(rc))
-    domains = load_config().get("domains")
+    domains = get_config().domains
 
     # Subscribing in on_connect() means that if we lose the connection and
     # reconnect then subscriptions will be renewed.
@@ -84,7 +63,7 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
     """
     # TODO(ruairi): Check bounds and raise exception here.
     logger.debug("Got message %s from MTQQ", message)
-    domain_prefixes = load_config().get("domain_prefixes")
+    domain_prefixes = get_config().domain_prefixes
     domain = None
     for domain_prefix in domain_prefixes:
         domain = re.search(r"/.*" + domain_prefix + "(\w+)/", message.topic)

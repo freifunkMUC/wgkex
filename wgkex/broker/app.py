@@ -2,7 +2,6 @@
 """wgkex broker"""
 import re
 import dataclasses
-import logging
 from typing import Tuple, Any
 
 from flask import Flask
@@ -17,6 +16,7 @@ import paho.mqtt.client as mqtt_client
 from waitress import serve
 from wgkex.config import config
 from wgkex.common import logger
+from wgkex.common.utils import is_valid_domain
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
@@ -43,7 +43,9 @@ class KeyExchange:
             A KeyExchange object.
         """
         public_key = is_valid_wg_pubkey(msg.get("public_key"))
-        domain = is_valid_domain(msg.get("domain"))
+        domain = str(msg.get("domain"))
+        if not is_valid_domain(domain):
+            raise ValueError(f"Domain {domain} not in configured domains.")
         return cls(public_key=public_key, domain=domain)
 
 
@@ -54,8 +56,7 @@ def _fetch_app_config() -> Flask_app:
         A created Flask app.
     """
     app = Flask(__name__)
-    # TODO(ruairi): Refactor load_config to return Dataclass.
-    mqtt_cfg = config.Config.from_dict(config.load_config()).mqtt
+    mqtt_cfg = config.get_config().mqtt
     app.config["MQTT_BROKER_URL"] = mqtt_cfg.broker_url
     app.config["MQTT_BROKER_PORT"] = mqtt_cfg.broker_port
     app.config["MQTT_USERNAME"] = mqtt_cfg.username
@@ -140,33 +141,13 @@ def is_valid_wg_pubkey(pubkey: str) -> str:
     return pubkey
 
 
-def is_valid_domain(domain: str) -> str:
-    """Verifies if the domain is configured.
-
-    Arguments:
-        domain: The domain to verify.
-
-    Raises:
-        ValueError: If the domain is not configured.
-
-    Returns:
-        The domain.
-    """
-    # TODO(ruairi): Refactor to return bool.
-    if domain not in config.fetch_from_config("domains"):
-        raise ValueError(
-            f'Domains {domain} not in configured domains({config.fetch_from_config("domains")}) a valid domain'
-        )
-    return domain
-
-
 if __name__ == "__main__":
     listen_host = None
     listen_port = None
 
-    listen_config = config.fetch_from_config("broker_listen")
+    listen_config = config.get_config().broker_listen
     if listen_config is not None:
-        listen_host = listen_config.get("host")
-        listen_port = listen_config.get("port")
+        listen_host = listen_config.host
+        listen_port = listen_config.port
 
     serve(app, host=listen_host, port=listen_port)
