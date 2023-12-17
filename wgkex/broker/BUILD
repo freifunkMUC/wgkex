@@ -12,6 +12,15 @@ py_library(
     ],
 )
 
+py_test(
+    name="metrics_test",
+    srcs=["metrics_test.py"],
+    deps = [
+       "//wgkex/broker:metrics",
+       requirement("mock"),
+    ],
+)
+
 py_binary(
     name="app",
     srcs=["app.py"],

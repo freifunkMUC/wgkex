@@ -97,16 +97,14 @@ class WorkerMetricsCollection:
 
         peers_worker_tuples = []
         total_peers = self.get_total_peers()
-        workerCfg = config.get_config().workers
+        worker_cfg = config.get_config().workers
 
         for wm in self.data.values():
-            if not wm.online:
-                continue
-            peers = wm.get_domain_metrics(domain).get(CONNECTED_PEERS_METRIC, -1)
-            if peers < 0:
+            if not wm.is_online(domain):
                 continue
 
-            rel_weight = workerCfg.relative_worker_weight(wm.worker)
+            peers = wm.get_domain_metrics(domain).get(CONNECTED_PEERS_METRIC)
+            rel_weight = worker_cfg.relative_worker_weight(wm.worker)
             target = rel_weight * total_peers
             diff = peers - target
             logger.debug(
