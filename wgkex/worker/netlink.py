@@ -242,7 +242,7 @@ def get_connected_peers_count(wg_interface: str) -> int:
         return count
 
 
-def get_device_data(wg_interface: str) -> Tuple[Any, Any, Any]:
+def get_device_data(wg_interface: str) -> Tuple[int, str, str]:
     """Returns the listening port, public key and local IP address.
 
     Arguments:
