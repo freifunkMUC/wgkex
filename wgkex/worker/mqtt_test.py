@@ -1,8 +1,8 @@
 """Unit tests for mqtt.py"""
 import unittest
 import mock
-import mqtt
-import msg_queue
+
+from wgkex.worker import mqtt
 
 
 class MQTTTest(unittest.TestCase):
@@ -48,7 +48,7 @@ class MQTTTest(unittest.TestCase):
         config_mock.return_value = {"domain_prefix": "_ffmuc_"}
         link_mock.return_value = dict(WireGuard="result")
         mqtt_msg = mock.patch.object(mqtt.mqtt, "MQTTMessage")
-        mqtt_msg.topic = "/_ffmuc_domain1/"
+        mqtt_msg.topic = "wireguard/_ffmuc_domain1/gateway"
         mqtt_msg.payload = b"PUB_KEY"
         mqtt.on_message(None, None, mqtt_msg)
         link_mock.assert_has_calls(
@@ -80,7 +80,7 @@ class MQTTTest(unittest.TestCase):
         }
         link_mock.return_value = dict(WireGuard="result")
         mqtt_msg = mock.patch.object(mqtt.mqtt, "MQTTMessage")
-        mqtt_msg.topic = "bad_domain_match"
+        mqtt_msg.topic = "wireguard/bad_domain_match"
         with self.assertRaises(ValueError):
             mqtt.on_message(None, None, mqtt_msg)
  """

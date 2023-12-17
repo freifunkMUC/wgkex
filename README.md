@@ -129,7 +129,14 @@ Worker:
 python3 -c 'from wgkex.worker.app import main; main()'
 ```
 
-## Client usage
+
+## Development
+
+### Unit tests
+
+The test can be run using `bazel test ... --test_output=all` or `python3 -m unittest discover -p '*_test.py'`.
+
+### Client
 
 The client can be used via CLI:
 

@@ -21,8 +21,9 @@ py_test(
     name = "netlink_test",
     srcs = ["netlink_test.py"],
     deps = [
-       ":netlink",
+       "//wgkex/worker:netlink",
        requirement("mock"),
+       requirement("pyroute2"),
     ],
 )
 
@@ -46,8 +47,8 @@ py_test(
     name = "mqtt_test",
     srcs = ["mqtt_test.py"],
     deps = [
-       ":mqtt",
-       ":msg_queue",
+       "//wgkex/worker:mqtt",
+       "//wgkex/worker:msg_queue",
        requirement("mock"),
     ],
 )
@@ -67,8 +68,8 @@ py_test(
     name = "app_test",
     srcs = ["app_test.py"],
     deps = [
-       ":app",
-       ":msg_queue",
+       "//wgkex/worker:app",
+       "//wgkex/worker:msg_queue",
        requirement("mock"),
     ],
 )

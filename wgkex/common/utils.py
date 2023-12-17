@@ -2,6 +2,8 @@
 import ipaddress
 import re
 
+from wgkex.config import config
+
 
 def mac2eui64(mac: str, prefix=None) -> str:
     """Converts a MAC address to an EUI64 identifier.

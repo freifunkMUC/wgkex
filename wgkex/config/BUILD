@@ -16,7 +16,7 @@ py_test(
     name="config_test",
     srcs=["config_test.py"],
     deps=[
-        ":config",
+       "//wgkex/config:config",
         requirement("mock"),
     ],
 )

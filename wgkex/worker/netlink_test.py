@@ -13,7 +13,8 @@ sys.modules["pyroute2.WireGuard"] = mock.MagicMock()
 sys.modules["pyroute2.IPRoute"] = mock.MagicMock()
 from pyroute2 import WireGuard
 from pyroute2 import IPRoute
-import netlink
+
+from wgkex.worker import netlink
 
 _WG_CLIENT_ADD = netlink.WireGuardClient(
     public_key="public_key", domain="add", remove=False

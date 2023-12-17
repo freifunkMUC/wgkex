@@ -15,7 +15,8 @@ py_test(
     name = "utils_test",
     srcs = ["utils_test.py"],
     deps = [
-       ":utils",
+       "//wgkex/common:utils",
+       "//wgkex/config:config",
        requirement("mock"),
     ],
 )

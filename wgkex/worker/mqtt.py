@@ -92,7 +92,7 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
             break
     if not domain:
         raise ValueError(
-            "Could not find a match for %s on %s", repr(domain_prefixes), message.topic
+            f"Could not find a match for {domain_prefixes} on {message.topic}"
         )
     # this will not work, if we have non-unique prefix stripped domains
     domain = domain.group(1)

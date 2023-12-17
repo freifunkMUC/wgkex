@@ -1,7 +1,9 @@
 """Unit tests for app.py"""
 import unittest
 import mock
-import app
+
+import wgkex.config.config
+from wgkex.worker import app
 
 
 class AppTest(unittest.TestCase):
@@ -48,43 +50,49 @@ class AppTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             app.check_all_domains_unique(test_domains, test_prefixes)
 
-    @mock.patch.object(app.config, "load_config")
+    @mock.patch.object(wgkex.config.config, "fetch_from_config")
+    @mock.patch.object(wgkex.config.config, "load_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)
-    def test_main_success(self, connect_mock, config_mock):
+    def test_main_success(self, connect_mock, config_mock, config_fetch_mock):
         """Ensure we can execute main."""
         connect_mock.return_value = None
         test_prefixes = ["TEST_PREFIX_", "TEST_PREFIX2_"]
         config_mock.return_value = dict(
             domains=[f"{test_prefixes[1]}domain.one"], domain_prefixes=test_prefixes
         )
-        with mock.patch("app.flush_workers", return_value=None):
+        config_fetch_mock.side_effect = config_mock().get
+        with mock.patch.object(app, "flush_workers", return_value=None):
             app.main()
-            connect_mock.assert_called_with()
+            connect_mock.assert_called()
 
+    @mock.patch.object(wgkex.config.config, "fetch_from_config")
     @mock.patch.object(app.config, "load_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)
-    def test_main_fails_no_domain(self, connect_mock, config_mock):
+    def test_main_fails_no_domain(self, connect_mock, config_mock, config_fetch_mock):
         """Ensure we fail when domains are not configured."""
         config_mock.return_value = dict(domains=None)
+        config_fetch_mock.side_effect = config_mock().get
         connect_mock.return_value = None
         with self.assertRaises(app.DomainsNotInConfig):
             app.main()
 
+    @mock.patch.object(wgkex.config.config, "fetch_from_config")
     @mock.patch.object(app.config, "load_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)
-    def test_main_fails_bad_domain(self, connect_mock, config_mock):
+    def test_main_fails_bad_domain(self, connect_mock, config_mock, config_fetch_mock):
         """Ensure we fail when domains are badly formatted."""
         test_prefixes = ["TEST_PREFIX_", "TEST_PREFIX2_"]
         config_mock.return_value = dict(
             domains=[f"cant_split_domain"], domain_prefixes=test_prefixes
         )
+        config_fetch_mock.side_effect = config_mock().get
         connect_mock.return_value = None
         with mock.patch("app.flush_workers", return_value=None):
             app.main()
             connect_mock.assert_called_with()
 
     @mock.patch("time.sleep", side_effect=InterruptedError)
-    @mock.patch("app.wg_flush_stale_peers")
+    @mock.patch.object(app, "wg_flush_stale_peers")
     def test_flush_workers(self, flush_mock, sleep_mock):
         """Ensure we fail when domains are badly formatted."""
         flush_mock.return_value = ""

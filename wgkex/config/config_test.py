@@ -1,8 +1,9 @@
 """Tests for configuration handling class."""
 import unittest
 import mock
-import config
 import yaml
+
+from wgkex.config import config
 
 _VALID_CFG = (
     "domain_prefixes:\n- ffmuc_\n- ffdon_\n- ffwert_\nlog_level: DEBUG\ndomains:\n- a\n- b\nmqtt:\n  broker_port: 1883"
