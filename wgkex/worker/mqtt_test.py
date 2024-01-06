@@ -91,29 +91,20 @@ class MQTTTest(unittest.TestCase):
 
         self.assertFalse(thread.is_alive())
 
-
-""" @mock.patch.object(msg_queue, "link_handler")
     @mock.patch.object(mqtt, "get_config")
-    def test_on_message_wireguard_success(self, config_mock, link_mock):
+    def test_on_message_wireguard_success(self, config_mock):
         # Tests on_message for success.
         config_mock.return_value = _get_config_mock()
-        link_mock.return_value = dict(WireGuard="result")
         mqtt_msg = mock.patch.object(mqtt.mqtt, "MQTTMessage")
         mqtt_msg.topic = "wireguard/_ffmuc_domain1/gateway"
         mqtt_msg.payload = b"PUB_KEY"
         mqtt.on_message_wireguard(None, None, mqtt_msg)
-        link_mock.assert_has_calls(
-            [
-                mock.call(
-                    msg_queue.WireGuardClient(
-                        public_key="PUB_KEY", domain="domain1", remove=False
-                    )
-                )
-            ],
-            any_order=True,
-        )
+        self.assertTrue(mqtt.q.qsize() > 0)
+        item = mqtt.q.get_nowait()
+        self.assertEqual(item, ("domain1", "PUB_KEY"))
 
-    @mock.patch.object(msg_queue, "link_handler")
+
+""" @mock.patch.object(msg_queue, "link_handler")
     @mock.patch.object(mqtt, "get_config")
     def test_on_message_wireguard_fails_no_domain(self, config_mock, link_mock):
         # Tests on_message for failure to parse domain.

@@ -39,9 +39,14 @@ class InvalidDomain(Error):
 def flush_workers(domain: Text) -> None:
     """Calls peer flush every _CLEANUP_TIME interval."""
     while True:
-        time.sleep(_CLEANUP_TIME)
-        logger.info(f"Running cleanup task for {domain}")
-        logger.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
+        try:
+            time.sleep(_CLEANUP_TIME)
+            logger.info(f"Running cleanup task for {domain}")
+            logger.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
+        except Exception as e:
+            # Don't crash the thread when an exception is encountered
+            logger.error(f"Exception during cleanup task for {domain}:")
+            logger.error(e)
 
 
 def clean_up_worker() -> None:
@@ -100,8 +105,7 @@ def check_all_domains_unique(domains, prefixes):
                 stripped_domain = domain.split(prefix)[1]
                 if stripped_domain in unique_domains:
                     logger.error(
-                        "We have a non-unique domain here",
-                        domain,
+                        f"Domain {domain} is not unique after stripping the prefix"
                     )
                     return False
                 unique_domains.append(stripped_domain)

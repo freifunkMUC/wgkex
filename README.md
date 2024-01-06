@@ -218,10 +218,10 @@ sudo ip link set vx-welt up
 
 ### MQTT topics
 
-Publishing keys broker->worker: `wireguard/{domain}/{worker}`
-Publishing metrics worker->broker: `wireguard-metrics/{domain}/{worker}/connected_peers`
-Publishing worker status: `wireguard-worker/{worker}/status`
-Publishing worker data: `wireguard-worker/{worker}/{domain}/data`
+- Publishing keys broker->worker: `wireguard/{domain}/{worker}`
+- Publishing metrics worker->broker: `wireguard-metrics/{domain}/{worker}/connected_peers`
+- Publishing worker status: `wireguard-worker/{worker}/status`
+- Publishing worker data: `wireguard-worker/{worker}/{domain}/data`
 
 ## Contact
 

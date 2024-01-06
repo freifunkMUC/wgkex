@@ -72,13 +72,12 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
     stale_clients = [
         stale_client for stale_client in find_stale_wireguard_clients("wg-" + domain)
     ]
-    logger.debug("Found stale clients: %s", stale_clients)
-    logger.info("Searching for stale WireGuard clients.")
+    logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
     stale_wireguard_clients = [
         WireGuardClient(public_key=stale_client, domain=domain, remove=True)
         for stale_client in stale_clients
     ]
-    logger.debug("Found stable WireGuard clients: %s", stale_wireguard_clients)
+    logger.debug("Found stale WireGuard clients: %s", stale_wireguard_clients)
     logger.info("Processing clients.")
     link_handled = [
         link_handler(stale_client) for stale_client in stale_wireguard_clients
@@ -205,8 +204,8 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
         ret = [
             peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
             for peer in all_peers
-            if peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME").get("tv_sec", int())
-            < three_hrs_in_secs
+            if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
+            and hshk_time.get("tv_sec", int()) < three_hrs_in_secs
         ]
         return ret
 

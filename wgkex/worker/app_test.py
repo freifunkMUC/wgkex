@@ -1,4 +1,6 @@
 """Unit tests for app.py"""
+import threading
+from time import sleep
 import unittest
 import mock
 
@@ -88,14 +90,28 @@ class AppTest(unittest.TestCase):
             app.main()
         connect_mock.assert_not_called()
 
-    @mock.patch("time.sleep", side_effect=InterruptedError)
+    @mock.patch.object(app, "_CLEANUP_TIME", 0)
     @mock.patch.object(app, "wg_flush_stale_peers")
-    def test_flush_workers(self, flush_mock, sleep_mock):
-        """Ensure we fail when domains are badly formatted."""
-        flush_mock.return_value = ""
-        # Infinite loop in flush_workers has no exit value, so test will generate one, and test for that.
-        with self.assertRaises(InterruptedError):
-            app.flush_workers("test_domain")
+    def test_flush_workers_doesnt_throw(self, wg_flush_mock):
+        """Ensure the flush_workers thread doesn't throw and exit if it encounters an exception."""
+        wg_flush_mock.side_effect = AttributeError(
+            "'NoneType' object has no attribute 'get'"
+        )
+
+        thread = threading.Thread(
+            target=app.flush_workers, args=("dummy_domain",), daemon=True
+        )
+        thread.start()
+
+        i = 0
+        while i < 20 and not wg_flush_mock.called:
+            i += 1
+            sleep(0.1)
+
+        wg_flush_mock.assert_called()
+        # Assert that the thread hasn't crashed and is still running
+        self.assertTrue(thread.is_alive())
+        # If Python would allow it without writing custom signalling, this would be the place to stop the thread again
 
 
 if __name__ == "__main__":
