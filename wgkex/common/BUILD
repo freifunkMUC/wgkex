@@ -15,7 +15,8 @@ py_test(
     name = "utils_test",
     srcs = ["utils_test.py"],
     deps = [
-       ":utils",
+       "//wgkex/common:utils",
+       "//wgkex/config:config",
        requirement("mock"),
     ],
 )
@@ -23,5 +24,11 @@ py_test(
 py_library(
     name = "logger",
     srcs = ["logger.py"],
+    visibility = ["//visibility:public"]
+)
+
+py_library(
+    name = "mqtt",
+    srcs = ["mqtt.py"],
     visibility = ["//visibility:public"]
 )

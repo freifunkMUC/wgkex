@@ -11,9 +11,12 @@ import sys
 sys.modules["pyroute2"] = mock.MagicMock()
 sys.modules["pyroute2.WireGuard"] = mock.MagicMock()
 sys.modules["pyroute2.IPRoute"] = mock.MagicMock()
+sys.modules["pyroute2.NDB"] = mock.MagicMock()
+sys.modules["pyroute2.netlink"] = mock.MagicMock()
 from pyroute2 import WireGuard
 from pyroute2 import IPRoute
-import netlink
+
+from wgkex.worker import netlink
 
 _WG_CLIENT_ADD = netlink.WireGuardClient(
     public_key="public_key", domain="add", remove=False
@@ -23,15 +26,31 @@ _WG_CLIENT_DEL = netlink.WireGuardClient(
 )
 
 
-def _get_wg_mock(key_name, stale_time):
-    pm = mock.Mock()
-    pm.get_attr.side_effect = [{"tv_sec": stale_time}, key_name.encode()]
+def _get_peer_mock(public_key, last_handshake_time):
+    def peer_get_attr(attr: str):
+        if attr == "WGPEER_A_LAST_HANDSHAKE_TIME":
+            return {"tv_sec": last_handshake_time}
+        if attr == "WGPEER_A_PUBLIC_KEY":
+            return public_key.encode()
+
     peer_mock = mock.Mock()
-    peer_mock.get_attr.side_effect = [[pm]]
+    peer_mock.get_attr.side_effect = peer_get_attr
+    return peer_mock
+
+
+def _get_wg_mock(public_key, last_handshake_time):
+    peer_mock = _get_peer_mock(public_key, last_handshake_time)
+
+    def msg_get_attr(attr: str):
+        if attr == "WGDEVICE_A_PEERS":
+            return [peer_mock]
+
+    msg_mock = mock.Mock()
+    msg_mock.get_attr.side_effect = msg_get_attr
     wg_instance = WireGuard()
     wg_info_mock = wg_instance.__enter__.return_value
     wg_info_mock.set.return_value = {"WireGuard": "set"}
-    wg_info_mock.info.return_value = [peer_mock]
+    wg_info_mock.info.return_value = [msg_mock]
     return wg_info_mock
 
 
@@ -184,6 +203,47 @@ class NetlinkTest(unittest.TestCase):
         self.route_info_mock.route.assert_called_with(
             "del", dst="fe80::281:16ff:fe49:395e/128", oif=mock.ANY
         )
+
+    def test_get_connected_peers_count_success(self):
+        """Tests getting the correct number of connected peers for an interface."""
+        peers = []
+        for i in range(10):
+            peer_mock = _get_peer_mock(
+                "TEST_KEY",
+                int((datetime.now() - timedelta(minutes=i, seconds=5)).timestamp()),
+            )
+            peers.append(peer_mock)
+
+        def msg_get_attr(attr: str):
+            if attr == "WGDEVICE_A_PEERS":
+                return peers
+
+        msg_mock = mock.Mock()
+        msg_mock.get_attr.side_effect = msg_get_attr
+
+        wg_instance = WireGuard()
+        wg_info_mock = wg_instance.__enter__.return_value
+        wg_info_mock.info.return_value = [msg_mock]
+
+        ret = netlink.get_connected_peers_count("wg-welt")
+        self.assertEqual(ret, 3)
+
+    def test_get_device_data_success(self):
+        def msg_get_attr(attr: str):
+            if attr == "WGDEVICE_A_LISTEN_PORT":
+                return 51820
+            if attr == "WGDEVICE_A_PUBLIC_KEY":
+                return "TEST_PUBLIC_KEY".encode("ascii")
+
+        msg_mock = mock.Mock()
+        msg_mock.get_attr.side_effect = msg_get_attr
+
+        wg_instance = WireGuard()
+        wg_info_mock = wg_instance.__enter__.return_value
+        wg_info_mock.info.return_value = [msg_mock]
+
+        ret = netlink.get_device_data("wg-welt")
+        self.assertTupleEqual(ret, (51820, "TEST_PUBLIC_KEY", mock.ANY))
 
 
 if __name__ == "__main__":

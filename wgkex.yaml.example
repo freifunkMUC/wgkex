@@ -1,3 +1,4 @@
+# [broker] The domains that should be accepted by clients and for which matching WireGuard interfaces exist
 domains:
   - ffmuc_muc_cty
   - ffmuc_muc_nord
@@ -6,6 +7,25 @@ domains:
   - ffmuc_muc_west
   - ffmuc_welt
   - ffwert_city
+# [broker, worker] The prefix is trimmed from the domain name and replaced with 'wg-' and 'vx-'
+# to calculate the WireGuard and VXLAN interface names
+domain_prefixes:
+  - ffmuc_
+  - ffdon_
+  - ffwert_
+# [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution
+workers:
+  gw04.in.ffmuc.net:
+    weight: 30
+  gw05.in.ffmuc.net:
+    weight: 30
+  gw06.in.ffmuc.net:
+    weight: 20
+  gw07.in.ffmuc.net:
+    weight: 20
+# [worker] The external hostname of this worker
+externalName: gw04.ext.ffmuc.net
+# [broker, worker] MQTT connection informations
 mqtt:
   broker_url: broker.hivemq.com
   broker_port: 1883
@@ -13,13 +33,11 @@ mqtt:
   password: SECRET
   keepalive: 5
   tls: False
+# [broker]
 broker_listen:
   host: 0.0.0.0
   port: 5000
-domain_prefixes:
-  - ffmuc_
-  - ffdon_
-  - ffwert_
+# [broker, worker]
 logging_config:
   formatters:
     standard:

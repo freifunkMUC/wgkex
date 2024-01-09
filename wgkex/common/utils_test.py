@@ -1,5 +1,5 @@
 import unittest
-import utils
+from wgkex.common import utils
 
 
 class UtilsTest(unittest.TestCase):

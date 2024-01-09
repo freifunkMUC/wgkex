@@ -1,11 +1,11 @@
 """Configuration handling class."""
+import dataclasses
 import logging
 import os
 import sys
+from typing import Dict, Any, List, Optional
+
 import yaml
-from functools import lru_cache
-from typing import Dict, Union, Any, List, Optional
-import dataclasses
 
 
 class Error(Exception):
@@ -21,8 +21,77 @@ WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
 
 
 @dataclasses.dataclass
+class Worker:
+    """A representation of the values of the 'workers' dict in the configuration file.
+
+    Attributes:
+        weight: The relative weight of a worker, defaults to 1.
+    """
+
+    weight: int
+
+    @classmethod
+    def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
+        return cls(
+            weight=int(worker_cfg["weight"]) if worker_cfg["weight"] else 1,
+        )
+
+
+@dataclasses.dataclass
+class Workers:
+    """A representation of the 'workers' key in the configuration file.
+
+    Attributes:
+        total_weight: Calculated on init, the total weight of all configured workers.
+    """
+
+    total_weight: int
+    _workers: Dict[str, Worker]
+
+    @classmethod
+    def from_dict(cls, workers_cfg: Dict[str, Dict[str, Any]]) -> "Workers":
+        d = {key: Worker.from_dict(value) for (key, value) in workers_cfg.items()}
+
+        total = 0
+        for worker in d.values():
+            total += worker.weight
+        total = max(total, 1)
+
+        return cls(total_weight=total, _workers=d)
+
+    def get(self, worker: str) -> Optional[Worker]:
+        return self._workers.get(worker)
+
+    def relative_worker_weight(self, worker_name: str) -> float:
+        worker = self.get(worker_name)
+        if worker is None:
+            return 1 / self.total_weight
+        return worker.weight / self.total_weight
+
+
+@dataclasses.dataclass
+class BrokerListen:
+    """A representation of the 'broker_listen' key in Configuration file.
+
+    Attributes:
+        host: The listen address the broker should listen to for the HTTP API.
+        port: The port the broker should listen to for the HTTP API.
+    """
+
+    host: Optional[str]
+    port: Optional[int]
+
+    @classmethod
+    def from_dict(cls, broker_listen: Dict[str, Any]) -> "BrokerListen":
+        return cls(
+            host=broker_listen.get("host"),
+            port=broker_listen.get("port"),
+        )
+
+
+@dataclasses.dataclass
 class MQTT:
-    """A representation of MQTT key in Configuration file.
+    """A representation of the 'mqtt' key in Configuration file.
 
     Attributes:
         broker_url: The broker URL for MQTT to connect to.
@@ -54,11 +123,9 @@ class MQTT:
             broker_url=mqtt_cfg["broker_url"],
             username=mqtt_cfg["username"],
             password=mqtt_cfg["password"],
-            tls=mqtt_cfg["tls"] if mqtt_cfg["tls"] else False,
-            broker_port=int(mqtt_cfg["broker_port"])
-            if mqtt_cfg["broker_port"]
-            else None,
-            keepalive=int(mqtt_cfg["keepalive"]) if mqtt_cfg["keepalive"] else None,
+            tls=bool(mqtt_cfg.get("tls", cls.tls)),
+            broker_port=int(mqtt_cfg.get("broker_port", cls.broker_port)),
+            keepalive=int(mqtt_cfg.get("keepalive", cls.keepalive)),
         )
 
 
@@ -68,59 +135,72 @@ class Config:
 
     Attributes:
         domains: The list of domains to listen for.
+        domain_prefixes: The list of prefixes to pre-pend to a given domain.
         mqtt: The MQTT configuration.
-        domain_prefixes: The list of prefixes to pre-pend to a given domain."""
+        workers: The worker weights configuration (broker-only).
+        externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+    """
 
+    raw: Dict[str, Any]
     domains: List[str]
-    mqtt: MQTT
     domain_prefixes: List[str]
+    broker_listen: BrokerListen
+    mqtt: MQTT
+    workers: Workers
+    external_name: Optional[str]
 
     @classmethod
-    def from_dict(cls, cfg: Dict[str, str]) -> "Config":
+    def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
         """Creates a Config object from a configuration file.
         Arguments:
             cfg: The configuration file as a dict.
         Returns:
             A Config object.
         """
+        broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
+        workers_cfg = Workers.from_dict(cfg.get("workers", {}))
         return cls(
+            raw=cfg,
             domains=cfg["domains"],
-            mqtt=mqtt_cfg,
             domain_prefixes=cfg["domain_prefixes"],
+            broker_listen=broker_listen,
+            mqtt=mqtt_cfg,
+            workers=workers_cfg,
+            external_name=cfg.get("externalName"),
         )
 
+    def get(self, key: str) -> Any:
+        """Get the value of key from the raw dict representation of the config file"""
+        return self.raw.get(key)
 
-@lru_cache(maxsize=10)
-def fetch_from_config(key: str) -> Optional[Union[Dict[str, Any], List[str]]]:
-    """Fetches a specific key from configuration.
 
-    Arguments:
-        key: The named key to fetch.
+_parsed_config: Optional[Config] = None
+
+
+def get_config() -> Config:
+    """Returns a parsed Config object.
+
+    Raises:
+        ConfigFileNotFoundError: If we could not find the configuration file on disk.
     Returns:
-        The config value associated with the key
+        The Config representation of the config file
     """
-    return load_config().get(key)
-
-
-def load_config() -> Dict[str, str]:
-    """Fetches and validates configuration file from disk.
-
-    Returns:
-        Linted configuration file.
-    """
-    cfg_contents = fetch_config_from_disk()
-    try:
-        config = yaml.safe_load(cfg_contents)
-    except yaml.YAMLError as e:
-        print("Failed to load YAML file: %s", e)
-        sys.exit(1)
-    try:
-        _ = Config.from_dict(config)
-        return config
-    except (KeyError, TypeError) as e:
-        print("Failed to lint file: %s", e)
-        sys.exit(2)
+    global _parsed_config
+    if _parsed_config is None:
+        cfg_contents = fetch_config_from_disk()
+        try:
+            config = yaml.safe_load(cfg_contents)
+        except yaml.YAMLError as e:
+            print("Failed to load YAML file: %s" % e)
+            sys.exit(1)
+        try:
+            config = Config.from_dict(config)
+        except (KeyError, TypeError, AttributeError) as e:
+            print("Failed to lint file: %s" % e)
+            sys.exit(2)
+        _parsed_config = config
+    return _parsed_config
 
 
 def fetch_config_from_disk() -> str:
