@@ -90,7 +90,7 @@ class AppTest(unittest.TestCase):
             app.main()
         connect_mock.assert_not_called()
 
-    @mock.patch.object(app, "_CLEANUP_TIME", 0)
+    @mock.patch.object(app, "_CLEANUP_TIME", 1)
     @mock.patch.object(app, "wg_flush_stale_peers")
     def test_flush_workers_doesnt_throw(self, wg_flush_mock):
         """Ensure the flush_workers thread doesn't throw and exit if it encounters an exception."""

@@ -1,4 +1,4 @@
-# [broker] The domains that should be accepted by clients and for which matching WireGuard interfaces exist
+# [broker, worker] The domains that should be accepted by clients and for which matching WireGuard interfaces exist
 domains:
   - ffmuc_muc_cty
   - ffmuc_muc_nord
