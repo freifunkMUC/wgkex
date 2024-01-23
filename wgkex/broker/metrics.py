@@ -34,10 +34,23 @@ class WorkerMetrics:
         else:
             self.domain_data[domain] = {metric: value}
 
+    def get_peer_count(self) -> int:
+        """Returns the sum of connected peers on this worker over all domains"""
+        total = 0
+        for data in self.domain_data.values():
+            total += max(
+                data.get(CONNECTED_PEERS_METRIC, 0),
+                0,
+            )
+
+        return total
+
 
 @dataclasses.dataclass
 class WorkerMetricsCollection:
-    """A container for all worker metrics"""
+    """A container for all worker metrics
+    # TODO make threadsafe / fix data races
+    """
 
     #     worker -> WorkerMetrics
     data: Dict[str, WorkerMetrics] = dataclasses.field(default_factory=dict)
@@ -68,7 +81,8 @@ class WorkerMetricsCollection:
         if worker in self.data:
             self.data[worker].online = False
 
-    def get_total_peers(self) -> int:
+    def get_total_peer_count(self) -> int:
+        """Returns the sum of connected peers over all workers and domains"""
         total = 0
         for worker in self.data:
             worker_data = self.data.get(worker)
@@ -96,22 +110,23 @@ class WorkerMetricsCollection:
         # Map metrics to a list of (target diff, peer count, worker) tuples for online workers
 
         peers_worker_tuples = []
-        total_peers = self.get_total_peers()
+        total_peers = self.get_total_peer_count()
         worker_cfg = config.get_config().workers
 
         for wm in self.data.values():
             if not wm.is_online(domain):
                 continue
 
-            peers = wm.get_domain_metrics(domain).get(CONNECTED_PEERS_METRIC)
+            peers = wm.get_peer_count()
             rel_weight = worker_cfg.relative_worker_weight(wm.worker)
             target = rel_weight * total_peers
             diff = peers - target
             logger.debug(
-                f"Worker {wm.worker}: rel weight {rel_weight}, target {target} (total {total_peers}), diff {diff}"
+                f"Worker candidate {wm.worker}: current {peers}, target {target} (total {total_peers}, rel weight {rel_weight}), diff {diff}"
             )
             peers_worker_tuples.append((diff, peers, wm.worker))
 
+        # Sort by diff (ascending), workers with most peers missing to target are sorted first
         peers_worker_tuples = sorted(peers_worker_tuples, key=itemgetter(0))
 
         if len(peers_worker_tuples) > 0:

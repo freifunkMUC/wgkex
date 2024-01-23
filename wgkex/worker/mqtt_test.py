@@ -54,6 +54,42 @@ class MQTTTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             mqtt.connect(threading.Event())
 
+    @mock.patch.object(mqtt.mqtt, "Client")
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_device_data")
+    def test_on_connect_subscribes(
+        self, get_device_data_mock, config_mock, mqtt_client_mock
+    ):
+        """Test that the on_connect callback correctly subscribes to all domains and pushes device data"""
+        config_mqtt_mock = mock.MagicMock()
+        config_mqtt_mock.broker_url = "some_url"
+        config_mqtt_mock.broker_port = 1833
+        config_mqtt_mock.keepalive = False
+        config = _get_config_mock(mqtt=config_mqtt_mock)
+        config.external_name = None
+        config_mock.return_value = config
+        get_device_data_mock.return_value = (51820, "456asdf=", "fe80::1")
+
+        hostname = socket.gethostname()
+
+        mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+
+        mqtt_client_mock.assert_has_calls(
+            [
+                mock.call().subscribe("wireguard/_ffmuc_domain.one/+"),
+                mock.call().publish(
+                    f"wireguard-worker/{hostname}/_ffmuc_domain.one/data",
+                    '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
+                    % hostname,
+                    qos=1,
+                    retain=True,
+                ),
+                mock.call().publish(
+                    f"wireguard-worker/{hostname}/status", 1, qos=1, retain=True
+                ),
+            ]
+        )
+
     @mock.patch.object(mqtt, "get_config")
     @mock.patch.object(mqtt, "get_connected_peers_count")
     def test_publish_metrics_loop_success(self, conn_peers_mock, config_mock):

@@ -127,6 +127,7 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         logger.info(f"Subscribing to topic {topic}")
         client.subscribe(topic)
 
+    for domain in domains:
         # Publish worker data (WG pubkeys, ports, local addresses)
         iface = wg_interface_name(domain)
         if iface:

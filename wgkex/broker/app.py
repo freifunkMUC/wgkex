@@ -131,8 +131,15 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
             }
         }, 400
 
+    # Update number of peers locally to interpolate data between MQTT updates from the worker
+    # TODO fix data race
+    current_peers_domain = (
+        worker_metrics.get(best_worker)
+        .get_domain_metrics(domain)
+        .get(CONNECTED_PEERS_METRIC, 0)
+    )
     worker_metrics.update(
-        best_worker, domain, CONNECTED_PEERS_METRIC, current_peers + 1
+        best_worker, domain, CONNECTED_PEERS_METRIC, current_peers_domain + 1
     )
     logger.debug(
         f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
@@ -200,10 +207,10 @@ def handle_mqtt_message_status(
     _, worker, _ = message.topic.split("/", 2)
 
     status = int(message.payload)
-    if status < 1:
+    if status < 1 and worker_metrics.get(worker).is_online():
         logger.warning(f"Marking worker as offline: {worker}")
         worker_metrics.set_offline(worker)
-    else:
+    elif status >= 1 and not worker_metrics.get(worker).is_online():
         logger.warning(f"Marking worker as online: {worker}")
         worker_metrics.set_online(worker)
 

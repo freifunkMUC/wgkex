@@ -231,11 +231,10 @@ def get_connected_peers_count(wg_interface: str) -> int:
             if peers:
                 for peer in peers:
                     if (
-                        peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME").get(
-                            "tv_sec", int()
-                        )
-                        > three_mins_ago_in_secs
-                    ):
+                        hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")
+                    ) is not None and hshk_time.get(
+                        "tv_sec", int()
+                    ) > three_mins_ago_in_secs:
                         count += 1
 
         return count
@@ -251,7 +250,7 @@ def get_device_data(wg_interface: str) -> Tuple[int, str, str]:
         # The listening port, public key, and local IP address of the WireGuard interface.
     """
     logger.info("Reading data from interface %s.", wg_interface)
-    with pyroute2.WireGuard() as wg, pyroute2.NDB() as ndb:
+    with pyroute2.WireGuard() as wg, pyroute2.IPRoute() as ipr:
         msgs = wg.info(wg_interface)
         logger.debug("Got infos for interface data: %s.", msgs)
         if len(msgs) > 1:
@@ -262,7 +261,11 @@ def get_device_data(wg_interface: str) -> Tuple[int, str, str]:
 
         port = int(info.get_attr("WGDEVICE_A_LISTEN_PORT"))
         public_key = info.get_attr("WGDEVICE_A_PUBLIC_KEY").decode("ascii")
-        link_address = ndb.interfaces[wg_interface].ipaddr[0].get("address")
+
+        # Get link address using IPRoute
+        ipr_link = ipr.link_lookup(ifname=wg_interface)[0]
+        msgs = ipr.get_addr(index=ipr_link)
+        link_address = msgs[0].get_attr("IFA_ADDRESS")
 
         logger.debug(
             "Interface data: port '%s', public key '%s', link address '%s",

@@ -84,6 +84,26 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(connected, 19)
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_worker_returns_best_imbalanced_domains(self, config_mock):
+        """Verify get_best_worker returns the worker with overall least connected clients even if it has more clients on this domain."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict({})
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "domain1", "connected_peers", 25)
+        worker_metrics.update("1", "domain2", "connected_peers", 5)
+        worker_metrics.update("2", "domain1", "connected_peers", 20)
+        worker_metrics.update("2", "domain2", "connected_peers", 20)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+
+        (worker, diff, connected) = worker_metrics.get_best_worker("domain1")
+        self.assertEqual(worker, "1")
+        self.assertEqual(diff, -40)  # 30-(1*(25+5+20+20))
+        self.assertEqual(connected, 30)
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
     def test_get_best_worker_weighted_returns_best(self, config_mock):
         """Verify get_best_worker returns the worker with least client differential for weighted workers."""
         test_config = mock.MagicMock(spec=config.Config)
