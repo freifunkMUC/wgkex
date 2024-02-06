@@ -1,4 +1,5 @@
 """Unit tests for netlink.py"""
+
 import unittest
 import mock
 from datetime import timedelta

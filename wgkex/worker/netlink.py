@@ -1,4 +1,5 @@
 """Functions related to netlink manipulation for Wireguard, IPRoute and FDB on Linux."""
+
 # See https://docs.pyroute2.org/iproute.html for a documentation of the layout of netlink responses
 import hashlib
 import re

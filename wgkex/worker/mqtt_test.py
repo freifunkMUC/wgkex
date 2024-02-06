@@ -1,4 +1,5 @@
 """Unit tests for mqtt.py"""
+
 import socket
 import threading
 import unittest
