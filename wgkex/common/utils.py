@@ -1,4 +1,5 @@
 """A collection of general utilities."""
+
 import ipaddress
 import re
 

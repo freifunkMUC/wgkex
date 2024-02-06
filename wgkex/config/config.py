@@ -1,4 +1,5 @@
 """Configuration handling class."""
+
 import dataclasses
 import logging
 import os

@@ -1,4 +1,5 @@
 """Unit tests for app.py"""
+
 import threading
 from time import sleep
 import unittest

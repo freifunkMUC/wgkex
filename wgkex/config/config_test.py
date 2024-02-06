@@ -1,4 +1,5 @@
 """Tests for configuration handling class."""
+
 import unittest
 import mock
 import yaml
