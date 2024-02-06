@@ -1,4 +1,4 @@
-FROM python:3.11.5-bullseye AS builder
+FROM python:3.11.7-bookworm AS builder
 
 RUN apt-get update && apt-get install -y apt-transport-https curl gnupg \
     && curl -fsSL https://bazel.build/bazel-release.pub.gpg | gpg --dearmor >/usr/share/keyrings/bazel-archive-keyring.gpg \
