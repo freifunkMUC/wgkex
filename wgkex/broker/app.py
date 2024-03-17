@@ -23,6 +23,9 @@ from wgkex.common.mqtt import (
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
+_BANNED_KEYS = list()
+_BANNED_CLIENTS = list()
+
 
 @dataclasses.dataclass
 class KeyExchange:
@@ -93,6 +96,19 @@ def wg_api_v1_key_exchange() -> Tuple[Response | Dict, int]:
         return {"error": {"message": str(ex)}}, 400
 
     key = data.public_key
+    if key in _BANNED_KEYS:
+        logger.info(
+            f"wg_key_exchange: Got bad key from %s (%s)", request.remote_addr, data
+        )
+        return abort(403, jsonify({"error": {"Key is banned."}}))
+    if request.remote_addr in _BANNED_CLIENTS:
+        logger.info(
+            f"wg_key_exchange: Got key from banned client: %s (%s)",
+            request.remote_addr,
+            data,
+        )
+        return abort(403, jsonify({"error": {"Client is banned."}}))
+
     domain = data.domain
     # in case we want to decide here later we want to publish it only to dedicated gateways
     gateway = "all"
@@ -158,6 +174,35 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     }
 
     return {"Endpoint": endpoint}, 200
+
+
+@app.route("/api/v1/wg/key/block", methods=["POST"])
+def wg_key_block() -> Tuple[str, int]:
+    """Blocks a key from being send onwards to MQTT.
+
+    Message format is as follows:
+    {
+      'client_literal': '',
+      'key_literal': '',
+    }
+
+    key_literal is a literal key.
+    client_literal is a string representing the source IP (v4,v6) of a client banned from sending keys.
+
+    Returns:
+        Status message.
+    """
+    try:
+        data = request.get_json(force=True)
+    except TypeError as ex:
+        return abort(400, jsonify({"error": {"message": str(ex)}}))
+    key = data.get("key_literal")
+    client = data.get("client_literal")
+    if key:
+        _BANNED_KEYS.append(key)
+    if client:
+        _BANNED_CLIENTS.append(client)
+    jsonify({"Message": "OK"}), 200
 
 
 @mqtt.on_connect()
