@@ -14,11 +14,12 @@ ENV USE_BAZEL_VERSION=7.1.1rc2
 
 RUN ["./bazelisk-linux-amd64", "build", "//wgkex/broker:app"]
 RUN ["./bazelisk-linux-amd64", "build", "//wgkex/worker:app"]
+RUN ["cp", "-rL", "bazel-bin", "bazel"]
 
 FROM python:3.11.8-slim-bookworm
 WORKDIR /wgkex
 
-COPY --from=builder /wgkex/bazel-bin /wgkex/
+COPY --from=builder /wgkex/bazel /wgkex/
 
 COPY entrypoint /entrypoint
 
