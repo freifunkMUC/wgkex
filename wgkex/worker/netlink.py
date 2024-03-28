@@ -9,8 +9,7 @@ from datetime import timedelta
 from textwrap import wrap
 from typing import Any, Dict, List, Tuple
 
-import pyroute2
-import pyroute2.netlink
+import pyroute2, pyroute2.netlink, pyroute2.netlink.exceptions
 
 from wgkex.common.utils import mac2eui64
 from wgkex.common import logger
@@ -218,12 +217,22 @@ def get_connected_peers_count(wg_interface: str) -> int:
         wg_interface: The WireGuard interface to query.
 
     Returns:
-        # The number of peers which have recently seen a handshake.
+        The number of peers which have recently seen a handshake.
+
+    Raises:
+        NetlinkDumpInterrupted if the interface data has changed while it was being returned by netlink
     """
     three_mins_ago_in_secs = int((datetime.now() - timedelta(minutes=3)).timestamp())
     logger.info("Counting connected wireguard peers for interface %s.", wg_interface)
     with pyroute2.WireGuard() as wg:
-        msgs = wg.info(wg_interface)
+        try:
+            msgs = wg.info(wg_interface)
+        except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
+            # Normal behaviour, data has changed while it was being returned by netlink.
+            # Retry once, don't catch the exception this time, and let the caller handle it.
+            # See https://github.com/svinota/pyroute2/issues/874
+            msgs = wg.info(wg_interface)
+
         logger.debug("Got infos for connected peers: %s.", msgs)
         count = 0
         for msg in msgs:

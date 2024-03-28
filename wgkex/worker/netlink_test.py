@@ -9,10 +9,11 @@ from datetime import datetime
 # any testing platform can execute tests.
 import sys
 
-sys.modules["pyroute2"] = mock.MagicMock()
-sys.modules["pyroute2.WireGuard"] = mock.MagicMock()
-sys.modules["pyroute2.IPRoute"] = mock.MagicMock()
-sys.modules["pyroute2.NDB"] = mock.MagicMock()
+import pyroute2.netlink.exceptions as pyroute2_netlink_exceptions
+
+pyroute2_module_mock = mock.MagicMock()
+pyroute2_module_mock.netlink.exceptions = pyroute2_netlink_exceptions
+sys.modules["pyroute2"] = pyroute2_module_mock
 sys.modules["pyroute2.netlink"] = mock.MagicMock()
 from pyroute2 import WireGuard
 from pyroute2 import IPRoute
@@ -228,6 +229,26 @@ class NetlinkTest(unittest.TestCase):
 
         ret = netlink.get_connected_peers_count("wg-welt")
         self.assertEqual(ret, 3)
+
+    @mock.patch("pyroute2.WireGuard")
+    def test_get_connected_peers_count_NetlinkDumpInterrupted(self, pyroute2_wg_mock):
+        """Tests getting the correct number of connected peers for an interface."""
+
+        nl_wg_mock_ctx = mock.MagicMock()
+        wg_info_mock = mock.MagicMock(
+            side_effect=(pyroute2_netlink_exceptions.NetlinkDumpInterrupted),
+        )
+        nl_wg_mock_ctx.info = wg_info_mock
+
+        nl_wg_mock_inst = pyroute2_wg_mock.return_value
+        nl_wg_mock_inst.__enter__ = mock.MagicMock(return_value=nl_wg_mock_ctx)
+
+        self.assertRaises(
+            pyroute2_netlink_exceptions.NetlinkDumpInterrupted,
+            netlink.get_connected_peers_count,
+            "wg-welt",
+        )
+        self.assertTrue(len(wg_info_mock.mock_calls) == 2)
 
     def test_get_device_data_success(self):
         def msg_get_attr(attr: str):
