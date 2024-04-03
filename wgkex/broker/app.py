@@ -197,8 +197,6 @@ def wg_api_v2_gateway_best() -> Tuple[Response | Dict, int]:
         return {"error": {"message": str(ex)}}, 400
 
     domain = data.domain
-    # in case we want to decide here later we want to publish it only to dedicated gateways
-    gateway = "all"
     logger.info(f"wg_api_v2_gateway_best: Domain: {domain}")
 
     best_worker, diff, current_peers = worker_metrics.get_best_worker(domain)
