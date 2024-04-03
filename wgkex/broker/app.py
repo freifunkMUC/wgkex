@@ -51,6 +51,7 @@ class KeyExchange:
             raise ValueError(f"Domain {domain} not in configured domains.")
         return cls(public_key=public_key, domain=domain)
 
+
 @dataclasses.dataclass
 class Gateway:
     """A best Gateway message.
