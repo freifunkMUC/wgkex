@@ -218,7 +218,7 @@ def wg_api_v2_gateway_best() -> Tuple[Response | Dict, int]:
         logger.error(f"Couldn't get worker endpoint data for {best_worker}/{domain}")
         return {"error": {"message": "could not get gateway data"}}, 500
 
-    # Add Code to check if we should Switch (check if Gateways are Loadbalaced in a specefiy trashhold) 
+    # Add Code to check if we should Switch (check if Gateways are Loadbalaced in a specefiy trashhold)
     shouldSwitch = True
     endpoint = {
         "Address": w_data.get("ExternalAddress"),
