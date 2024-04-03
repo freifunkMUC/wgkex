@@ -201,7 +201,6 @@ def wg_api_v2_gateway_best() -> Tuple[Response | Dict, int]:
     gateway = "all"
     logger.info(f"wg_api_v2_gateway_best: Domain: {domain}")
 
-
     best_worker, diff, current_peers = worker_metrics.get_best_worker(domain)
     if best_worker is None:
         logger.warning(f"No worker online for domain {domain}")
@@ -211,16 +210,8 @@ def wg_api_v2_gateway_best() -> Tuple[Response | Dict, int]:
             }
         }, 400
 
-    # Update number of peers locally to interpolate data between MQTT updates from the worker
-    # TODO fix data race
-    current_peers_domain = (
-        worker_metrics.get(best_worker)
-        .get_domain_metrics(domain)
-        .get(CONNECTED_PEERS_METRIC, 0)
-    )
-
     logger.debug(
-        f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
+        f"Should Chose worker {best_worker} with {current_peers} connected clients ({diff})"
     )
 
     w_data = worker_data.get((best_worker, domain), None)
