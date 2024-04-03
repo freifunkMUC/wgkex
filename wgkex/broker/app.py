@@ -225,7 +225,7 @@ def wg_api_v2_gateway_best() -> Tuple[Response | Dict, int]:
         "Port": str(w_data.get("Port")),
         "AllowedIPs": [w_data.get("LinkAddress")],
         "PublicKey": w_data.get("PublicKey"),
-        "Switch:" shouldSwitch
+        "Switch": shouldSwitch,
     }
 
     return {"Endpoint": endpoint}, 200
