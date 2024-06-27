@@ -1,16 +1,31 @@
+# [broker, worker] The domains that should be accepted by clients and for which matching WireGuard interfaces exist
 domains:
-  - ffmuc_freising
-  - ffmuc_gauting
   - ffmuc_muc_cty
   - ffmuc_muc_nord
   - ffmuc_muc_ost
   - ffmuc_muc_sued
   - ffmuc_muc_west
-  - ffmuc_uml_nord
-  - ffmuc_uml_ost
-  - ffmuc_uml_sued
-  - ffmuc_uml_west
   - ffmuc_welt
+  - ffwert_city
+# [broker, worker] The prefix is trimmed from the domain name and replaced with 'wg-' and 'vx-'
+# to calculate the WireGuard and VXLAN interface names
+domain_prefixes:
+  - ffmuc_
+  - ffdon_
+  - ffwert_
+# [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution
+workers:
+  gw04.in.ffmuc.net:
+    weight: 30
+  gw05.in.ffmuc.net:
+    weight: 30
+  gw06.in.ffmuc.net:
+    weight: 20
+  gw07.in.ffmuc.net:
+    weight: 20
+# [worker] The external hostname of this worker
+externalName: gw04.ext.ffmuc.net
+# [broker, worker] MQTT connection informations
 mqtt:
   broker_url: broker.hivemq.com
   broker_port: 1883
@@ -18,17 +33,21 @@ mqtt:
   password: SECRET
   keepalive: 5
   tls: False
-domain_prefix: myprefix-
+# [broker]
+broker_listen:
+  host: 0.0.0.0
+  port: 5000
+# [broker, worker]
 logging_config:
-    formatters:
-      standard:
-        format: '%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s'
+  formatters:
+    standard:
+      format: '%(asctime)s,%(msecs)d %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s'
+  handlers:
+    console:
+      class: logging.StreamHandler
+      formatter: standard
+  root:
     handlers:
-      console:
-        class: logging.StreamHandler
-        formatter: standard
-    root:
-      handlers:
       - console
-      level: DEBUG
-    version: 1
+    level: DEBUG
+  version: 1

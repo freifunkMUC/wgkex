@@ -9,20 +9,19 @@ services:
       - ./volumes/mosquitto/data:/mosquitto/data
       - ./volumes/mosquitto/log:/mosquitto/log
     ports:
-     - "9001:9001"
+      - "9001:9001"
 
   broker:
-    build: .
-    image: wgkex
+    image: ghcr.io/freifunkmuc/wgkex:latest
     command: broker
     restart: unless-stopped
     ports:
       - "5000:5000"
-    #volumes:
+      #volumes:
       #- ./config/broker/wgkex.yaml:/etc/wgkex.yaml
     environment:
-      WGKEX_DOMAINS: ${WGKEX_DOMAINS-ffmuc_freising, ffmuc_gauting, ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_uml_nord, ffmuc_uml_ost, ffmuc_uml_sued, ffmuc_uml_west, ffmuc_welt}
-      WGKEX_DOMAIN_PREFIX: ${WGKEX_DOMAIN_PREFIX-ffmuc_}
+      WGKEX_DOMAINS: ${WGKEX_DOMAINS-ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_welt, ffwert_city}
+      WGKEX_DOMAIN_PREFIXES: ${WGKEX_DOMAIN_PREFIXES-ffmuc_, ffdon_, ffwert_}
       WGKEX_DEBUG: ${WGKEX_DEBUG-DEBUG}
       MQTT_BROKER_URL: ${MQTT_BROKER_URL-mqtt}
       MQTT_BROKER_PORT: ${MQTT_BROKER_PORT-1883}
@@ -32,15 +31,14 @@ services:
       MQTT_TLS: ${MQTT_TLS-False}
 
   worker:
-    build: .
-    image: wgkex
+    image: ghcr.io/freifunkmuc/wgkex:latest
     command: worker
     restart: unless-stopped
     #volumes:
-      #- ./config/worker/wgkex.yaml:/etc/wgkex.yaml
+    #- ./config/worker/wgkex.yaml:/etc/wgkex.yaml
     environment:
-      WGKEX_DOMAINS: ${WGKEX_DOMAINS-ffmuc_freising, ffmuc_gauting, ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_uml_nord, ffmuc_uml_ost, ffmuc_uml_sued, ffmuc_uml_west, ffmuc_welt}
-      WGKEX_DOMAIN_PREFIX: ${WGKEX_DOMAIN_PREFIX-ffmuc_}
+      WGKEX_DOMAINS: ${WGKEX_DOMAINS-ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_welt, ffwert_city}
+      WGKEX_DOMAIN_PREFIXES: ${WGKEX_DOMAIN_PREFIXES-ffmuc_, ffdon_, ffwert_}
       WGKEX_DEBUG: ${WGKEX_DEBUG-DEBUG}
       MQTT_BROKER_URL: ${MQTT_BROKER_URL-mqtt}
       MQTT_BROKER_PORT: ${MQTT_BROKER_PORT-1883}

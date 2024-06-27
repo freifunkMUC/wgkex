@@ -1,3 +1,3 @@
-from wgkex.config.config import load_config
+from wgkex.config.config import get_config
 
-__all__ = ["load_config"]
+__all__ = ["get_config"]

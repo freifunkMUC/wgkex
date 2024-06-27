@@ -132,7 +132,6 @@ dmypy.json
 bazel-*
 
 # docker-compose
-.env
 docker-compose.override.yaml
 # docker-compose volumes
 /volumes
@@ -141,3 +140,6 @@ docker-compose.override.yaml
 
 # config file
 wgkex.yaml
+
+# pycharm project metadata
+.idea/

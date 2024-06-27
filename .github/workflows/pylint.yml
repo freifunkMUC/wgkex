@@ -5,7 +5,7 @@ jobs:
     name: GitHub Action for pylint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v4
     - name: GitHub Action for pylint
       uses: cclauss/GitHub-Action-for-pylint@master
       with:

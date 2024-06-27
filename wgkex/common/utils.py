@@ -1,6 +1,9 @@
 """A collection of general utilities."""
+
 import ipaddress
 import re
+
+from wgkex.config import config
 
 
 def mac2eui64(mac: str, prefix=None) -> str:
@@ -35,3 +38,20 @@ def mac2eui64(mac: str, prefix=None) -> str:
     net = ipaddress.ip_network(prefix, strict=False)
     euil = int(f"0x{eui64:16}", 16)
     return f"{net[euil]}/{net.prefixlen}"
+
+
+def is_valid_domain(domain: str) -> bool:
+    """Verifies if the domain is configured.
+
+    Arguments:
+        domain: The domain to verify.
+
+    Returns:
+        True if the domain is valid, False otherwise.
+    """
+    if not domain in config.get_config().domains:
+        return False
+    for prefix in config.get_config().domain_prefixes:
+        if domain.startswith(prefix):
+            return True
+    return False

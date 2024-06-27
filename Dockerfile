@@ -1,14 +1,16 @@
-FROM l.gcr.io/google/bazel:latest AS builder
+FROM gcr.io/bazel-public/bazel:7.1.1 AS builder
 
 WORKDIR /wgkex
 
-COPY . ./
+COPY BUILD WORKSPACE requirements.txt ./
+COPY wgkex ./wgkex
 
 RUN ["bazel", "build", "//wgkex/broker:app"]
 RUN ["bazel", "build", "//wgkex/worker:app"]
 RUN ["cp", "-rL", "bazel-bin", "bazel"]
 
-FROM python:3
+
+FROM python:3.11.8-slim-bookworm
 WORKDIR /wgkex
 
 COPY --from=builder /wgkex/bazel /wgkex/
