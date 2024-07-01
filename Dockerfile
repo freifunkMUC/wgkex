@@ -1,4 +1,4 @@
-FROM gcr.io/bazel-public/bazel:7.1.1 AS builder
+FROM gcr.io/bazel-public/bazel:7.2.1 AS builder
 
 WORKDIR /wgkex
 
