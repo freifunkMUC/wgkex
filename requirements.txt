@@ -9,4 +9,4 @@ waitress~=3.0.0
 ipaddress~=1.0.23
 mock~=5.1.0
 coverage
-paho-mqtt~=1.6.1
+paho-mqtt~=2.1.0
