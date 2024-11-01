@@ -3,7 +3,7 @@ flask-mqtt
 pyroute2~=0.7.12
 PyYAML~=6.0.1
 Flask~=3.0.3
-waitress~=3.0.0
+waitress~=3.0.1
 
 # Common
 ipaddress~=1.0.23
