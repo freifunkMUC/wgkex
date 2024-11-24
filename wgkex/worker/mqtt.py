@@ -9,6 +9,7 @@ import threading
 from typing import Any, Optional
 
 import paho.mqtt.client as mqtt
+import pyroute2.netlink.exceptions
 
 from wgkex.common import logger
 from wgkex.common.mqtt import (
@@ -20,9 +21,7 @@ from wgkex.config.config import get_config
 from wgkex.worker.msg_queue import q
 from wgkex.worker.netlink import (
     get_device_data,
-    link_handler,
     get_connected_peers_count,
-    WireGuardClient,
 )
 
 _HOSTNAME = socket.gethostname()
@@ -206,9 +205,15 @@ def publish_metrics_loop(
     topic = TOPIC_CONNECTED_PEERS.format(domain=domain, worker=_HOSTNAME)
 
     while not exit_event.is_set():
-        publish_metrics(client, topic, domain)
-        # This drifts slightly over time, doesn't matter for us
-        exit_event.wait(_METRICS_SEND_INTERVAL)
+        try:
+            publish_metrics(client, topic, domain)
+        except Exception as e:
+            # Don't crash the thread when an exception is encountered
+            logger.error(f"Exception during publish metrics task for {domain}:")
+            logger.error(e)
+        finally:
+            # This drifts slightly over time, doesn't matter for us
+            exit_event.wait(_METRICS_SEND_INTERVAL)
 
     # Set peers metric to -1 to mark worker as offline
     # Use QoS 1 (at least once) to make sure the broker notices
@@ -227,7 +232,15 @@ def publish_metrics(client: mqtt.Client, topic: str, domain: str) -> None:
             f"Could not get interface name for domain {domain}. Skipping metrics publication"
         )
         return
-    peer_count = get_connected_peers_count(iface)
+
+    try:
+        peer_count = get_connected_peers_count(iface)
+    except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
+        # Handle gracefully, don't update metrics
+        logger.info(
+            "Caught NetlinkDumpInterrupted exception while collecting metrics for domain {domain}"
+        )
+        return
 
     # Publish metrics, retain it at MQTT broker so restarted wgkex broker has metrics right away
     client.publish(topic, peer_count, retain=True)

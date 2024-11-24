@@ -7,6 +7,7 @@ from time import sleep
 
 import mock
 import paho.mqtt.client
+import pyroute2.netlink.exceptions
 
 from wgkex.common.mqtt import TOPIC_CONNECTED_PEERS
 from wgkex.worker import mqtt
@@ -127,6 +128,61 @@ class MQTTTest(unittest.TestCase):
             sleep(0.1)
 
         self.assertFalse(thread.is_alive())
+
+    @mock.patch.object(mqtt, "_METRICS_SEND_INTERVAL", 0.02)
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_connected_peers_count")
+    def test_publish_metrics_loop_no_exception(self, conn_peers_mock, config_mock):
+        """Tests that an exception doesn't interrupt the loop"""
+        config_mock.return_value = _get_config_mock()
+        conn_peers_mock.side_effect = Exception("Mocked exception")
+        mqtt_client = mock.MagicMock(spec=paho.mqtt.client.Client)
+
+        ee = threading.Event()
+        thread = threading.Thread(
+            target=mqtt.publish_metrics_loop,
+            args=(ee, mqtt_client, "_ffmuc_domain.one"),
+        )
+        thread.start()
+
+        i = 0
+        while i < 20 and not len(conn_peers_mock.mock_calls) >= 2:
+            i += 1
+            sleep(0.1)
+
+        self.assertTrue(
+            len(conn_peers_mock.mock_calls) >= 2,
+            "get_connected_peers_count must be called at least twice",
+        )
+
+        mqtt_client.publish.assert_not_called()
+
+        ee.set()
+
+        i = 0
+        while i < 20 and thread.is_alive():
+            i += 1
+            sleep(0.1)
+
+        self.assertFalse(thread.is_alive())
+
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_connected_peers_count")
+    def test_publish_metrics_NetlinkDumpInterrupted(self, conn_peers_mock, config_mock):
+        config_mock.return_value = _get_config_mock()
+        conn_peers_mock.side_effect = (
+            pyroute2.netlink.exceptions.NetlinkDumpInterrupted()
+        )
+        mqtt_client = mock.MagicMock(spec=paho.mqtt.client.Client)
+
+        domain = mqtt.get_config().domains[0]
+        hostname = socket.gethostname()
+        topic = TOPIC_CONNECTED_PEERS.format(domain=domain, worker=hostname)
+
+        # Must not raise NetlinkDumpInterrupted, but handle gracefully by doing nothing
+        mqtt.publish_metrics(mqtt_client, topic, domain)
+
+        mqtt_client.publish.assert_not_called()
 
     @mock.patch.object(mqtt, "get_config")
     def test_on_message_wireguard_success(self, config_mock):
