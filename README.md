@@ -1,26 +1,27 @@
+# WGKex
+
 [![Coverage Status](https://coveralls.io/repos/github/freifunkMUC/wgkex/badge.svg?branch=main)](https://coveralls.io/github/freifunkMUC/wgkex?branch=main)
 [![pylint](https://github.com/freifunkMUC/wgkex/actions/workflows/pylint.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/pylint.yml)
 [![Lint](https://github.com/freifunkMUC/wgkex/actions/workflows/black.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/black.yml)
 [![Bazel tests](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml)
 
-- [WireGuard Key Exchange](#wireguard-key-exchange)
+- [WGKex](#wgkex)
   - [Overview](#overview)
     - [Frontend broker](#frontend-broker)
-      - [POST /api/v1/wg/key/exchange](#post-apiv1wgkeyexchange)
-      - [POST /api/v2/wg/key/exchange](#post-apiv2wgkeyexchange)
     - [Backend worker](#backend-worker)
   - [Installation](#installation)
   - [Configuration](#configuration)
-  - [Running the broker and worker](#running-the-broker-and-worker)
+  - [Development](#development)
     - [Build using Bazel](#build-using-bazel)
-    - [Run using Python](#run-using-python)
-  - [Client usage](#client-usage)
-    - [Worker](#worker)
+    - [Updating PIP dependencies for Bazel](#updating-pip-dependencies-for-bazel)
+    - [Unit tests](#unit-tests)
+    - [Run Worker \& Broker using Bazel](#run-worker--broker-using-bazel)
+    - [Run Worker \& Broker using Python](#run-worker--broker-using-python)
+    - [Client](#client)
+    - [MQTT topics](#mqtt-topics)
   - [Contact](#contact)
 
-# WireGuard Key Exchange
-
-wgkex is a WireGuard key exchange and management tool designed and run by FFMUC.
+wgkex was started as a WireGuard key exchange tool, but has evolved beyond to the main node management tool of FFMUC.
 
 ## Overview
 
@@ -125,49 +126,18 @@ For further information, please see this [presentation on the architecture](http
 The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
 can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
 
-## Running the broker and worker
+## Development
 
 ### Build using [Bazel](https://bazel.build)
 
-Worker:
-
 ```sh
-# defaults to /etc/wgkex.yaml if not set
-export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
-bazel build //wgkex/worker:app
-# Artifact will now be placed into ./bazel-bin/wgkex/worker/app
-./bazel-bin/wgkex/worker/app
-```
-
-Broker:
-
-```sh
-# defaults to /etc/wgkex.yaml if not set
-export WGKEX_CONFIG_FILE=/opt/wgkex/wgkex.yaml
+# modify .bazelversion if you want to test another version of Bazel (using Bazelisk)
 bazel build //wgkex/broker:app
-# Artifact will now be placed into ./bazel-bin/wgkex/broker/app
-./bazel-bin/wgkex/broker/app
+bazel build //wgkex/worker:app
+# artifacts will be at ./bazel-bin/wgkex/{broker,worker}/app respectively
 ```
 
-### Run using Python
-
-Broker:
-(Using Flask development server)
-
-```sh
-FLASK_ENV=development FLASK_DEBUG=1 FLASK_APP=wgkex/broker/app.py python3 -m flask run
-```
-
-Worker:
-
-```sh
-python3 -c 'from wgkex.worker.app import main; main()'
-```
-
-
-## Development
-
-### Updating PIP dependencies
+### Updating PIP dependencies for Bazel
 
 This package is using Bazel's `compile_pip_requirements` to get a requirements_lock.txt file.
 In order to update the respective depencencies after modifying the requirements.txt, run:
@@ -178,25 +148,105 @@ bazel run //:requirements.update
 
 ### Unit tests
 
-The test can be run using `bazel test ... --test_output=all` or `python3 -m unittest discover -p '*_test.py'`.
+The test can be run using
+
+```sh
+bazel test ... --test_output=all
+```
+
+or
+
+```sh
+python3 -m unittest discover -p '*_test.py'
+```
+
+### Run Worker & Broker using Bazel
+
+1. After having built the broker and worker (see above),
+   set up dummy interfaces for the worker using this script:
+
+   ```sh
+   interface_linklocal() {
+     # We generate a predictable v6 address
+     local macaddr="$(echo $1 | wg pubkey |md5sum|sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')"
+     local oldIFS="$IFS"; IFS=':'; set -- $macaddr; IFS="$oldIFS"
+     echo "fe80::$1$2:$3ff:fe$4:$5$6"
+   }
+
+   sudo ip link add wg-welt type wireguard
+   wg genkey | sudo wg set wg-welt private-key /dev/stdin
+   sudo wg set wg-welt listen-port 51820
+   addr=$(interface_linklocal $(sudo wg show wg-welt private-key))
+   sudo ip addr add $addr dev wg-welt
+   sudo ip link add vx-welt type vxlan id 99 dstport 0 local $addr dev wg-welt
+   sudo ip addr add fe80::1/64 dev vx-welt
+   sudo ip link set wg-welt up
+   sudo ip link set vx-welt up
+   ```
+
+2. Generate a development configuration:
+
+   ```sh
+   sed -E '/(ffmuc_muc|ffwert|ffdon)/d' wgkex.yaml.example > wgkex.yaml
+   ```
+
+3. Run the broker in a terminal:
+
+   ```sh
+   # defaults to /etc/wgkex.yaml if not set
+   export WGKEX_CONFIG_FILE=$PWD/wgkex.yaml
+   ./bazel-bin/wgkex/broker/app
+   ```
+
+4. And run the worker in a second terminal:
+
+   ```sh
+   export WGKEX_CONFIG_FILE=$PWD/wgkex.yaml
+   # the worker requires admin permissions to read interfaces
+   sudo -E ./bazel-bin/wgkex/worker/app
+   ```
+
+### Run Worker & Broker using Python
+
+Follow steps above to set generate the new config and export the `WGKEX_CONFIG_FILE`
+then start the broker and worker like the following:
+
+- Broker (Using Flask development server)
+
+  ```sh
+  FLASK_ENV=development FLASK_DEBUG=1 FLASK_APP=wgkex/broker/app.py python3 -m flask run
+  ```
+
+- Worker
+
+  ```sh
+  python3 -c 'from wgkex.worker.app import main; main()'
+  ```
 
 ### Client
 
 The client can be used via CLI:
 
+```sh
+wget -q -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}' 'http://127.0.0.1:5000/api/v2/wg/key/exchange'
 ```
-$ wget -q  -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}'   --header='Content-Type:application/json'   'http://127.0.0.1:5000/api/v2/wg/key/exchange'
+
+and it should output something similar to:
+
+```json
 {
   "Endpoint": {
-    "Address": "gw04.ext.ffmuc.net:40011",
-    "LinkAddress": "fe80::27c:16ff:fec0:6c74",
+    "Address": "gw04.ext.ffmuc.net",
+    "AllowedIPs": [
+      "fe80::27c:16ff:fec0:6c74"
+    ],
+    "Port": "40011",
     "PublicKey": "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g="
-  },
-  "Message": "OK"
+  }
 }
 ```
 
-Or via python:
+Or use Python instead of wget:
 
 ```python
 import requests
@@ -204,29 +254,6 @@ key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM
 broker_url = "http://127.0.0.1:5000"
 push_key = requests.get(f'{broker_url}/api/v2/wg/key/exchange', json=key_data)
 print(f'Key push was: {push_key.json().get("Message")}')
-```
-
-### Worker
-
-You can set up dummy interfaces for the worker using this script:
-
-```sh
-interface_linklocal() {
-  # We generate a predictable v6 address
-  local macaddr="$(echo $1 | wg pubkey |md5sum|sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')"
-  local oldIFS="$IFS"; IFS=':'; set -- $macaddr; IFS="$oldIFS"
-  echo "fe80::$1$2:$3ff:fe$4:$5$6"
-}
-
-sudo ip link add wg-welt type wireguard
-wg genkey | sudo wg set wg-welt private-key /dev/stdin
-sudo wg set wg-welt listen-port 51820
-addr=$(interface_linklocal $(sudo wg show wg-welt private-key))
-sudo ip addr add $addr dev wg-welt
-sudo ip link add vx-welt type vxlan id 99 dstport 0 local $addr dev wg-welt
-sudo ip addr add fe80::1/64 dev vx-welt
-sudo ip link set wg-welt up
-sudo ip link set vx-welt up
 ```
 
 ### MQTT topics
