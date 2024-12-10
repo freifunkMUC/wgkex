@@ -167,6 +167,15 @@ python3 -c 'from wgkex.worker.app import main; main()'
 
 ## Development
 
+### Updating PIP dependencies
+
+This package is using Bazel's `compile_pip_requirements` to get a requirements_lock.txt file.
+In order to update the respective depencencies after modifying the requirements.txt, run:
+
+```sh
+bazel run //:requirements.update
+```
+
 ### Unit tests
 
 The test can be run using `bazel test ... --test_output=all` or `python3 -m unittest discover -p '*_test.py'`.

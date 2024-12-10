@@ -2,7 +2,7 @@ FROM gcr.io/bazel-public/bazel:7.4.1 AS builder
 
 WORKDIR /wgkex
 
-COPY BUILD WORKSPACE requirements.txt ./
+COPY .bazelrc BUILD MODULE.bazel MODULE.bazel.lock requirements_lock.txt ./
 COPY wgkex ./wgkex
 
 RUN ["bazel", "build", "//wgkex/broker:app"]
