@@ -171,8 +171,9 @@ netlink==0.1 \
     --hash=sha256:b8d6f54887d023d4e9e55fecab53410f33a2b1bc76298b22348af8a78a48f43b \
     --hash=sha256:d9fcc15add8c48145f16d6a3a2ce91703c32af7412871759057b5ec16c734fdd
     # via -r requirements.txt
-paho-mqtt==1.6.1 \
-    --hash=sha256:2a8291c81623aec00372b5a85558a372c747cbca8e9934dfe218638b8eefc26f
+paho-mqtt==2.1.0 \
+    --hash=sha256:12d6e7511d4137555a3f6ea167ae846af2c7357b10bc6fa4f7c3968fc1723834 \
+    --hash=sha256:6db9ba9b34ed5bc6b6e3812718c7e06e2fd7444540df2455d2c51bd58808feee
     # via
     #   -r requirements.txt
     #   flask-mqtt
