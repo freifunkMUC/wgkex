@@ -37,6 +37,8 @@ def connect(exit_event: threading.Event) -> None:
     base_config = get_config().mqtt
     broker_address = base_config.broker_url
     broker_port = base_config.broker_port
+    broker_username = base_config.username
+    broker_password = base_config.password
     broker_keepalive = base_config.keepalive
     client = mqtt.Client(_HOSTNAME)
     domains = get_config().domains
@@ -51,6 +53,7 @@ def connect(exit_event: threading.Event) -> None:
     client.message_callback_add("wireguard/#", on_message_wireguard)
     logger.info("connecting to broker %s", broker_address)
 
+    client.username_pw_set(broker_username, broker_password)
     client.connect(broker_address, port=broker_port, keepalive=broker_keepalive)
 
     # Start background threads that should not be restarted on reconnect
