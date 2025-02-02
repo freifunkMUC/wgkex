@@ -19,11 +19,11 @@ jobs:
           sudo apt-get install -y lcov
           mkdir "${GITHUB_WORKSPACE}/src"
           cd "${GITHUB_WORKSPACE}/src"
-          curl -L https://files.pythonhosted.org/packages/18/a0/bfa6c6ab7a5f0aeb69dd169d956ead54133f5bca68a5945c4569ea2c40b3/coverage-7.1.0.tar.gz | tar xvz
+          curl -L https://files.pythonhosted.org/packages/84/ba/ac14d281f80aab516275012e8875991bb06203957aa1e19950139238d658/coverage-7.6.10.tar.gz | tar xvz
           cd "${GITHUB_WORKSPACE}"
           bazel coverage --combined_report=lcov --javabase=@bazel_tools//tools/jdk:remote_jdk11 -t- --instrument_test_targets \
             --experimental_cc_coverage --test_output=errors --linkopt=--coverage --linkopt=-lc \
-            --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.1.0/__main__.py  \
+            --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.6.10/__main__.py  \
             --define=config_file=test ...:all
       - name: Coveralls
         uses: coverallsapp/github-action@master
