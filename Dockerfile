@@ -11,7 +11,7 @@ RUN ["bazel", "build", "//wgkex/worker:app"]
 RUN ["cp", "-rL", "bazel-bin", "bazel"]
 
 
-FROM python:3.13.1-slim-bookworm
+FROM python:3.13.2-slim-bookworm
 WORKDIR /wgkex
 
 COPY --from=builder /wgkex/bazel /wgkex/
