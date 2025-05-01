@@ -40,7 +40,7 @@ def connect(exit_event: threading.Event) -> None:
     broker_username = base_config.username
     broker_password = base_config.password
     broker_keepalive = base_config.keepalive
-    client = mqtt.Client(_HOSTNAME)
+    client = mqtt.Client(_HOSTNAME, mqtt.CallbackAPIVersion.VERSION1)
     domains = get_config().domains
 
     # Register LWT to set worker status down when lossing connection
