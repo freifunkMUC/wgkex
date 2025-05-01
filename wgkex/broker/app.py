@@ -90,7 +90,8 @@ def wg_api_v1_key_exchange() -> Tuple[Response | Dict, int]:
     try:
         data = KeyExchange.from_dict(request.get_json(force=True))
     except Exception as ex:
-        return {"error": {"message": str(ex)}}, 400
+        logger.error(f"Exception occurred in /api/v1/wg/key/exchange: {ex}", exc_info=True)
+        return {"error": {"message": "An internal error has occurred. Please try again later."}}, 400
 
     key = data.public_key
     domain = data.domain
@@ -112,7 +113,8 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     try:
         data = KeyExchange.from_dict(request.get_json(force=True))
     except Exception as ex:
-        return {"error": {"message": str(ex)}}, 400
+        logger.error(f"Exception occurred in /api/v2/wg/key/exchange: {ex}", exc_info=True)
+        return {"error": {"message": "An internal error has occurred. Please try again later."}}, 400
 
     key = data.public_key
     domain = data.domain
