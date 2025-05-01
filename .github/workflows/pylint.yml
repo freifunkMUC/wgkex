@@ -1,12 +1,16 @@
 on: [push, pull_request]
 name: pylint
+
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   gitHubActionForPylint:
     name: GitHub Action for pylint
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: GitHub Action for pylint
-      uses: cclauss/GitHub-Action-for-pylint@master
-      with:
-        args: pylint **/*.py
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: astral-sh/ruff-action@c6bea5606c33b5d04902374392d9233464b90660 # v3.3.0
+        with:
+          src: "./wgkex"
