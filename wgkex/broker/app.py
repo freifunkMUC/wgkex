@@ -91,7 +91,7 @@ def wg_api_v1_key_exchange() -> Tuple[Response | Dict, int]:
         data = KeyExchange.from_dict(request.get_json(force=True))
     except Exception as ex:
         logger.error(
-            f"Exception occurred in /api/v1/wg/key/exchange: {ex}", exc_info=True
+            "Exception occurred in /api/v1/wg/key/exchange: %s", ex, exc_info=True
         )
         return {
             "error": {
@@ -120,7 +120,7 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
         data = KeyExchange.from_dict(request.get_json(force=True))
     except Exception as ex:
         logger.error(
-            f"Exception occurred in /api/v2/wg/key/exchange: {ex}", exc_info=True
+            "Exception occurred in /api/v2/wg/key/exchange: %s", ex, exc_info=True
         )
         return {
             "error": {
