@@ -2,7 +2,7 @@ NetLink~=0.1
 flask-mqtt
 pyroute2~=0.9.2
 PyYAML~=6.0.1
-Flask~=3.1.0
+Flask~=3.1.1
 waitress~=3.0.0
 
 # Common
