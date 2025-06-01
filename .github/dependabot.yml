@@ -6,17 +6,11 @@ updates:
   - package-ecosystem: pip
     directory: /
     schedule: {interval: monthly}
-    reviewers: [freifunkMUC/salt-stack]
-    assignees: [freifunkMUC/salt-stack]
 
   - package-ecosystem: github-actions
     directory: /
     schedule: {interval: monthly}
-    reviewers: [freifunkMUC/salt-stack]
-    assignees: [freifunkMUC/salt-stack]
 
   - package-ecosystem: docker
     directory: /
     schedule: {interval: monthly}
-    reviewers: [freifunkMUC/salt-stack]
-    assignees: [freifunkMUC/salt-stack]
