@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
+import json
 import threading
 from queue import Queue
 from time import sleep
 from wgkex.common import logger
-from wgkex.worker.netlink import link_handler
+from wgkex.worker.netlink import link_handler, parker_link_handler
 from wgkex.worker.netlink import WireGuardClient, ParkerWireGuardClient
 
 
@@ -39,7 +40,7 @@ def pick_from_queue(parker: bool = False) -> None:
             logger.debug("Queue is not empty current size is %i", q.qsize())
 
             if parker:
-                message = q.get()
+                message = json.loads(q.get())
                 client = ParkerWireGuardClient(
                     # TODO use shared data class
                     public_key=message.get("PublicKey"),
@@ -50,7 +51,7 @@ def pick_from_queue(parker: bool = False) -> None:
                 logger.info(
                     f"Processing queue for key {client.public_key} with range {client.range6}"
                 )
-                logger.debug(link_handler_parker(client))
+                logger.debug(parker_link_handler(client))
             else:
                 domain, message = q.get()
                 logger.debug("Processing queue item %s for domain %s", message, domain)
