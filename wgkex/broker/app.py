@@ -259,18 +259,25 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     # TODO: fetch IPv6 /63 from Netbox, first /64 for the node's client network, second /64 for 464XLAT
     # push both to gateways via MQTT, so that they configure the routing for it
+    range6 = "2001:db8:ed0:1::/64"
 
     gateway: str = "all"
 
+    mqtt_data = {
+        "PublicKey": req_data.pubkey,
+        "Range6": range6,
+        "Keepalive": 25,
+    }
+
     logger.info(f"wg_api_v3_key_exchange: Key:{req_data.pubkey}")
-    mqtt.publish(f"parker/wireguard/{gateway}", req_data.pubkey.encode("utf-8"))
+    mqtt.publish(f"parker/wireguard/{gateway}", json.dumps(mqtt_data).encode("utf-8"))
 
     response = ParkerResponse(
         nonce=req_data.nonce,
         time=int(datetime.now(tz=timezone.utc).timestamp()),
         id=req_data.pubkey,
         mtu=min(req_data.v6mtu, 1375),
-        range6="2001:db8:ed0:1::/64",
+        range6=range6,
         address6="2001:db8:ed0:1::1",
         selected_contentrators="1",
     )

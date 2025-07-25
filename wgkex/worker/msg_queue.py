@@ -4,7 +4,7 @@ from queue import Queue
 from time import sleep
 from wgkex.common import logger
 from wgkex.worker.netlink import link_handler
-from wgkex.worker.netlink import WireGuardClient
+from wgkex.worker.netlink import WireGuardClient, ParkerWireGuardClient
 
 
 class UniqueQueue(Queue):
@@ -28,26 +28,41 @@ q = UniqueQueue()
 def watch_queue() -> None:
     """Watches the queue for new messages."""
     logger.debug("Starting queue watcher")
-    threading.Thread(target=pick_from_queue, daemon=True).start()
+    threading.Thread(target=pick_from_queue, args=[False], daemon=True).start()
 
 
-def pick_from_queue() -> None:
+def pick_from_queue(parker: bool = False) -> None:
     """Picks a message from the queue and processes it."""
     logger.debug("Starting queue processor")
     while True:
         if not q.empty():
             logger.debug("Queue is not empty current size is %i", q.qsize())
-            domain, message = q.get()
-            logger.debug("Processing queue item %s for domain %s", message, domain)
-            client = WireGuardClient(
-                public_key=message,
-                domain=domain,
-                remove=False,
-            )
-            logger.info(
-                f"Processing queue for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
-            )
-            logger.debug(link_handler(client))
+
+            if parker:
+                message = q.get()
+                client = ParkerWireGuardClient(
+                    # TODO use shared data class
+                    public_key=message.get("PublicKey"),
+                    range6=message.get("Range6"),
+                    keepalive=message.get("Keepalive"),
+                    remove=False,
+                )
+                logger.info(
+                    f"Processing queue for key {client.public_key} with range {client.range6}"
+                )
+                logger.debug(link_handler_parker(client))
+            else:
+                domain, message = q.get()
+                logger.debug("Processing queue item %s for domain %s", message, domain)
+                client = WireGuardClient(
+                    public_key=message,
+                    domain=domain,
+                    remove=False,
+                )
+                logger.info(
+                    f"Processing queue for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
+                )
+                logger.debug(link_handler(client))
             q.task_done()
         else:
             logger.debug("Queue is empty")

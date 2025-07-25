@@ -149,6 +149,7 @@ class Config:
     mqtt: MQTT
     workers: Workers
     external_name: Optional[str]
+    parker: bool = False
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
@@ -169,6 +170,7 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            parker=cfg.get("parker", False),
         )
 
     def get(self, key: str) -> Any:
