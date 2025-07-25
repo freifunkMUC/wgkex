@@ -25,10 +25,10 @@ class UniqueQueue(Queue):
 q = UniqueQueue()
 
 
-def watch_queue() -> None:
+def watch_queue(parker: bool = False) -> None:
     """Watches the queue for new messages."""
     logger.debug("Starting queue watcher")
-    threading.Thread(target=pick_from_queue, args=[False], daemon=True).start()
+    threading.Thread(target=pick_from_queue, args=[parker], daemon=True).start()
 
 
 def pick_from_queue(parker: bool = False) -> None:

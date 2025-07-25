@@ -43,7 +43,7 @@ def connect(exit_event: threading.Event) -> None:
     broker_username = base_config.username
     broker_password = base_config.password
     broker_keepalive = base_config.keepalive
-    client = mqtt.Client(_HOSTNAME, mqtt.CallbackAPIVersion.VERSION1)
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, _HOSTNAME)
 
     domains: List[str] = []
     if not parker:

@@ -145,7 +145,7 @@ def main():
                 raise InvalidDomain(f"Domain {domain} has invalid prefix.")
         clean_up_worker()
 
-    watch_queue()
+    watch_queue(parker)
     mqtt.connect(exit_event)
 
 

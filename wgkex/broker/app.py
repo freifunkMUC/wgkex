@@ -175,6 +175,7 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     return {"Endpoint": endpoint}, 200
 
 
+@app.route("/api/v3/wg/key/exchange", methods=["POST"])
 def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     @dataclasses.dataclass
     class ParkerQuery:
@@ -249,7 +250,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         req_data = ParkerQuery.from_dict(request.get_json(force=True))
     except Exception as ex:
         logger.error(
-            "Exception occurred in /api/v2/wg/key/exchange: %s", ex, exc_info=True
+            "Exception occurred in /api/v3/wg/key/exchange: %s", ex, exc_info=True
         )
         return {
             "error": {
