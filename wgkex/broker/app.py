@@ -241,6 +241,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         # currently only possible to use concentrator ids between 1 and 64.
         selected_contentrators: str
         range6: str  # TODO take from IPAM
+        xlat_range6: str  # FFMUC addition
         range4: str = "10.80.99.0/22"  # always the same with 464XLAT
         address4: str = "10.80.99.1"
         wg_keepalive: int = 25
@@ -260,14 +261,15 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     # TODO: fetch IPv6 /63 from Netbox, first /64 for the node's client network, second /64 for 464XLAT
     # push both to gateways via MQTT, so that they configure the routing for it
-    range6 = "2001:db8:ed0:1::/64"
+    range6 = "2001:db8:ed0:2::/64"
+    xlat_range6 = "2001:db8:ed0:3::/64"
 
     gateway: str = "all"
 
     mqtt_data = {
         "PublicKey": req_data.pubkey,
-        "Range6": range6,
-        "Keepalive": 25,
+        "Range6": "2001:db8:ed0:2::/63",
+        "Keepalive": None,  # TODO make configurable
     }
 
     logger.info(f"wg_api_v3_key_exchange: Key:{req_data.pubkey}")
@@ -279,6 +281,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         id=req_data.pubkey,
         mtu=min(req_data.v6mtu, 1375),
         range6=range6,
+        xlat_range6=xlat_range6,
         address6="2001:db8:ed0:1::1",
         selected_contentrators="1",
     )

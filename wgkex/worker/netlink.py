@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from textwrap import wrap
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pyroute2, pyroute2.netlink, pyroute2.netlink.exceptions
 
@@ -70,8 +70,8 @@ class ParkerWireGuardClient:
 
     public_key: str
     range6: str
-    keepalive: int
     remove: bool
+    keepalive: Optional[int] = None
 
 
 def wg_flush_stale_peers(domain: str) -> List[Dict]:
@@ -213,9 +213,10 @@ def update_parker_wireguard_peer(client: ParkerWireGuardClient) -> Dict:
         wg_peer = {
             "public_key": client.public_key,
             "allowed_ips": [client.range6],
-            "persistent_keepalive_interval": client.keepalive,
             "remove": client.remove,
         }
+        if client.keepalive is not None:
+            wg_peer["persistent_keepalive"] = client.keepalive
         return wg.set("wg-nodes", peer=wg_peer)  # TODO make interface name configurable
 
 
