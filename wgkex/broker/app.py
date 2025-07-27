@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """wgkex broker"""
 import dataclasses
+import ipaddress
 import json
 import re
 from datetime import datetime, time, timezone
@@ -261,14 +262,17 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     # TODO: fetch IPv6 /63 from Netbox, first /64 for the node's client network, second /64 for 464XLAT
     # push both to gateways via MQTT, so that they configure the routing for it
-    range6 = "2001:db8:ed0:2::/64"
-    xlat_range6 = "2001:db8:ed0:3::/64"
+
+    full_range6 = get_range6(req_data.pubkey)
+    ranges = full_range6.subnets(new_prefix=64)
+    range6 = ranges.__next__()
+    xlat_range6 = ranges.__next__()
 
     gateway: str = "all"
 
     mqtt_data = {
         "PublicKey": req_data.pubkey,
-        "Range6": "2001:db8:ed0:2::/63",
+        "Range6": str(full_range6),
         "Keepalive": None,  # TODO make configurable
     }
 
@@ -280,13 +284,25 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         time=int(datetime.now(tz=timezone.utc).timestamp()),
         id=req_data.pubkey,
         mtu=min(req_data.v6mtu, 1375),
-        range6=range6,
-        xlat_range6=xlat_range6,
-        address6="2001:db8:ed0:1::1",
+        range6=str(range6),
+        xlat_range6=str(xlat_range6),
+        address6=str(range6.network_address + 1),
         selected_contentrators="1",
     )
 
     return dataclasses.asdict(response), 200
+
+
+def get_range6(pubkey: str) -> ipaddress.IPv6Network:
+    """Returns the IPv6 range for a node with a given public key."""
+    ranges = {
+        "7ybL85wUPWPktU25HvuPLsiDUIeqSR3Ydb3RuXpat1w=": "2001:db8:ed0:2::/63",
+        "ZoOtemmk3Ba62vYnzrcfHWTcfMWulRnvvvqwB8J2KmU=": "2001:db8:ed0:3::/63",
+    }
+    range = ranges.get(pubkey, None)
+    if range is None:
+        logger.error(f"No IPv6 range found for public key {pubkey}")
+    return ipaddress.IPv6Network(range)
 
 
 @mqtt.on_connect()
