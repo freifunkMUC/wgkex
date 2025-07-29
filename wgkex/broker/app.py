@@ -1,18 +1,22 @@
 #!/usr/bin/env python3
 """wgkex broker"""
+import base64
 import dataclasses
+import hashlib
 import ipaddress
 import json
+import os
 import re
-from datetime import datetime, time, timezone
-from typing import Dict, Tuple, Any
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple, Any
 
 import paho.mqtt.client as mqtt_client
+import ecdsa
 from flask import Flask, render_template, request, Response
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
-
 from waitress import serve
+
 from wgkex.config import config
 from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
@@ -225,17 +229,9 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         # }
 
         id: str
-        concentrators = [
-            {
-                "address4": "10.0.0.1",
-                "address6": "2001:bf7:381::1",
-                "endpoint": "46.226.127.236:10000",
-                "pubkey": "HxEDblNTIncBx3MiT535/JPbZDlnSdtC/+rEokOb0Hk=",
-                "id": 1,
-            }
-        ]
         mtu: int
         address6: str
+        concentrators: List[Dict[str, str | int]]
         # selected_concentrators: This value contains a space separated list of the concentrator ids to
         # include in the config response. If it is empty or not set, it will
         # default to return all concentrators. Due to the implementation it is
@@ -251,12 +247,14 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     try:
         req_data = ParkerQuery.from_dict(request.get_json(force=True))
     except Exception as ex:
-        logger.error(
-            "Exception occurred in /api/v3/wg/key/exchange: %s", ex, exc_info=True
+        logger.warning(
+            "Couldn't parse client query in /api/v3/wg/key/exchange: %s",
+            ex,
+            exc_info=True,
         )
         return {
             "error": {
-                "message": "An internal error has occurred. Please try again later."
+                "message": "Invalid data received. Please check your request and try again."
             }
         }, 400
 
@@ -264,6 +262,12 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     # push both to gateways via MQTT, so that they configure the routing for it
 
     full_range6 = get_range6(req_data.pubkey)
+    if full_range6 is None:
+        return {
+            "error": {
+                "message": "No IPv6 range available for this public key. Please try again later."
+            }
+        }, 500
     ranges = full_range6.subnets(new_prefix=64)
     range6 = ranges.__next__()
     xlat_range6 = ranges.__next__()
@@ -288,20 +292,86 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         xlat_range6=str(xlat_range6),
         address6=str(range6.network_address + 1),
         selected_contentrators="1",
+        concentrators=[
+            {
+                "address4": "10.0.0.1",
+                "address6": "fe80::28f:a7ff:fec6:7530",
+                "endpoint": f"{config.get_config().external_name}:40000",
+                "pubkey": "4WAyZBpHcyRE5+L4ApV+jjWgj4q1o3CrCQ3NjclXfV4=",
+                "id": 1,
+            }
+        ],
     )
 
-    return dataclasses.asdict(response), 200
+    data = json.dumps(dataclasses.asdict(response)).encode("utf-8")
+    if config.get_config().broker_signature_key is None:
+        logger.error(
+            "Parker is enabled, but no broker_signature_key is set in the config file. Can't respond to key exchange."
+        )
+        return {
+            "error": {"message": "Internal signature error. Please try again later."}
+        }, 500
+
+    privkey_str = base64.b64decode(config.get_config().broker_signature_key)
+
+    privkey = ecdsa.SigningKey.from_string(
+        privkey_str, curve=ecdsa.Ed25519, hashfunc=hashlib.sha256
+    )
+    signature: bytes = base64.b64encode(privkey.sign(data))
+
+    full_response: bytes = data + "\n".encode("utf-8") + signature
+
+    return (
+        Response(
+            response=full_response,
+            mimetype="text/plain",
+        ),
+        200,
+    )
 
 
-def get_range6(pubkey: str) -> ipaddress.IPv6Network:
+def get_range6(pubkey: str) -> Optional[ipaddress.IPv6Network]:
     """Returns the IPv6 range for a node with a given public key."""
-    ranges = {
-        "7ybL85wUPWPktU25HvuPLsiDUIeqSR3Ydb3RuXpat1w=": "2001:db8:ed0:2::/63",
-        "ZoOtemmk3Ba62vYnzrcfHWTcfMWulRnvvvqwB8J2KmU=": "2001:db8:ed0:3::/63",
-    }
+    ranges: Dict[str, str] = {}
+    parent_prefix = ipaddress.IPv6Network("2001:db8:ed0::/56")  # Default parent prefix
+    try:
+        with open("/var/local/wgkex/broker/ipv6_ranges.json", "r") as f:
+            json_content = json.load(f)
+            ranges = json_content.get("ranges", {})
+            parent_prefix = ipaddress.IPv6Network(
+                json_content.get("parent_prefix", parent_prefix)
+            )
+    except FileNotFoundError:
+        os.makedirs("/var/local/wgkex/broker", exist_ok=True)
+    except json.JSONDecodeError:
+        pass
+
     range = ranges.get(pubkey, None)
-    if range is None:
-        logger.error(f"No IPv6 range found for public key {pubkey}")
+    if range is None or not ipaddress.IPv6Network(range).subnet_of(parent_prefix):
+        parsed_ranges = [
+            ipaddress.IPv6Network(rg)
+            for rg in ranges.values()
+            if ipaddress.IPv6Network(rg).subnet_of(parent_prefix)
+        ]  # Filter out any ranges that are not subnets of the parent prefix
+
+        prefixes = parent_prefix.subnets(new_prefix=63)
+        next(prefixes)  # skip first
+        for candidate in prefixes:
+            if candidate not in parsed_ranges:
+                range = candidate
+                break
+        if range is None:
+            logger.error(f"No IPv6 range available for public key {pubkey}.")
+            return None
+        else:
+            logger.info(
+                f"No existing IPv6 range found for public key {pubkey}, assigning {range}"
+            )
+
+        ranges[pubkey] = str(range)
+        with open("/var/local/wgkex/broker/ipv6_ranges.json", "w") as f:
+            json.dump({"parent_prefix": str(parent_prefix), "ranges": ranges}, f)
+
     return ipaddress.IPv6Network(range)
 
 
