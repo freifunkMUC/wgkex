@@ -180,7 +180,14 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     return {"Endpoint": endpoint}, 200
 
 
-@app.route("/api/v3/wg/key/exchange", methods=["POST"])
+privkey_str = base64.b64decode(config.get_config().broker_signature_key)
+
+privkey = ecdsa.SigningKey.from_string(
+    privkey_str, curve=ecdsa.Ed25519, hashfunc=hashlib.sha256
+)
+
+
+@app.route("/api/v3/wg/key/exchange", methods=["GET"])
 def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     @dataclasses.dataclass
     class ParkerQuery:
@@ -196,7 +203,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         @classmethod
         def from_dict(cls, data: dict[str, Any]) -> "ParkerQuery":
             """Creates a new Query object from dict."""
-            v6mtu: int = data.get("v6mtu", 1280)
+            v6mtu: int = int(data.get("v6mtu", 1280))
             pubkey: str = is_valid_wg_pubkey(data.get("pubkey", ""))
             nonce: str = data.get("nonce", "")
             return cls(v6mtu=v6mtu, pubkey=pubkey, nonce=nonce)
@@ -245,7 +252,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         retry: int = 120
 
     try:
-        req_data = ParkerQuery.from_dict(request.get_json(force=True))
+        req_data = ParkerQuery.from_dict(request.args)
     except Exception as ex:
         logger.warning(
             "Couldn't parse client query in /api/v3/wg/key/exchange: %s",
@@ -312,11 +319,6 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             "error": {"message": "Internal signature error. Please try again later."}
         }, 500
 
-    privkey_str = base64.b64decode(config.get_config().broker_signature_key)
-
-    privkey = ecdsa.SigningKey.from_string(
-        privkey_str, curve=ecdsa.Ed25519, hashfunc=hashlib.sha256
-    )
     signature: bytes = base64.b64encode(privkey.sign(data))
 
     full_response: bytes = data + "\n".encode("utf-8") + signature
