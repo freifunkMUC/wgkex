@@ -11,16 +11,16 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 
 import paho.mqtt.client as mqtt_client
-import ecdsa
 from flask import Flask, render_template, request, Response
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
 from waitress import serve
 
+from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.broker.signer import sign_response
 from wgkex.config import config
 from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
-from wgkex.broker.metrics import WorkerMetricsCollection
 from wgkex.common.mqtt import (
     CONNECTED_PEERS_METRIC,
     TOPIC_WORKER_STATUS,
@@ -180,13 +180,6 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     return {"Endpoint": endpoint}, 200
 
 
-privkey_str = base64.b64decode(config.get_config().broker_signature_key)
-
-privkey = ecdsa.SigningKey.from_string(
-    privkey_str, curve=ecdsa.Ed25519, hashfunc=hashlib.sha256
-)
-
-
 @app.route("/api/v3/wg/key/exchange", methods=["GET"])
 def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     @dataclasses.dataclass
@@ -319,7 +312,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             "error": {"message": "Internal signature error. Please try again later."}
         }, 500
 
-    signature: bytes = base64.b64encode(privkey.sign(data))
+    signature: bytes = sign_response(data)
 
     full_response: bytes = data + "\n".encode("utf-8") + signature
 
