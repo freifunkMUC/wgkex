@@ -150,7 +150,7 @@ class Config:
     workers: Workers
     external_name: Optional[str]
     parker: bool = False
-    broker_signature_key: Optional[str] = None
+    broker_signing_key: Optional[str] = None
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
@@ -164,10 +164,10 @@ class Config:
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
         workers_cfg = Workers.from_dict(cfg.get("workers", {}))
         parker = cfg.get("parker", False)
-        broker_signature_key = cfg.get("broker_signature_key", None)
-        if parker and broker_signature_key is None:
+        broker_signing_key = cfg.get("broker_signing_key", None)
+        if parker and broker_signing_key is None:
             raise ValueError(
-                "Parker is enabled, but no broker_signature_key is set in the config file"
+                "Parker is enabled, but no broker_signing_key is set in the config file"
             )
         return cls(
             raw=cfg,
@@ -178,7 +178,7 @@ class Config:
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
             parker=parker,
-            broker_signature_key=broker_signature_key,
+            broker_signing_key=broker_signing_key,
         )
 
     def get(self, key: str) -> Any:

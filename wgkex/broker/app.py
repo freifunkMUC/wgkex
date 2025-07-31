@@ -304,9 +304,9 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     )
 
     data = json.dumps(dataclasses.asdict(response)).encode("utf-8")
-    if config.get_config().broker_signature_key is None:
+    if config.get_config().broker_signing_key is None:
         logger.error(
-            "Parker is enabled, but no broker_signature_key is set in the config file. Can't respond to key exchange."
+            "Parker is enabled, but no broker_signing_key is set in the config file. Can't respond to key exchange."
         )
         return {
             "error": {"message": "Internal signature error. Please try again later."}
