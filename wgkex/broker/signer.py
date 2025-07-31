@@ -103,11 +103,11 @@ def sign_response(data: bytes) -> bytes:
         (bytes): The base64-encoded signature of the data.
     """
     (keytype, privkey, fingerprint) = get_private_key()
-    signature = base64.b64encode(privkey.sign_deterministic(data))
+    raw_signature = privkey.sign_deterministic(data, hashfunc=hashlib.sha512)
 
     if keytype == KeyType.SIGNIFY:
         assert fingerprint is not None, "Fingerprint must be set for SIGNIFY key type."
         # Build the signature struct for the signify-format
-        signature = "Ed".encode("utf-8") + fingerprint + signature
+        raw_signature = "Ed".encode("utf-8") + fingerprint + raw_signature
 
-    return signature
+    return base64.b64encode(raw_signature)

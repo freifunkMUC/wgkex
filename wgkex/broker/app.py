@@ -303,7 +303,9 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         ],
     )
 
-    data = json.dumps(dataclasses.asdict(response)).encode("utf-8")
+    data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + "\n".encode(
+        "utf-8"
+    )
     if config.get_config().broker_signing_key is None:
         logger.error(
             "Parker is enabled, but no broker_signing_key is set in the config file. Can't respond to key exchange."
@@ -314,7 +316,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     signature: bytes = sign_response(data)
 
-    full_response: bytes = data + "\n".encode("utf-8") + signature
+    full_response: bytes = data + signature
 
     return (
         Response(
