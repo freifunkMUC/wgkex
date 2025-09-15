@@ -13,9 +13,9 @@ pyroute2_module_mock = mock.MagicMock()
 pyroute2_module_mock.netlink.exceptions = pyroute2_netlink_exceptions
 sys.modules["pyroute2"] = pyroute2_module_mock
 sys.modules["pyroute2.netlink"] = mock.MagicMock()
-from pyroute2 import IPRoute, WireGuard
+from pyroute2 import IPRoute, WireGuard  # noqa: E402
 
-from wgkex.worker import netlink
+from wgkex.worker import netlink  # noqa: E402
 
 _WG_CLIENT_ADD = netlink.WireGuardClient(
     public_key="public_key", domain="add", remove=False
