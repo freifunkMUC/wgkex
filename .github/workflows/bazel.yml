@@ -26,7 +26,7 @@ jobs:
           curl -L https://files.pythonhosted.org/packages/19/4f/2251e65033ed2ce1e68f00f91a0294e0f80c80ae8c3ebbe2f12828c4cd53/coverage-7.8.0.tar.gz | tar xvz
           cd "${GITHUB_WORKSPACE}"
           bazel coverage --combined_report=lcov --javabase=@bazel_tools//tools/jdk:remote_jdk11 -t- --instrument_test_targets \
-            --experimental_cc_coverage --test_output=errors --linkopt=--coverage --linkopt=-lc \
+            --test_output=errors --linkopt=--coverage --linkopt=-lc \
             --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.8.0/__main__.py  \
             --define=config_file=test ...:all
       - name: Coveralls
