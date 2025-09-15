@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """wgkex broker"""
+
 import dataclasses
 import json
 import re
-from typing import Dict, Tuple, Any
+from typing import Any, Dict, Tuple
 
 import paho.mqtt.client as mqtt_client
-from flask import Flask, render_template, request, Response
+from flask import Flask, Response, render_template, request
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
-
 from waitress import serve
-from wgkex.config import config
-from wgkex.common import logger
-from wgkex.common.utils import is_valid_domain
+
 from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.common import logger
 from wgkex.common.mqtt import (
     CONNECTED_PEERS_METRIC,
     TOPIC_WORKER_STATUS,
     TOPIC_WORKER_WG_DATA,
 )
+from wgkex.common.utils import is_valid_domain
+from wgkex.config import config
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 

@@ -1,22 +1,19 @@
 """Unit tests for netlink.py"""
 
-import unittest
-import mock
-from datetime import timedelta
-from datetime import datetime
-
 # pyroute2 decides imports based on platform. WireGuard is specific to Linux only. Mock pyroute2.WireGuard so that
 # any testing platform can execute tests.
 import sys
+import unittest
+from datetime import datetime, timedelta
 
+import mock
 import pyroute2.netlink.exceptions as pyroute2_netlink_exceptions
 
 pyroute2_module_mock = mock.MagicMock()
 pyroute2_module_mock.netlink.exceptions = pyroute2_netlink_exceptions
 sys.modules["pyroute2"] = pyroute2_module_mock
 sys.modules["pyroute2.netlink"] = mock.MagicMock()
-from pyroute2 import WireGuard
-from pyroute2 import IPRoute
+from pyroute2 import IPRoute, WireGuard
 
 from wgkex.worker import netlink
 
@@ -64,7 +61,7 @@ class NetlinkTest(unittest.TestCase):
 
     def test_find_stale_wireguard_clients_success_with_non_stale_peer(self):
         """Tests find_stale_wireguard_clients no operation on non-stale peers."""
-        wg_info_mock = _get_wg_mock(
+        _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
             int((datetime.now() - timedelta(seconds=3)).timestamp()),
         )
@@ -72,7 +69,7 @@ class NetlinkTest(unittest.TestCase):
 
     def test_find_stale_wireguard_clients_success_stale_peer(self):
         """Tests find_stale_wireguard_clients removal of stale peer"""
-        wg_info_mock = _get_wg_mock(
+        _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY_STALE",
             int((datetime.now() - timedelta(hours=5)).timestamp()),
         )
@@ -175,7 +172,7 @@ class NetlinkTest(unittest.TestCase):
 
     def test_wg_flush_stale_peers_not_stale_success(self):
         """Tests processing of non-stale WireGuard Peer."""
-        wg_info_mock = _get_wg_mock(
+        _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
             int((datetime.now() - timedelta(seconds=3)).timestamp()),
         )

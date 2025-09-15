@@ -4,15 +4,16 @@
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 from textwrap import wrap
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
-import pyroute2, pyroute2.netlink, pyroute2.netlink.exceptions
+import pyroute2
+import pyroute2.netlink
+import pyroute2.netlink.exceptions
 
-from wgkex.common.utils import mac2eui64
 from wgkex.common import logger
+from wgkex.common.utils import mac2eui64
 
 _PEER_TIMEOUT_HOURS = 3
 

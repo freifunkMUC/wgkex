@@ -20,8 +20,8 @@ from wgkex.common.mqtt import (
 from wgkex.config.config import get_config
 from wgkex.worker.msg_queue import q
 from wgkex.worker.netlink import (
-    get_device_data,
     get_connected_peers_count,
+    get_device_data,
 )
 
 _HOSTNAME = socket.gethostname()

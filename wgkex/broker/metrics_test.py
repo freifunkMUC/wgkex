@@ -1,8 +1,9 @@
 import unittest
 
 import mock
-from wgkex.config import config
+
 from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.config import config
 
 
 class TestMetrics(unittest.TestCase):

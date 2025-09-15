@@ -1,8 +1,9 @@
 """Unit tests for app.py"""
 
 import threading
-from time import sleep
 import unittest
+from time import sleep
+
 import mock
 
 from wgkex.worker import app
