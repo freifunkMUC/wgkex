@@ -1,13 +1,13 @@
-from logging import basicConfig
-from logging import DEBUG
-from logging import info as info
-from logging import warning as warning
-from logging import error as error
+import os.path
+from logging import config
 from logging import critical as critical
 from logging import debug as debug
-from logging import config
+from logging import error as error
+from logging import info as info
+from logging import warning as warning
+
 import yaml
-import os.path
+
 from wgkex.config.config import WG_CONFIG_DEFAULT_LOCATION
 
 _LOGGING_DEFAULT_CONFIG = {

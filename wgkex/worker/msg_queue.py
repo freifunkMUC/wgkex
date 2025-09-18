@@ -2,9 +2,9 @@
 import threading
 from queue import Queue
 from time import sleep
+
 from wgkex.common import logger
-from wgkex.worker.netlink import link_handler
-from wgkex.worker.netlink import WireGuardClient
+from wgkex.worker.netlink import WireGuardClient, link_handler
 
 
 class UniqueQueue(Queue):

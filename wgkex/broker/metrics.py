@@ -2,9 +2,9 @@ import dataclasses
 from operator import itemgetter
 from typing import Any, Dict, Optional, Tuple
 
-from wgkex.config import config
 from wgkex.common import logger
 from wgkex.common.mqtt import CONNECTED_PEERS_METRIC
+from wgkex.config import config
 
 
 @dataclasses.dataclass

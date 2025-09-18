@@ -49,7 +49,7 @@ def is_valid_domain(domain: str) -> bool:
     Returns:
         True if the domain is valid, False otherwise.
     """
-    if not domain in config.get_config().domains:
+    if domain not in config.get_config().domains:
         return False
     for prefix in config.get_config().domain_prefixes:
         if domain.startswith(prefix):

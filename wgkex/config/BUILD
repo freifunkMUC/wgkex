@@ -19,4 +19,5 @@ py_test(
        "//wgkex/config:config",
         requirement("mock"),
     ],
+    size="small",
 )
