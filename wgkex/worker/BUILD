@@ -25,6 +25,7 @@ py_test(
        requirement("mock"),
        requirement("pyroute2"),
     ],
+    size="small",
 )
 
 py_library(
@@ -52,6 +53,7 @@ py_test(
        "//wgkex/worker:msg_queue",
        requirement("mock"),
     ],
+    size="small",
 )
 
 py_binary(
@@ -73,6 +75,7 @@ py_test(
        "//wgkex/worker:msg_queue",
        requirement("mock"),
     ],
+    size="small",
 )
 
 py_library(

@@ -19,6 +19,7 @@ py_test(
        "//wgkex/broker:metrics",
        requirement("mock"),
     ],
+    size="small",
 )
 
 py_binary(
