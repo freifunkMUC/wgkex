@@ -4,6 +4,7 @@ import dataclasses
 import logging
 import os
 import sys
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -131,6 +132,155 @@ class MQTT:
 
 
 @dataclasses.dataclass
+class Parker:
+    """A representation of the 'parker' key in Configuration file.
+
+    Attributes:
+        enabled: Whether Parker is enabled or not.
+        464xlat: Whether 464xlat is used or not.
+        prefixes: The prefixes configuration for Parker.
+    """
+
+    @dataclasses.dataclass
+    class Prefixes:
+
+        @dataclasses.dataclass
+        class IPv4:
+            clat_subnet: Optional[str] = None
+            length: Optional[int] = None
+            netbox_filter: Optional[Dict[str, Any]] = None
+            netbox_additional_data: Optional[Dict[str, Any]] = None
+
+        @dataclasses.dataclass
+        class IPv6:
+            length: int
+            netbox_filter: Optional[Dict[str, Any]] = None
+            netbox_additional_data: Optional[Dict[str, Any]] = None
+
+        ipv4: IPv4
+        ipv6: IPv6
+
+    class IPAM(Enum):
+        JSON = "json"
+        NETBOX = "netbox"
+
+    enabled: bool
+    xlat: bool
+    prefixes: Prefixes
+    ipam: IPAM
+
+    @classmethod
+    def from_dict(cls, parker_cfg: Dict[str, Any]) -> "Parker":
+        """Generates a parker config object from a dictionary.
+
+        Args:
+            parker_cfg: dictionary with parker config
+
+        Returns:
+            parker config object
+        """
+
+        enabled = bool(parker_cfg.get("enabled", False))
+        xlat = bool(parker_cfg.get("464xlat", False))
+        ipam = cls.IPAM(parker_cfg.get("ipam"))
+
+        pfx = parker_cfg.get("prefixes", None)
+        if pfx is None or not isinstance(pfx, dict):
+            raise ValueError(
+                "Parker is enabled, but no prefixes config is set in the config file"
+            )
+        if "ipv6" not in pfx or "ipv4" not in pfx:
+            raise ValueError(
+                "Parker prefixes config must contain both 'ipv4' and 'ipv6' keys"
+            )
+
+        if xlat:
+            if "clat_subnet" not in pfx["ipv4"]:
+                raise ValueError(
+                    "Parker prefixes config must contain 'clat_subnet' key for 'ipv4' when using 464xlat"
+                )
+        else:
+            if "length" not in pfx["ipv4"]:
+                raise ValueError(
+                    "Parker prefixes config must contain 'length' key for 'ipv4' when not using 464xlat"
+                )
+            if ipam == cls.IPAM.NETBOX and (
+                "netbox_filter" not in pfx["ipv4"]
+                or not isinstance(pfx["ipv4"]["netbox_filter"], dict)
+            ):
+                raise ValueError(
+                    "Parker prefixes config must contain 'netbox_filter' key for 'ipv4' when using NetBox as IPAM and not using 464xlat"
+                )
+
+        if "length" not in pfx["ipv6"]:
+            raise ValueError(
+                "Parker prefixes config must contain 'length' key for 'ipv6' when not using 464xlat"
+            )
+        if ipam == cls.IPAM.NETBOX and (
+            "netbox_filter" not in pfx["ipv6"]
+            or not isinstance(pfx["ipv6"]["netbox_filter"], dict)
+        ):
+            raise ValueError(
+                "Parker prefixes config must contain 'netbox_filter' key for 'ipv6' when using NetBox as IPAM and not using 464xlat"
+            )
+
+        # TODO remove this block when non-464XLAT mode is fully supported
+        if not xlat:
+            raise NotImplementedError("Non-464XLAT mode is not supported yet")
+
+        return cls(
+            enabled=enabled,
+            xlat=xlat,
+            prefixes=cls.Prefixes(
+                ipv4=cls.Prefixes.IPv4(
+                    clat_subnet=pfx["ipv4"].get("clat_subnet", None),
+                    netbox_filter=pfx["ipv4"].get("netbox_filter", None),
+                    netbox_additional_data=pfx["ipv4"].get(
+                        "netbox_additional_data", None
+                    ),
+                    length=pfx["ipv4"].get("length", None),
+                ),
+                ipv6=cls.Prefixes.IPv6(
+                    netbox_filter=pfx["ipv6"].get("netbox_filter", None),
+                    netbox_additional_data=pfx["ipv6"].get(
+                        "netbox_additional_data", None
+                    ),
+                    length=pfx["ipv6"]["length"],
+                ),
+            ),
+            ipam=ipam,
+        )
+
+
+@dataclasses.dataclass
+class Netbox:
+    """A representation of the 'netbox' key in configuration file.
+
+    Attributes:
+        url: The NetBox URL to connect to.
+        api_key: The API key to use for authentication.
+    """
+
+    url: str
+    api_key: str
+
+    @classmethod
+    def from_dict(cls, netbox_cfg: Dict[str, str]) -> "Netbox":
+        """Generates a netbox config object from a dictionary.
+
+        Args:
+            netbox_cfg: dictionary with netbox config
+
+        Returns:
+            netbox config object
+        """
+        return cls(
+            url=netbox_cfg["url"],
+            api_key=netbox_cfg["api_key"],
+        )
+
+
+@dataclasses.dataclass
 class Config:
     """A representation of the configuration file.
 
@@ -145,11 +295,12 @@ class Config:
     raw: Dict[str, Any]
     domains: List[str]
     domain_prefixes: List[str]
-    broker_listen: BrokerListen
-    mqtt: MQTT
     workers: Workers
+    parker: Parker
     external_name: Optional[str]
-    parker: bool = False
+    mqtt: MQTT
+    broker_listen: BrokerListen
+    netbox: Optional[Netbox] = None
     broker_signing_key: Optional[str] = None
 
     @classmethod
@@ -163,12 +314,22 @@ class Config:
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
         workers_cfg = Workers.from_dict(cfg.get("workers", {}))
-        parker = cfg.get("parker", False)
+        parker = Parker.from_dict(cfg.get("parker", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
-        if parker and broker_signing_key is None:
+
+        if parker.enabled and broker_signing_key is None:
             raise ValueError(
                 "Parker is enabled, but no broker_signing_key is set in the config file"
             )
+
+        netbox_cfg = None
+        if parker.enabled and parker.ipam == Parker.IPAM.NETBOX:
+            if "netbox" not in cfg or not isinstance(cfg["netbox"], dict):
+                raise ValueError(
+                    "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
+                )
+            netbox_cfg = Netbox.from_dict(cfg["netbox"])
+
         return cls(
             raw=cfg,
             domains=cfg["domains"],
@@ -178,6 +339,7 @@ class Config:
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
             parker=parker,
+            netbox=netbox_cfg,
             broker_signing_key=broker_signing_key,
         )
 

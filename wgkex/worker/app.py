@@ -129,8 +129,8 @@ def main():
 
     signal.signal(signal.SIGINT, on_exit)
 
-    parker = config.get_config().parker
-    if parker:
+    parker_enabled = config.get_config().parker.enabled
+    if parker_enabled:
         logger.info("Parker mode is enabled")
     else:
 
@@ -145,7 +145,7 @@ def main():
                 raise InvalidDomain(f"Domain {domain} has invalid prefix.")
         clean_up_worker()
 
-    watch_queue(parker)
+    watch_queue(parker_enabled)
     mqtt.connect(exit_event)
 
 
