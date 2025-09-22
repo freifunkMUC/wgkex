@@ -13,9 +13,13 @@ from wgkex.common.mqtt import TOPIC_CONNECTED_PEERS
 from wgkex.worker import mqtt
 
 
-def _get_config_mock(domains=None, mqtt=None):
+def _get_config_mock(domains=None, mqtt=None, parker=None):
     test_prefixes = ["_ffmuc_", "_TEST_PREFIX2_"]
     config_mock = mock.MagicMock()
+    if parker:
+        config_mock.parker = parker
+    else:
+        config_mock.parker.enabled = False
     config_mock.domains = (
         domains if domains is not None else [f"{test_prefixes[0]}domain.one"]
     )

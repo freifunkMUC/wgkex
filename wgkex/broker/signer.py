@@ -55,7 +55,7 @@ def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
     Returns:
         (KeyType, ecdsa.SigningKey, Optional[bytes]): The type of the private key, the private key object and if KeyType == SIGNIFY the fingerprint.
     """
-    if not config.get_config().parker:
+    if not config.get_config().parker.enabled:
         raise ValueError("Response signing is not available in non-parker mode.")
 
     privkey_encoded = config.get_config().broker_signing_key
