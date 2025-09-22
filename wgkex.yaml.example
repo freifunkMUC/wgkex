@@ -25,6 +25,47 @@ workers:
     weight: 20
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
+# [broker, worker]
+parker:
+  enabled: False
+  # only 464xlat=True is currently properly supported
+  464xlat: True
+  # ipam must be either of json or netbox
+  ipam: netbox
+  prefixes:
+    ipv4:
+      # Specify either length and netbox_filter if 464xlat=False, or clat_subnet if 464xlat=True
+      length: 22
+      clat_subnet: 10.80.96.0/22
+      # A mapping of filters for Netbox to find the parent prefix to allocate node prefixes from if 464xlat=False.
+      # Needs to match one and only one IPv4 prefix.
+      # Prefix is loaded only once on startup, so if you want to switch the prefix, you need to restart wgkex.
+      # E.g. {id: 9999} or {prefix: '10.80.0.0/16'} or {description: Freifunk, role: NodePrefixes} or {cf_my_custom_field: 'Some Value'}
+      # See https://demo.netbox.dev/api/schema/swagger-ui/#/ipam/ipam_prefixes_list and https://netboxlabs.com/docs/netbox/reference/filtering/ for filtering syntax
+      netbox_filter:
+        role: freifunk-net
+      # Optionally specify additional NetBox data to add to new prefixes, like tags or a role.
+      # See the POST request body scheme at https://demo.netbox.dev/api/schema/swagger-ui/#/ipam/ipam_prefixes_available_prefixes_create for supported fields.
+      netbox_additional_data:
+        tags:
+          - 123 # ID of a tag
+          - slug: node-prefix # another tag uniquely identified through its slug
+    ipv6:
+      # This should normally be 64 if 464xlat=False, or 63 if 464xlat=True
+      length: 63
+      # See parker.prefixes.ipv4.netbox_filter
+      netbox_filter: {}
+      # See parker.prefixes.ipv4.netbox_additional_data
+      netbox_additional_data: {}
+
+# [broker]
+broker_signing_key: ''
+# [broker] netbox connection details
+# Note: you can restrict the user for wgkex to "IPAM > Prefix" object types
+netbox:
+  # URL for your NetBox instance, without the "/api" path
+  url: http://localhost:8000
+  api_key: SECRET
 # [broker, worker] MQTT connection informations
 mqtt:
   broker_url: broker.hivemq.com

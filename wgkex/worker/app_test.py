@@ -9,9 +9,13 @@ import mock
 from wgkex.worker import app
 
 
-def _get_config_mock(domains=None):
+def _get_config_mock(domains=None, parker=None):
     test_prefixes = ["_TEST_PREFIX_", "_TEST_PREFIX2_"]
     config_mock = mock.MagicMock()
+    if parker:
+        config_mock.parker = parker
+    else:
+        config_mock.parker.enabled = False
     config_mock.domains = (
         domains if domains is not None else [f"{test_prefixes[1]}domain.one"]
     )
