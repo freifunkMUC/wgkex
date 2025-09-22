@@ -2,18 +2,17 @@ name: Sync .bazelversion with Dockerfile
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
 
 jobs:
   update-bazelversion:
-    if: github.actor == 'dependabot[bot]'  # nur Dependabot-PRs
+    if: github.actor == 'dependabot[bot]'
     permissions:
       contents: write
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout PR
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           ref: ${{ github.head_ref }}
 
@@ -32,7 +31,7 @@ jobs:
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add .bazelversion
             git commit -m "chore: sync .bazelversion with Dockerfile"
-            git push origin HEAD:${{ github.head_ref }}
+            git push origin ${{ github.head_ref }}
           else
             echo ".bazelversion is already up to date."
           fi
