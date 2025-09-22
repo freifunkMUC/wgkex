@@ -56,7 +56,7 @@ def connect(exit_event: threading.Event) -> None:
         exit_event: A threading.Event that signals application shutdown.
     """
 
-    parker = get_config().parker
+    parker_enabled = get_config().parker.enabled
 
     base_config = get_config().mqtt
     broker_address = base_config.broker_url
@@ -67,7 +67,7 @@ def connect(exit_event: threading.Event) -> None:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, _HOSTNAME)
 
     domains: List[str] = []
-    if not parker:
+    if not parker_enabled:
         domains = get_config().domains
 
     # Register LWT to set worker status down when lossing connection
@@ -78,7 +78,7 @@ def connect(exit_event: threading.Event) -> None:
     client.on_disconnect = on_disconnect
     client.on_message = on_message
 
-    if parker:
+    if parker_enabled:
         client.message_callback_add("parker/wireguard/#", on_message_parker)
     else:
         client.message_callback_add("wireguard/#", on_message_wireguard)
@@ -88,7 +88,7 @@ def connect(exit_event: threading.Event) -> None:
     )
 
     global _rebalancer
-    if not parker and _rebalancing_enabled():
+    if not parker_enabled and _rebalancing_enabled():
         logger.info("Active rebalancing is enabled")
         _rebalancer = Rebalancer(
             get_config().load_balancing.rebalancing, domains, wg_interface_name
@@ -187,9 +187,9 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     """
     logger.debug("Connected with result code " + str(rc))
 
-    parker = get_config().parker
+    parker_enabled = get_config().parker.enabled
 
-    if parker:
+    if parker_enabled:
         topic = "parker/wireguard/+"
         logger.info(f"Subscribing to topic {topic}")
         client.subscribe(topic)

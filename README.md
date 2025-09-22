@@ -180,6 +180,11 @@ curl -s -X POST http://127.0.0.1:5000/api/v2/wg/key/exchange \
 
 `location` is optional; workers configured with the same `location` are preferred.
 
+Or for /api/v3 (Parker):
+```sh
+wget -q -O- 'http://127.0.0.1:5000/api/v3/wg/key/exchange?v6mtu=1500&pubkey=TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=&nonce=123456''
+```
+
 > [!IMPORTANT]
 > Compatibility with the Gluon client `ffmuc-mesh-vpn-wireguard-vxlan` is part of the contract:
 >

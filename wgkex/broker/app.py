@@ -1,7 +1,6 @@
 """wgkex broker"""
 
 import dataclasses
-import ipaddress
 import json
 import os
 import re
@@ -10,7 +9,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import paho.mqtt.client as mqtt_client
 from flask import Flask, Response, abort, render_template, request
@@ -31,6 +30,10 @@ from wgkex.broker.observability import (
     SHARED_ASSIGNMENTS,
 )
 from wgkex.broker.ratelimit import RateLimiter, client_address
+from wgkex.broker.ipam import ParkerIPAM
+from wgkex.broker.ipam_netbox import NetboxIPAM
+from wgkex.broker.ipam_json import JSONFileIPAM
+from wgkex.broker.parker import ParkerQuery, ParkerResponse
 from wgkex.broker.signer import sign_response
 from wgkex.common import logger
 from wgkex.common.keylist import KeyList
@@ -44,10 +47,13 @@ from wgkex.common.mqtt import (
     TOPIC_WORKER_WG_DATA,
     WG_KEY_ALL_WORKERS,
 )
-from wgkex.common.utils import is_valid_domain
+from wgkex.common.utils import (
+    WG_PUBKEY_PATTERN,  # noqa: F401 re-exported for compatibility
+    is_valid_domain,
+    is_valid_wg_pubkey,
+)
 from wgkex.config import config
 
-WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 LOCATION_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
@@ -100,6 +106,35 @@ def _fetch_app_config() -> Flask_app:
     app.config["MQTT_KEEPALIVE"] = mqtt_cfg.keepalive
     app.config["MQTT_TLS_ENABLED"] = mqtt_cfg.tls
     return app
+
+
+def _load_parker_ipam() -> Optional[ParkerIPAM]:
+    if not config.get_config().parker.enabled:
+        return None
+
+    ipam: ParkerIPAM
+    ipam_type = config.get_config().parker.ipam
+
+    match ipam_type:
+        case config.Parker.IPAM.JSON:
+            ipam = JSONFileIPAM()
+        case config.Parker.IPAM.NETBOX:
+            netbox_cfg = config.get_config().netbox
+            if netbox_cfg is None:
+                # This should not happen due to earlier config validation
+                raise Exception(
+                    "Missing config for NetBox IPAM. This is also a config parser bug, please report."
+                )
+
+            ipam = NetboxIPAM(
+                api_url=netbox_cfg.url,
+                token=netbox_cfg.api_key,
+                xlat=True,
+            )
+        case _:
+            raise NotImplementedError(f"Invalid IPAM type {ipam_type}")
+
+    return ipam
 
 
 app = _fetch_app_config()
@@ -159,6 +194,7 @@ def _create_blocklist() -> KeyList:
 
 rate_limiter = _create_rate_limiter()
 blocklist = _create_blocklist()
+ipam: ParkerIPAM | None = _load_parker_ipam()
 
 
 def _blocked_response(api: str, key: str) -> tuple[dict, int]:
@@ -400,67 +436,10 @@ def _previous_workers(previous: Assignment, domain: str, worker: str) -> list[st
 
 @app.route("/api/v3/wg/key/exchange", methods=["GET"])
 def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
-    @dataclasses.dataclass
-    class ParkerQuery:
-        v6mtu: int
-        pubkey: str  # client WG pubkey, base64 encoded
-        nonce: str
-
-        def __init__(self, v6mtu: int, pubkey: str, nonce: str) -> None:
-            self.v6mtu = v6mtu
-            self.pubkey = is_valid_wg_pubkey(pubkey)
-            self.nonce = nonce
-
-        @classmethod
-        def from_dict(cls, data: dict[str, Any]) -> "ParkerQuery":
-            """Creates a new Query object from dict."""
-            v6mtu: int = int(data.get("v6mtu", 1280))
-            pubkey: str = is_valid_wg_pubkey(data.get("pubkey", ""))
-            nonce: str = data.get("nonce", "")
-            return cls(v6mtu=v6mtu, pubkey=pubkey, nonce=nonce)
-
-    @dataclasses.dataclass
-    class ParkerResponse:
-        nonce: str
-        time: int  # current time as unix timestamp in seconds datetime.now(tz=timezone.utc).timestamp()
-        # NodeInfo data
-        # type NodeInfo struct {
-        # 	ID                    *uint64            `json:"id,omitempty" etcd:"id"`
-        # 	Concentrators         []ConcentratorInfo `json:"concentrators,omitempty" etcd:"-"`
-        # 	ConcentratorsJSON     []byte             `json:"-" etcd:"concentrators"`
-        # 	MTU                   *uint64            `json:"mtu,omitempty" etcd:"mtu"`
-        # 	Retry                 *uint64            `json:"retry,omitempty" etcd:"retry"`
-        # 	WGKeepalive           *uint64            `json:"wg_keepalive,omitempty" etcd:"wg_keepalive"`
-        # 	Range4                *string            `json:"range4,omitempty" etcd:"range4"`
-        # 	Range6                *string            `json:"range6,omitempty" etcd:"range6"`
-        # 	Address4              *string            `json:"address4,omitempty" etcd:"address4"`
-        # 	Address6              *string            `json:"address6,omitempty" etcd:"address6"`
-        # 	SelectedConcentrators *string            `json:"-" etcd:"selected_concentrators"`
-        # }
-
-        # type ConcentratorInfo struct {
-        # 	Address4 string `json:"address4"`
-        # 	Address6 string `json:"address6"`
-        # 	Endpoint string `json:"endpoint"`
-        # 	PubKey   string `json:"pubkey"`
-        # 	ID       uint32 `json:"id"`
-        # }
-
-        id: str
-        mtu: int
-        address6: str
-        concentrators: List[Dict[str, str | int]]
-        # selected_concentrators: This value contains a space separated list of the concentrator ids to
-        # include in the config response. If it is empty or not set, it will
-        # default to return all concentrators. Due to the implementation it is
-        # currently only possible to use concentrator ids between 1 and 64.
-        selected_concentrators: str
-        range6: str  # TODO take from IPAM
-        xlat_range6: str  # FFMUC addition
-        range4: str = "10.80.99.0/22"  # always the same with 464XLAT
-        address4: str = "10.80.99.1"
-        wg_keepalive: int = 25
-        retry: int = 120
+    if not config.get_config().parker.enabled or ipam is None:
+        return {
+            "error": {"message": "Parker support is not enabled on this broker"}
+        }, 400
 
     try:
         req_data = ParkerQuery.from_dict(request.args)
@@ -476,10 +455,27 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             }
         }, 400
 
-    # TODO: fetch IPv6 /63 from Netbox, first /64 for the node's client network, second /64 for 464XLAT
-    # push both to gateways via MQTT, so that they configure the routing for it
+    try:
+        _, full_range6 = ipam.get_or_allocate_prefix(
+            req_data.pubkey,
+            not config.get_config().parker.xlat,
+            True,
+            config.get_config().parker.prefixes.ipv4.length or 0,
+            config.get_config().parker.prefixes.ipv6.length,
+        )
+    except Exception as ex:
+        logger.error(
+            "Exception occurred while fetching/allocating IPv6 prefix for public key %s: %s",
+            req_data.pubkey,
+            ex,
+            exc_info=True,
+        )
+        return {
+            "error": {
+                "message": "Internal error while allocating IP range. Please try again later."
+            }
+        }, 500
 
-    full_range6 = get_range6(req_data.pubkey)
     if full_range6 is None:
         return {
             "error": {
@@ -487,8 +483,8 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             }
         }, 500
     ranges = full_range6.subnets(new_prefix=64)
-    range6 = ranges.__next__()
-    xlat_range6 = ranges.__next__()
+    range6 = next(ranges)
+    xlat_range6 = next(ranges)
 
     gateway: str = "all"
 
@@ -510,7 +506,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         xlat_range6=str(xlat_range6),
         address6=str(range6.network_address + 1),
         selected_concentrators="1",
-        concentrators=[
+        concentrators=[  # TODO fetch real concentrator data from worker status
             {
                 "address4": "10.0.0.1",
                 "address6": "fe80::28f:a7ff:fec6:7530",
@@ -543,51 +539,6 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         ),
         200,
     )
-
-
-def get_range6(pubkey: str) -> Optional[ipaddress.IPv6Network]:
-    """Returns the IPv6 range for a node with a given public key."""
-    ranges: Dict[str, str] = {}
-    parent_prefix = ipaddress.IPv6Network("2001:db8:ed0::/56")  # Default parent prefix
-    try:
-        with open("/var/local/wgkex/broker/ipv6_ranges.json", "r") as f:
-            json_content = json.load(f)
-            ranges = json_content.get("ranges", {})
-            parent_prefix = ipaddress.IPv6Network(
-                json_content.get("parent_prefix", parent_prefix)
-            )
-    except FileNotFoundError:
-        os.makedirs("/var/local/wgkex/broker", exist_ok=True)
-    except json.JSONDecodeError:
-        pass
-
-    range = ranges.get(pubkey, None)
-    if range is None or not ipaddress.IPv6Network(range).subnet_of(parent_prefix):
-        parsed_ranges = [
-            ipaddress.IPv6Network(rg)
-            for rg in ranges.values()
-            if ipaddress.IPv6Network(rg).subnet_of(parent_prefix)
-        ]  # Filter out any ranges that are not subnets of the parent prefix
-
-        prefixes = parent_prefix.subnets(new_prefix=63)
-        next(prefixes)  # skip first
-        for candidate in prefixes:
-            if candidate not in parsed_ranges:
-                range = candidate
-                break
-        if range is None:
-            logger.error(f"No IPv6 range available for public key {pubkey}.")
-            return None
-        else:
-            logger.info(
-                f"No existing IPv6 range found for public key {pubkey}, assigning {range}"
-            )
-
-        ranges[pubkey] = str(range)
-        with open("/var/local/wgkex/broker/ipv6_ranges.json", "w") as f:
-            json.dump({"parent_prefix": str(parent_prefix), "ranges": ranges}, f)
-
-    return ipaddress.IPv6Network(range)
 
 
 @mqtt.on_connect()
@@ -785,24 +736,6 @@ def rebalance_loop() -> None:
         except Exception as e:  # noqa: BLE001
             # Don't crash the thread when an exception is encountered
             logger.error("Exception during rebalancing task: %s", e, exc_info=True)
-
-
-def is_valid_wg_pubkey(pubkey: str) -> str:
-    """Verifies if key is a valid WireGuard public key or not.
-
-    Arguments:
-        pubkey: The key to verify.
-
-    Raises:
-        ValueError: If the Wireguard Key is invalid.
-
-    Returns:
-        The public key.
-    """
-    # TODO(ruairi): Refactor to return bool.
-    if WG_PUBKEY_PATTERN.match(pubkey) is None:
-        raise ValueError(f"Not a valid Wireguard public key: {pubkey}.")
-    return pubkey
 
 
 def join_host_port(host: str, port: str) -> str:
