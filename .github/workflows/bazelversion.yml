@@ -1,0 +1,36 @@
+name: Sync .bazelversion with Dockerfile
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  update-bazelversion:
+    if: github.actor == 'dependabot[bot]'  # nur Dependabot-PRs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+
+      - name: Extract Bazel version from Dockerfile
+        id: extract_version
+        run: |
+          version=$(grep -oP '(?<=gcr.io/bazel-public/bazel:)[0-9]+\.[0-9]+\.[0-9]+' Dockerfile)
+          echo "bazel_version=$version" >> $GITHUB_OUTPUT
+
+      - name: Update .bazelversion if different
+        run: |
+          current_version=$(cat .bazelversion | tr -d '[:space:]')
+          if [ "$current_version" != "${{ steps.extract_version.outputs.bazel_version }}" ]; then
+            echo "${{ steps.extract_version.outputs.bazel_version }}" > .bazelversion
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .bazelversion
+            git commit -m "chore: sync .bazelversion with Dockerfile"
+            git push origin HEAD:${{ github.head_ref }}
+          else
+            echo ".bazelversion is already up to date."
+          fi
