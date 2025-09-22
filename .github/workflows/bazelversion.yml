@@ -7,6 +7,8 @@ on:
 jobs:
   update-bazelversion:
     if: github.actor == 'dependabot[bot]'  # nur Dependabot-PRs
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
 
     steps:
