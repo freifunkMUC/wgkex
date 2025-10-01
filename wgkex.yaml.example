@@ -27,6 +27,7 @@ workers:
 externalName: gw04.ext.ffmuc.net
 # [broker, worker]
 parker:
+  # Enable Parker support. The broker will still handle non-Parker in the same instance, the worker however will disable non-Parker support in this case.
   enabled: False
   # only 464xlat=True is currently properly supported
   464xlat: True
