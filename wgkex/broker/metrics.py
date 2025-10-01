@@ -3,7 +3,7 @@ from operator import itemgetter
 from typing import Any, Dict, Optional, Tuple
 
 from wgkex.common import logger
-from wgkex.common.mqtt import CONNECTED_PEERS_METRIC
+from wgkex.common.mqtt import MQTTTopics
 from wgkex.config import config
 
 
@@ -20,7 +20,10 @@ class WorkerMetrics:
         if domain:
             return (
                 self.online
-                and self.get_domain_metrics(domain).get(CONNECTED_PEERS_METRIC, -1) >= 0
+                and self.get_domain_metrics(domain).get(
+                    MQTTTopics.CONNECTED_PEERS_METRIC, -1
+                )
+                >= 0
             )
         else:
             return self.online
@@ -39,7 +42,7 @@ class WorkerMetrics:
         total = 0
         for data in self.domain_data.values():
             total += max(
-                data.get(CONNECTED_PEERS_METRIC, 0),
+                data.get(MQTTTopics.CONNECTED_PEERS_METRIC, 0),
                 0,
             )
 
@@ -91,7 +94,7 @@ class WorkerMetricsCollection:
             for domain in worker_data.domain_data:
                 total += max(
                     worker_data.get_domain_metrics(domain).get(
-                        CONNECTED_PEERS_METRIC, 0
+                        MQTTTopics.CONNECTED_PEERS_METRIC, 0
                     ),
                     0,
                 )
