@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
+import paho.mqtt.enums
 import paho.mqtt.client as mqtt_client
 from flask import Flask, Response, abort, render_template, request
 from flask.app import Flask as Flask_app
@@ -46,6 +47,7 @@ from wgkex.common.mqtt import (
     TOPIC_WORKER_STATUS,
     TOPIC_WORKER_WG_DATA,
     WG_KEY_ALL_WORKERS,
+    MQTTTopics,
 )
 from wgkex.common.utils import (
     WG_PUBKEY_PATTERN,  # noqa: F401 re-exported for compatibility
@@ -147,6 +149,8 @@ worker_metrics = WorkerMetricsCollection(
     metrics_max_age=_load_balancing_cfg.metrics_max_age,
 )
 worker_data: dict[tuple[str, str], dict] = {}
+parker_worker_metrics = WorkerMetricsCollection()
+parker_worker_data: dict[str, dict] = {}
 assignment_history = AssignmentHistory(
     ttl=_load_balancing_cfg.previous_assignment_ttl,
     max_entries=_load_balancing_cfg.previous_assignment_max_entries,
@@ -497,6 +501,33 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     logger.info(f"wg_api_v3_key_exchange: Key:{req_data.pubkey}")
     mqtt.publish(f"parker/wireguard/{gateway}", json.dumps(mqtt_data).encode("utf-8"))
 
+    domain = "parker"
+
+    # TODO add PoP awareness and multi-tunnel support, select best worker per PoP
+
+    best_worker, diff, current_peers = parker_worker_metrics.get_best_worker(domain)
+    if best_worker is None:
+        logger.warning("No worker online for Parker network")
+        return {"error": {"message": "no gateway online, please try again later"}}, 400
+
+    # Update number of peers locally to interpolate data between MQTT updates from the worker
+    current_peers = (
+        parker_worker_metrics.get(best_worker)
+        .get_domain_metrics(domain)
+        .get(MQTTTopics.CONNECTED_PEERS_METRIC, 0)
+    )
+    parker_worker_metrics.update(
+        best_worker, domain, MQTTTopics.CONNECTED_PEERS_METRIC, current_peers + 1
+    )
+    logger.debug(
+        f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
+    )
+
+    w_data = parker_worker_data.get(best_worker, None)
+    if w_data is None:
+        logger.error(f"Couldn't get worker endpoint data for {best_worker}")
+        return {"error": {"message": "could not get gateway data"}}, 500
+
     response = ParkerResponse(
         nonce=req_data.nonce,
         time=int(datetime.now(tz=timezone.utc).timestamp()),
@@ -509,9 +540,9 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         concentrators=[  # TODO fetch real concentrator data from worker status
             {
                 "address4": "10.0.0.1",
-                "address6": "fe80::28f:a7ff:fec6:7530",
-                "endpoint": f"{config.get_config().external_name}:40000",
-                "pubkey": "4WAyZBpHcyRE5+L4ApV+jjWgj4q1o3CrCQ3NjclXfV4=",
+                "address6": w_data.get("LinkAddress"),
+                "endpoint": f"{w_data.get("ExternalAddress")}:{str(w_data.get("Port"))}",
+                "pubkey": w_data.get("PublicKey"),  # type: ignore
                 "id": 1,
             }
         ],
@@ -549,16 +580,33 @@ def handle_mqtt_connect(
 
     Runs on every (re)connect, so subscriptions are restored after a reconnect.
     """
-    logger.debug(
-        "MQTT connected to {}:{}".format(
-            app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
-        )
-    )
+    match rc:
+        case paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED:
+            logger.debug(
+                "MQTT successfully connected to %s:%s",
+                client.host,
+                client.port,
+            )
+        case _:
+            logger.error(
+                "MQTT connection to %s:%s failed with return code %s (%s)",
+                client.host,
+                client.port,
+                rc,
+                paho.mqtt.enums.ConnackCode(rc).name,
+            )
+            return
+
     mqtt.subscribe("wireguard-metrics/#")
     mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
     mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
     if config.get_config().load_balancing.share_pending_assignments:
         mqtt.subscribe(TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
+    if config.get_config().parker.enabled:
+        logger.debug("Parker mode is enabled, subscribing to parker topics")
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"))
 
 
 @mqtt.on_topic("wireguard-metrics/#")
@@ -596,7 +644,27 @@ def handle_mqtt_message_metrics(
     worker_metrics.update(worker, domain, metric, data)
 
 
-@mqtt.on_topic(TOPIC_WORKER_STATUS.format(worker="+"))
+@mqtt.on_topic("parker/wireguard-metrics/#")
+def handle_mqtt_message_parker_metrics(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes published metrics from workers."""
+    logger.debug(
+        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+    )
+    _, _, worker, metric = message.topic.split("/", 3)
+
+    if not worker or not metric:
+        logger.error("Ignored MQTT message with empty worker or metrics label")
+        return
+
+    data = int(message.payload)
+
+    logger.info(f"Update Parker worker metrics: {metric} on {worker} = {data}")
+    parker_worker_metrics.update(worker, "parker", metric, data)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
 def handle_mqtt_message_status(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -628,7 +696,23 @@ def handle_mqtt_message_status(
         worker_metrics.set_draining(worker, draining)
 
 
-@mqtt.on_topic(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+def handle_mqtt_message_parker_status(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes status messages from workers."""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    status = int(message.payload)
+    if status < 1 and parker_worker_metrics.get(worker).is_online():
+        logger.warning(f"Marking Parker worker as offline: {worker}")
+        parker_worker_metrics.set_offline(worker)
+    elif status >= 1 and not parker_worker_metrics.get(worker).is_online():
+        logger.warning(f"Marking Parker worker as online: {worker}")
+        parker_worker_metrics.set_online(worker)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
 def handle_mqtt_message_data(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -637,7 +721,7 @@ def handle_mqtt_message_data(
     Stores them in a local dict"""
     _, worker, domain, _ = message.topic.split("/", 3)
     if not is_valid_domain(domain):
-        logger.error(f"Domain {domain} not in configured domains.")
+        logger.debug(f"Domain {domain} not in configured domains.")
         return
 
     try:
@@ -685,6 +769,22 @@ def handle_mqtt_message_assignment(
     worker_metrics.record_assignment(worker, domain, key)
     assignment_history.record(key, domain, worker)
     SHARED_ASSIGNMENTS.inc()
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+", domain="+"))
+def handle_mqtt_message_parker_data(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes data messages from workers.
+
+    Stores them in a local dict"""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    data = json.loads(message.payload)
+    if not isinstance(data, dict):
+        logger.error("Invalid worker data received for %s: %s", worker, data)
+        return
+
+    logger.info("Worker data received for %s: %s", worker, data)
+    parker_worker_data[worker] = data
 
 
 @mqtt.on_message()

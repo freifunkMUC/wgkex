@@ -9,7 +9,6 @@ from wgkex.worker.netlink import (
     ParkerWireGuardClient,
     WireGuardClient,
     link_handler,
-    parker_link_handler,
 )
 from wgkex.worker.observability import PEER_OPS, QUEUE_DEPTH
 from wgkex.worker.rebalance import peer_add_tracker
@@ -83,7 +82,7 @@ def process_parker_item(item: str) -> None:
     logger.info(
         f"Processing queue for key {client.public_key} with range {client.range6}"
     )
-    logger.debug(parker_link_handler(client))
+    logger.debug(link_handler(client))
 
 
 def process_item(item: PeerOp | str) -> None:

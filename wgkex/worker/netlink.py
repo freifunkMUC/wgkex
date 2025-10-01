@@ -210,7 +210,12 @@ def wg_flush_stale_peers(
 
 
 # pyroute2 stuff
-def link_handler(client: WireGuardClient) -> dict:
+##################
+# pyroute2 stuff #
+##################
+
+
+def link_handler(client: WireGuardClient | ParkerWireGuardClient) -> dict:
     """Updates fdb, route and WireGuard peers tables for a given WireGuard peer.
 
     Arguments:
@@ -230,36 +235,10 @@ def link_handler(client: WireGuardClient) -> dict:
         # TODO(ruairi): re-raise exception here.
         logger.error("Failed to update route for %s (%s)", client, e)
         results.update({"Route": e})
-    # Updates WireGuard FDB.
-    results.update({"Bridge FDB": bridge_fdb_handler(client)})
-    logger.debug("Updated Bridge FDB for %s", client)
-    return results
-
-
-# pyroute2 stuff
-def parker_link_handler(client: ParkerWireGuardClient) -> dict:
-    """Updates fdb, route and WireGuard peers tables for a given WireGuard peer.
-
-    Arguments:
-        client: A WireGuard peer to manipulate.
-    Returns:
-        The outcome of each operation.
-    """
-    results = dict()
-    # Updates WireGuard peers.
-    results.update({"Wireguard": update_parker_wireguard_peer(client)})
-    logger.debug("Handling links for %s", client)
-    try:
-        # Updates routes to the WireGuard Peer.
-        results.update({"Route": parker_route_handler(client)})
-        logger.info("Updated route for %s", client)
-    except Exception as e:
-        # TODO(ruairi): re-raise exception here.
-        logger.error("Failed to update route for %s (%s)", client, e)
-        results.update({"Route": e})
-    # Updates WireGuard FDB.
-    # results.update({"Bridge FDB": bridge_fdb_handler(client)})
-    # logger.debug("Updated Bridge FDB for %s", client)
+    if isinstance(client, WireGuardClient):
+        # Updates WireGuard FDB.
+        results.update({"Bridge FDB": bridge_fdb_handler(client)})
+        logger.debug("Updated Bridge FDB for %s", client)
     return results
 
 
@@ -287,7 +266,9 @@ def bridge_fdb_handler(client: WireGuardClient) -> dict:
     )
 
 
-def update_wireguard_peer(client: WireGuardClient) -> dict:
+def update_wireguard_peer(
+    client: WireGuardClient | ParkerWireGuardClient,
+) -> dict:
     """Handles updates of WireGuard peers to netlink.
 
     Note that set will remove a peer if remove is set to True.
@@ -299,41 +280,28 @@ def update_wireguard_peer(client: WireGuardClient) -> dict:
         A dict.
     """
     # TODO(ruairi): Splice this into an add_ and remove_ function.
-    wg_peer = {
-        "public_key": client.public_key,
-        "allowed_ips": [client.lladdr],
-        "remove": client.remove,
-    }
+    if isinstance(client, ParkerWireGuardClient):
+        wg_peer = {
+            "public_key": client.public_key,
+            "allowed_ips": [client.range6],
+            "remove": client.remove,
+        }
+        if client.keepalive is not None:
+            wg_peer["persistent_keepalive"] = client.keepalive
+        wg_interface = "wg-nodes"  # TODO make interface name configurable
+    else:
+        wg_peer = {
+            "public_key": client.public_key,
+            "allowed_ips": [client.lladdr],
+            "remove": client.remove,
+        }
+        wg_interface = client.wg_interface
     return _netlink_call(
-        lambda h: h.wireguard().set(client.wg_interface, peer=wg_peer), "wg_set"
+        lambda h: h.wireguard().set(wg_interface, peer=wg_peer), "wg_set"
     )
 
 
-def update_parker_wireguard_peer(client: ParkerWireGuardClient) -> dict:
-    """Handles updates of WireGuard peers to netlink.
-
-    Note that set will remove a peer if remove is set to True.
-
-    Arguments:
-        client: The WireGuard peer to update.
-
-    Returns:
-        A dict.
-    """
-    wg_peer = {
-        "public_key": client.public_key,
-        "allowed_ips": [client.range6],
-        "remove": client.remove,
-    }
-    if client.keepalive is not None:
-        wg_peer["persistent_keepalive"] = client.keepalive
-    # TODO make interface name configurable
-    return _netlink_call(
-        lambda h: h.wireguard().set("wg-nodes", peer=wg_peer), "wg_set"
-    )
-
-
-def route_handler(client: WireGuardClient) -> dict:
+def route_handler(client: WireGuardClient | ParkerWireGuardClient) -> dict:
     """Handles updates of routes towards WireGuard peers.
 
     Note that set will remove a route if remove is set to True.
@@ -346,37 +314,23 @@ def route_handler(client: WireGuardClient) -> dict:
     """
     # TODO(ruairi): Determine what Exceptions are raised by ip.route
     # TODO(ruairi): Splice this into an add_ and remove_ function.
-    return _netlink_call(
-        lambda h: h.iproute().route(
-            "del" if client.remove else "replace",
-            dst=client.lladdr,
-            oif=h.link_index(client.wg_interface),
-        ),
-        "route",
-    )
-
-
-def parker_route_handler(client: ParkerWireGuardClient) -> dict:
-    """Handles updates of routes towards WireGuard peers.
-
-    Note that set will remove a route if remove is set to True.
-
-    Arguments:
-        client: The WireGuard peer to update.
-
-    Returns:
-        A dict.
-    """
-    # TODO make interface name configurable
+    if isinstance(client, ParkerWireGuardClient):
+        dst = client.range6
+        wg_interface = "wg-nodes"  # TODO make interface name configurable
+    else:
+        dst = client.lladdr
+        wg_interface = client.wg_interface
     result = _netlink_call(
         lambda h: h.iproute().route(
             "del" if client.remove else "replace",
-            dst=client.range6,
-            oif=h.link_index("wg-nodes"),
+            dst=dst,
+            oif=h.link_index(wg_interface),
         ),
         "route",
     )
-    return dict(result) if isinstance(result, dict) else {"result": result}
+    if isinstance(client, ParkerWireGuardClient):
+        return dict(result) if isinstance(result, dict) else {"result": result}
+    return result
 
 
 def find_stale_wireguard_clients(
