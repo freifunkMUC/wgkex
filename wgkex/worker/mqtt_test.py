@@ -9,7 +9,7 @@ import mock
 import paho.mqtt.client
 import pyroute2.netlink.exceptions
 
-from wgkex.common.mqtt import TOPIC_CONNECTED_PEERS
+from wgkex.common.mqtt import MQTTTopics
 from wgkex.worker import mqtt
 
 
@@ -117,7 +117,7 @@ class MQTTTest(unittest.TestCase):
 
         conn_peers_mock.assert_called_with("wg-domain.one")
         mqtt_client.publish.assert_called_with(
-            TOPIC_CONNECTED_PEERS.format(
+            MQTTTopics.TOPIC_CONNECTED_PEERS.format(
                 domain="_ffmuc_domain.one", worker=socket.gethostname()
             ),
             20,
@@ -181,7 +181,7 @@ class MQTTTest(unittest.TestCase):
 
         domain = mqtt.get_config().domains[0]
         hostname = socket.gethostname()
-        topic = TOPIC_CONNECTED_PEERS.format(domain=domain, worker=hostname)
+        topic = MQTTTopics.TOPIC_CONNECTED_PEERS.format(domain=domain, worker=hostname)
 
         # Must not raise NetlinkDumpInterrupted, but handle gracefully by doing nothing
         mqtt.publish_metrics(mqtt_client, topic, domain)

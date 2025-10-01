@@ -9,7 +9,6 @@ from wgkex.worker.netlink import (
     ParkerWireGuardClient,
     WireGuardClient,
     link_handler,
-    parker_link_handler,
 )
 
 
@@ -56,7 +55,6 @@ def pick_from_queue(parker: bool = False) -> None:
                 logger.info(
                     f"Processing queue for key {client.public_key} with range {client.range6}"
                 )
-                logger.debug(parker_link_handler(client))
             else:
                 domain, message = q.get()
                 logger.debug("Processing queue item %s for domain %s", message, domain)
@@ -68,7 +66,7 @@ def pick_from_queue(parker: bool = False) -> None:
                 logger.info(
                     f"Processing queue for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
                 )
-                logger.debug(link_handler(client))
+            logger.debug(link_handler(client))
             q.task_done()
         else:
             logger.debug("Queue is empty")

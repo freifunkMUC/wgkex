@@ -104,7 +104,7 @@ class NetlinkTest(unittest.TestCase):
             {"WireGuard": "set"}, netlink.update_wireguard_peer(_WG_CLIENT_ADD)
         )
         wg_info_mock.set.assert_called_with(
-            "wg-add",
+            interface="wg-add",
             peer={
                 "public_key": "public_key",
                 "allowed_ips": ["fe80::282:6eff:fe9d:ecd3/128"],
@@ -162,7 +162,7 @@ class NetlinkTest(unittest.TestCase):
             "replace", dst="fe80::282:6eff:fe9d:ecd3/128", oif=mock.ANY
         )
         wg_info_mock.set.assert_called_with(
-            "wg-add",
+            interface="wg-add",
             peer={
                 "public_key": "public_key",
                 "allowed_ips": ["fe80::282:6eff:fe9d:ecd3/128"],

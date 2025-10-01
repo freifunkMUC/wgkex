@@ -181,6 +181,18 @@ class Parker:
         """
 
         enabled = bool(parker_cfg.get("enabled", False))
+
+        if not enabled:
+            return cls(
+                enabled=enabled,
+                xlat=False,
+                prefixes=cls.Prefixes(
+                    ipv4=cls.Prefixes.IPv4(),
+                    ipv6=cls.Prefixes.IPv6(length=0, netbox_filter={}),
+                ),
+                ipam=cls.IPAM.JSON,
+            )
+
         xlat = bool(parker_cfg.get("464xlat", False))
         ipam = cls.IPAM(parker_cfg.get("ipam"))
 
