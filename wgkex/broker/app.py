@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
+import paho.mqtt.enums
 import paho.mqtt.client as mqtt_client
 from flask import Flask, Response, render_template, request
 from flask.app import Flask as Flask_app
@@ -19,11 +20,7 @@ from wgkex.broker.metrics import WorkerMetricsCollection
 from wgkex.broker.parker import ParkerQuery, ParkerResponse
 from wgkex.broker.signer import sign_response
 from wgkex.common import logger
-from wgkex.common.mqtt import (
-    CONNECTED_PEERS_METRIC,
-    TOPIC_WORKER_STATUS,
-    TOPIC_WORKER_WG_DATA,
-)
+from wgkex.common.mqtt import MQTTTopics
 from wgkex.common.utils import is_valid_domain, is_valid_wg_pubkey
 from wgkex.config import config
 
@@ -103,9 +100,11 @@ def _load_parker_ipam() -> Optional[ParkerIPAM]:
 
 
 app = _fetch_app_config()
-mqtt = Mqtt(app)
+mqtt = Mqtt(app, mqtt_logging=True)
 worker_metrics = WorkerMetricsCollection()
+parker_worker_metrics = WorkerMetricsCollection()
 worker_data: Dict[Tuple[str, str], Dict] = {}
+parker_worker_data: Dict[str, Dict] = {}
 ipam: Optional[ParkerIPAM] = _load_parker_ipam()
 
 
@@ -184,10 +183,10 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     current_peers_domain = (
         worker_metrics.get(best_worker)
         .get_domain_metrics(domain)
-        .get(CONNECTED_PEERS_METRIC, 0)
+        .get(MQTTTopics.CONNECTED_PEERS_METRIC, 0)
     )
     worker_metrics.update(
-        best_worker, domain, CONNECTED_PEERS_METRIC, current_peers_domain + 1
+        best_worker, domain, MQTTTopics.CONNECTED_PEERS_METRIC, current_peers_domain + 1
     )
     logger.debug(
         f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
@@ -271,6 +270,33 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     logger.info(f"wg_api_v3_key_exchange: Key:{req_data.pubkey}")
     mqtt.publish(f"parker/wireguard/{gateway}", json.dumps(mqtt_data).encode("utf-8"))
 
+    domain = "parker"
+
+    # TODO add PoP awareness and multi-tunnel support, select best worker per PoP
+
+    best_worker, diff, current_peers = parker_worker_metrics.get_best_worker(domain)
+    if best_worker is None:
+        logger.warning("No worker online for Parker network")
+        return {"error": {"message": "no gateway online, please try again later"}}, 400
+
+    # Update number of peers locally to interpolate data between MQTT updates from the worker
+    current_peers = (
+        parker_worker_metrics.get(best_worker)
+        .get_domain_metrics(domain)
+        .get(MQTTTopics.CONNECTED_PEERS_METRIC, 0)
+    )
+    parker_worker_metrics.update(
+        best_worker, domain, MQTTTopics.CONNECTED_PEERS_METRIC, current_peers + 1
+    )
+    logger.debug(
+        f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
+    )
+
+    w_data = parker_worker_data.get(best_worker, None)
+    if w_data is None:
+        logger.error(f"Couldn't get worker endpoint data for {best_worker}")
+        return {"error": {"message": "could not get gateway data"}}, 500
+
     response = ParkerResponse(
         nonce=req_data.nonce,
         time=int(datetime.now(tz=timezone.utc).timestamp()),
@@ -283,9 +309,9 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         concentrators=[  # TODO fetch real concentrator data from worker status
             {
                 "address4": "10.0.0.1",
-                "address6": "fe80::28f:a7ff:fec6:7530",
-                "endpoint": f"{config.get_config().external_name}:40000",
-                "pubkey": "4WAyZBpHcyRE5+L4ApV+jjWgj4q1o3CrCQ3NjclXfV4=",
+                "address6": w_data.get("LinkAddress"),
+                "endpoint": f"{w_data.get("ExternalAddress")}:{str(w_data.get("Port"))}",
+                "pubkey": w_data.get("PublicKey"),  # type: ignore
                 "id": 1,
             }
         ],
@@ -319,16 +345,34 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 def handle_mqtt_connect(
     client: mqtt_client.Client, userdata: bytes, flags: Any, rc: Any
 ) -> None:
-    """Prints status of connect message."""
+    """Prints status of connect message and subscribes to relevant topics."""
     # TODO(ruairi): Clarify current usage of this function.
-    logger.debug(
-        "MQTT connected to {}:{}".format(
-            app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
-        )
-    )
-    mqtt.subscribe("wireguard-metrics/#")
-    mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
-    mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+    match rc:
+        case paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED:
+            logger.debug(
+                "MQTT successfully connected to %s:%s",
+                client.host,
+                client.port,
+            )
+        case _:
+            logger.error(
+                "MQTT connection to %s:%s failed with return code %s (%s)",
+                client.host,
+                client.port,
+                rc,
+                paho.mqtt.enums.ConnackCode(rc).name,
+            )
+            return
+
+    if config.get_config().parker.enabled:
+        logger.debug("Parker mode is enabled, subscribing to parker topics")
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"))
+    else:
+        mqtt.subscribe(MQTTTopics.TOPIC_CONNECTED_PEERS.format(worker="+", domain="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
 
 
 @mqtt.on_topic("wireguard-metrics/#")
@@ -354,7 +398,27 @@ def handle_mqtt_message_metrics(
     worker_metrics.update(worker, domain, metric, data)
 
 
-@mqtt.on_topic(TOPIC_WORKER_STATUS.format(worker="+"))
+@mqtt.on_topic("parker/wireguard-metrics/#")
+def handle_mqtt_message_parker_metrics(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes published metrics from workers."""
+    logger.debug(
+        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+    )
+    _, _, worker, metric = message.topic.split("/", 3)
+
+    if not worker or not metric:
+        logger.error("Ignored MQTT message with empty worker or metrics label")
+        return
+
+    data = int(message.payload)
+
+    logger.info(f"Update Parker worker metrics: {metric} on {worker} = {data}")
+    parker_worker_metrics.update(worker, "parker", metric, data)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
 def handle_mqtt_message_status(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -370,7 +434,23 @@ def handle_mqtt_message_status(
         worker_metrics.set_online(worker)
 
 
-@mqtt.on_topic(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+def handle_mqtt_message_parker_status(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes status messages from workers."""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    status = int(message.payload)
+    if status < 1 and parker_worker_metrics.get(worker).is_online():
+        logger.warning(f"Marking Parker worker as offline: {worker}")
+        parker_worker_metrics.set_offline(worker)
+    elif status >= 1 and not parker_worker_metrics.get(worker).is_online():
+        logger.warning(f"Marking Parker worker as online: {worker}")
+        parker_worker_metrics.set_online(worker)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
 def handle_mqtt_message_data(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -379,7 +459,7 @@ def handle_mqtt_message_data(
     Stores them in a local dict"""
     _, worker, domain, _ = message.topic.split("/", 3)
     if not is_valid_domain(domain):
-        logger.error(f"Domain {domain} not in configured domains.")
+        logger.debug(f"Domain {domain} not in configured domains.")
         return
 
     data = json.loads(message.payload)
@@ -389,6 +469,24 @@ def handle_mqtt_message_data(
 
     logger.info("Worker data received for %s/%s: %s", worker, domain, data)
     worker_data[(worker, domain)] = data
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+", domain="+"))
+def handle_mqtt_message_parker_data(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes data messages from workers.
+
+    Stores them in a local dict"""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    data = json.loads(message.payload)
+    if not isinstance(data, dict):
+        logger.error("Invalid worker data received for %s: %s", worker, data)
+        return
+
+    logger.info("Worker data received for %s: %s", worker, data)
+    parker_worker_data[worker] = data
 
 
 @mqtt.on_message()
@@ -424,3 +522,7 @@ if __name__ == "__main__":
         listen_port = listen_config.port
 
     serve(app, host=listen_host, port=listen_port)
+
+
+# Manually re-init the mqtt client due to https://github.com/stlehmann/Flask-MQTT/issues/190
+mqtt.init_app(app)
