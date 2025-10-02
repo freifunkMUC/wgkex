@@ -129,17 +129,23 @@ def main():
 
     signal.signal(signal.SIGINT, on_exit)
 
-    domains = config.get_config().domains
-    prefixes = config.get_config().domain_prefixes
-    if not domains:
-        raise DomainsNotInConfig("Could not locate domains in configuration.")
-    if not check_all_domains_unique(domains, prefixes):
-        raise DomainsAreNotUnique("There are non-unique domains! Check config.")
-    for domain in domains:
-        if not is_valid_domain(domain):
-            raise InvalidDomain(f"Domain {domain} has invalid prefix.")
-    clean_up_worker()
-    watch_queue()
+    parker = config.get_config().parker
+    if parker:
+        logger.info("Parker mode is enabled")
+    else:
+
+        domains = config.get_config().domains
+        prefixes = config.get_config().domain_prefixes
+        if not domains:
+            raise DomainsNotInConfig("Could not locate domains in configuration.")
+        if not check_all_domains_unique(domains, prefixes):
+            raise DomainsAreNotUnique("There are non-unique domains! Check config.")
+        for domain in domains:
+            if not is_valid_domain(domain):
+                raise InvalidDomain(f"Domain {domain} has invalid prefix.")
+        clean_up_worker()
+
+    watch_queue(parker)
     mqtt.connect(exit_event)
 
 
