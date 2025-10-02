@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from textwrap import wrap
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pyroute2
 import pyroute2.netlink
@@ -58,6 +58,21 @@ class WireGuardClient:
     def wg_interface(self) -> str:
         """Returns the WireGuard peer interface."""
         return f"wg-{self.domain}"
+
+
+@dataclass
+class ParkerWireGuardClient:
+    """A Class representing a Project Parker WireGuard client.
+
+    Attributes:
+        public_key: The public key to use for this client.
+        remove: If this is to be removed or not.
+    """
+
+    public_key: str
+    range6: str
+    remove: bool
+    keepalive: Optional[int] = None
 
 
 def wg_flush_stale_peers(domain: str) -> List[Dict]:
@@ -114,6 +129,33 @@ def link_handler(client: WireGuardClient) -> Dict:
     return results
 
 
+# pyroute2 stuff
+def parker_link_handler(client: ParkerWireGuardClient) -> Dict:
+    """Updates fdb, route and WireGuard peers tables for a given WireGuard peer.
+
+    Arguments:
+        client: A WireGuard peer to manipulate.
+    Returns:
+        The outcome of each operation.
+    """
+    results = dict()
+    # Updates WireGuard peers.
+    results.update({"Wireguard": update_parker_wireguard_peer(client)})
+    logger.debug("Handling links for %s", client)
+    try:
+        # Updates routes to the WireGuard Peer.
+        results.update({"Route": parker_route_handler(client)})
+        logger.info("Updated route for %s", client)
+    except Exception as e:
+        # TODO(ruairi): re-raise exception here.
+        logger.error("Failed to update route for %s (%s)", client, e)
+        results.update({"Route": e})
+    # Updates WireGuard FDB.
+    # results.update({"Bridge FDB": bridge_fdb_handler(client)})
+    # logger.debug("Updated Bridge FDB for %s", client)
+    return results
+
+
 def bridge_fdb_handler(client: WireGuardClient) -> Dict:
     """Handles updates of FDB info towards WireGuard peers.
 
@@ -157,6 +199,28 @@ def update_wireguard_peer(client: WireGuardClient) -> Dict:
         return wg.set(client.wg_interface, peer=wg_peer)
 
 
+def update_parker_wireguard_peer(client: ParkerWireGuardClient) -> Dict:
+    """Handles updates of WireGuard peers to netlink.
+
+    Note that set will remove a peer if remove is set to True.
+
+    Arguments:
+        client: The WireGuard peer to update.
+
+    Returns:
+        A dict.
+    """
+    with pyroute2.WireGuard() as wg:
+        wg_peer = {
+            "public_key": client.public_key,
+            "allowed_ips": [client.range6],
+            "remove": client.remove,
+        }
+        if client.keepalive is not None:
+            wg_peer["persistent_keepalive"] = client.keepalive
+        return wg.set("wg-nodes", peer=wg_peer)  # TODO make interface name configurable
+
+
 def route_handler(client: WireGuardClient) -> Dict:
     """Handles updates of routes towards WireGuard peers.
 
@@ -176,6 +240,26 @@ def route_handler(client: WireGuardClient) -> Dict:
             dst=client.lladdr,
             oif=ip.link_lookup(ifname=client.wg_interface)[0],
         )
+
+
+def parker_route_handler(client: ParkerWireGuardClient) -> Dict:
+    """Handles updates of routes towards WireGuard peers.
+
+    Note that set will remove a route if remove is set to True.
+
+    Arguments:
+        client: The WireGuard peer to update.
+
+    Returns:
+        A dict.
+    """
+    with pyroute2.IPRoute() as ip:
+        result = ip.route(
+            "del" if client.remove else "replace",
+            dst=client.range6,
+            oif=ip.link_lookup("wg-nodes")[0],  # TODO make interface name configurable
+        )
+        return dict(result) if isinstance(result, dict) else {"result": result}
 
 
 def find_stale_wireguard_clients(wg_interface: str) -> List:
@@ -275,7 +359,7 @@ def get_device_data(wg_interface: str) -> Tuple[int, str, str]:
 
         # Get link address using IPRoute
         ipr_link = ipr.link_lookup(ifname=wg_interface)[0]
-        msgs = ipr.get_addr(index=ipr_link)
+        msgs = ipr.get_addreturnr(index=ipr_link)
         link_address = msgs[0].get_attr("IFA_ADDRESS")
 
         logger.debug(

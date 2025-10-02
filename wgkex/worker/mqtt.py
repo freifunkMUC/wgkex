@@ -6,7 +6,7 @@ import json
 import re
 import socket
 import threading
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import paho.mqtt.client as mqtt
 import pyroute2.netlink.exceptions
@@ -34,14 +34,20 @@ def connect(exit_event: threading.Event) -> None:
     Argument:
         exit_event: A threading.Event that signals application shutdown.
     """
+
+    parker = get_config().parker
+
     base_config = get_config().mqtt
     broker_address = base_config.broker_url
     broker_port = base_config.broker_port
     broker_username = base_config.username
     broker_password = base_config.password
     broker_keepalive = base_config.keepalive
-    client = mqtt.Client(_HOSTNAME, mqtt.CallbackAPIVersion.VERSION1)
-    domains = get_config().domains
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, _HOSTNAME)
+
+    domains: List[str] = []
+    if not parker:
+        domains = get_config().domains
 
     # Register LWT to set worker status down when lossing connection
     client.will_set(TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), 0, qos=1, retain=True)
@@ -50,7 +56,11 @@ def connect(exit_event: threading.Event) -> None:
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
-    client.message_callback_add("wireguard/#", on_message_wireguard)
+
+    if parker:
+        client.message_callback_add("parker/wireguard/#", on_message_parker)
+    else:
+        client.message_callback_add("wireguard/#", on_message_wireguard)
     logger.info("connecting to broker %s", broker_address)
 
     client.username_pw_set(broker_username, broker_password)
@@ -72,12 +82,13 @@ def connect(exit_event: threading.Event) -> None:
     )
     mark_offline_on_exit_thread.start()
 
-    for domain in domains:
-        # Schedule repeated metrics publishing
-        metrics_thread = threading.Thread(
-            target=publish_metrics_loop, args=(exit_event, client, domain)
-        )
-        metrics_thread.start()
+    if not parker:
+        for domain in domains:
+            # Schedule repeated metrics publishing
+            metrics_thread = threading.Thread(
+                target=publish_metrics_loop, args=(exit_event, client, domain)
+            )
+            metrics_thread.start()
 
     client.loop_forever()
 
@@ -114,7 +125,8 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         rc: The MQTT rc.
     """
     logger.debug("Connected with result code " + str(rc))
-    domains = get_config().domains
+
+    parker = get_config().parker
 
     own_external_name = (
         get_config().external_name
@@ -122,34 +134,42 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         else _HOSTNAME
     )
 
-    for domain in domains:
-        # Subscribing in on_connect() means that if we lose the connection and
-        # reconnect then subscriptions will be renewed.
-        topic = f"wireguard/{domain}/+"
+    if parker:
+        topic = f"parker/wireguard/+"
         logger.info(f"Subscribing to topic {topic}")
         client.subscribe(topic)
 
-    for domain in domains:
-        # Publish worker data (WG pubkeys, ports, local addresses)
-        iface = wg_interface_name(domain)
-        if iface:
-            (port, public_key, link_address) = get_device_data(iface)
-            data = {
-                "ExternalAddress": own_external_name,
-                "Port": port,
-                "PublicKey": public_key,
-                "LinkAddress": link_address,
-            }
-            client.publish(
-                TOPIC_WORKER_WG_DATA.format(worker=_HOSTNAME, domain=domain),
-                json.dumps(data),
-                qos=1,
-                retain=True,
-            )
-        else:
-            logger.error(
-                f"Could not get interface name for domain {domain}. Skipping worker data publication"
-            )
+    else:
+        domains = get_config().domains
+
+        for domain in domains:
+            # Subscribing in on_connect() means that if we lose the connection and
+            # reconnect then subscriptions will be renewed.
+            topic = f"wireguard/{domain}/+"
+            logger.info(f"Subscribing to topic {topic}")
+            client.subscribe(topic)
+
+        for domain in domains:
+            # Publish worker data (WG pubkeys, ports, local addresses)
+            iface = wg_interface_name(domain)
+            if iface:
+                (port, public_key, link_address) = get_device_data(iface)
+                data = {
+                    "ExternalAddress": own_external_name,
+                    "Port": port,
+                    "PublicKey": public_key,
+                    "LinkAddress": link_address,
+                }
+                client.publish(
+                    TOPIC_WORKER_WG_DATA.format(worker=_HOSTNAME, domain=domain),
+                    json.dumps(data),
+                    qos=1,
+                    retain=True,
+                )
+            else:
+                logger.error(
+                    f"Could not get interface name for domain {domain}. Skipping worker data publication"
+                )
 
     # Mark worker as online
     client.publish(TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), 1, qos=1, retain=True)
@@ -197,6 +217,20 @@ def on_message_wireguard(
         f"Received create message for key {str(message.payload.decode('utf-8'))} on domain {domain} adding to queue"
     )
     q.put((domain, str(message.payload.decode("utf-8"))))
+
+
+def on_message_parker(
+    client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
+) -> None:
+    """Processes messages from MQTT and forwards them to netlink.
+
+    Arguments:
+        client: the client instance for this callback.
+        userdata: the private user data.
+        message: The MQTT message.
+    """
+    # TODO: ensure payload is a dict mathing a TBD shared data class
+    q.put(str(message.payload.decode("utf-8")))
 
 
 def publish_metrics_loop(
