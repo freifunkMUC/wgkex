@@ -115,7 +115,7 @@ class MQTT:
     def from_dict(cls, mqtt_cfg: Dict[str, str]) -> "MQTT":
         """seems to generate a mqtt config object from dictionary
 
-        Args:
+        Arguments:
             mqtt_cfg ():
 
         Returns:
@@ -137,15 +137,33 @@ class Parker:
 
     Attributes:
         enabled: Whether Parker is enabled or not.
-        464xlat: Whether 464xlat is used or not.
+        xlat: Whether 464XLAT is used or not.
         prefixes: The prefixes configuration for Parker.
+        ipam: The IPAM backend to use for the node prefixes (json or netbox).
+        retry_interval: The retry interval in seconds for nodes to recontact the broker to check for new configuration.
+        wg_keepalive: The keepalive interval in seconds the nodes should set for the WireGuard tunnel.
     """
 
     @dataclasses.dataclass
     class Prefixes:
+        """A representation of the 'prefixes' key in the 'parker' configuration.
+
+        Attributes:
+            ipv4: The IPv4 prefix configuration.
+            ipv6: The IPv6 prefix configuration.
+        """
 
         @dataclasses.dataclass
         class IPv4:
+            """A representation of the 'ipv4' key in the 'prefixes' configuration.
+
+            Attributes:
+                clat_subnet: The CLAT subnet to use for 464XLAT, i.e. the client subnet behind the nodes.
+                length: The subnet size to use for the IPv4 subnet when not using 464XLAT.
+                netbox_filter: The filter to use when querying NetBox for an IPv4 prefix when not using 464XLAT.
+                netbox_additional_data: Additional data to send to NetBox when reserving an IPv4 prefix when not using 464XLAT.
+            """
+
             clat_subnet: Optional[str] = None
             length: Optional[int] = None
             netbox_filter: Optional[Dict[str, Any]] = None
@@ -153,6 +171,14 @@ class Parker:
 
         @dataclasses.dataclass
         class IPv6:
+            """A representation of the 'ipv6' key in the 'prefixes' configuration.
+
+            Attributes:
+                length: The prefix size to use for the IPv6 prefix.
+                netbox_filter: The filter to use when querying NetBox for an IPv6 prefix.
+                netbox_additional_data: Additional data to send to NetBox when reserving an IPv6 prefix.
+            """
+
             length: int
             netbox_filter: Optional[Dict[str, Any]] = None
             netbox_additional_data: Optional[Dict[str, Any]] = None
@@ -168,12 +194,14 @@ class Parker:
     xlat: bool
     prefixes: Prefixes
     ipam: IPAM
+    retry_interval: int = 120
+    wg_keepalive: int = 25
 
     @classmethod
     def from_dict(cls, parker_cfg: Dict[str, Any]) -> "Parker":
         """Generates a parker config object from a dictionary.
 
-        Args:
+        Arguments:
             parker_cfg: dictionary with parker config
 
         Returns:
@@ -240,6 +268,9 @@ class Parker:
         if not xlat:
             raise NotImplementedError("Non-464XLAT mode is not supported yet")
 
+        retry_interval = int(parker_cfg.get("retry_interval", cls.retry_interval))
+        wg_keepalive = int(parker_cfg.get("wg_keepalive", cls.wg_keepalive))
+
         return cls(
             enabled=enabled,
             xlat=xlat,
@@ -261,6 +292,8 @@ class Parker:
                 ),
             ),
             ipam=ipam,
+            retry_interval=retry_interval,
+            wg_keepalive=wg_keepalive,
         )
 
 
@@ -280,7 +313,7 @@ class Netbox:
     def from_dict(cls, netbox_cfg: Dict[str, str]) -> "Netbox":
         """Generates a netbox config object from a dictionary.
 
-        Args:
+        Arguments:
             netbox_cfg: dictionary with netbox config
 
         Returns:
@@ -301,7 +334,7 @@ class Config:
         domain_prefixes: The list of prefixes to pre-pend to a given domain.
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
-        externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        external_name: The publicly resolvable domain name or public IP address of this worker (worker-only).
     """
 
     raw: Dict[str, Any]
@@ -318,6 +351,7 @@ class Config:
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
         """Creates a Config object from a configuration file.
+
         Arguments:
             cfg: The configuration file as a dict.
         Returns:
