@@ -4,9 +4,10 @@
 import dataclasses
 import ipaddress
 import json
+import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import paho.mqtt.client as mqtt_client
 from flask import Flask, Response, render_template, request
@@ -325,15 +326,48 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     )
 
 
-def get_range6(pubkey: str) -> ipaddress.IPv6Network:
+def get_range6(pubkey: str) -> Optional[ipaddress.IPv6Network]:
     """Returns the IPv6 range for a node with a given public key."""
-    ranges = {
-        "7ybL85wUPWPktU25HvuPLsiDUIeqSR3Ydb3RuXpat1w=": "2001:db8:ed0:2::/63",
-        "ZoOtemmk3Ba62vYnzrcfHWTcfMWulRnvvvqwB8J2KmU=": "2001:db8:ed0:3::/63",
-    }
+    ranges: Dict[str, str] = {}
+    parent_prefix = ipaddress.IPv6Network("2001:db8:ed0::/56")  # Default parent prefix
+    try:
+        with open("/var/local/wgkex/broker/ipv6_ranges.json", "r") as f:
+            json_content = json.load(f)
+            ranges = json_content.get("ranges", {})
+            parent_prefix = ipaddress.IPv6Network(
+                json_content.get("parent_prefix", parent_prefix)
+            )
+    except FileNotFoundError:
+        os.makedirs("/var/local/wgkex/broker", exist_ok=True)
+    except json.JSONDecodeError:
+        pass
+
     range = ranges.get(pubkey, None)
-    if range is None:
-        logger.error(f"No IPv6 range found for public key {pubkey}")
+    if range is None or not ipaddress.IPv6Network(range).subnet_of(parent_prefix):
+        parsed_ranges = [
+            ipaddress.IPv6Network(rg)
+            for rg in ranges.values()
+            if ipaddress.IPv6Network(rg).subnet_of(parent_prefix)
+        ]  # Filter out any ranges that are not subnets of the parent prefix
+
+        prefixes = parent_prefix.subnets(new_prefix=63)
+        next(prefixes)  # skip first
+        for candidate in prefixes:
+            if candidate not in parsed_ranges:
+                range = candidate
+                break
+        if range is None:
+            logger.error(f"No IPv6 range available for public key {pubkey}.")
+            return None
+        else:
+            logger.info(
+                f"No existing IPv6 range found for public key {pubkey}, assigning {range}"
+            )
+
+        ranges[pubkey] = str(range)
+        with open("/var/local/wgkex/broker/ipv6_ranges.json", "w") as f:
+            json.dump({"parent_prefix": str(parent_prefix), "ranges": ranges}, f)
+
     return ipaddress.IPv6Network(range)
 
 
