@@ -31,6 +31,10 @@ parker:
   enabled: False
   # only 464xlat=True is currently properly supported
   464xlat: True
+  # The retry interval in seconds for nodes to recontact the broker to check for new configuration.
+  retry_interval: 120
+  # The keepalive interval in seconds the nodes should set for the WireGuard tunnel.
+  wg_keepalive: 25
   # ipam must be either of json or netbox
   ipam: netbox
   prefixes:

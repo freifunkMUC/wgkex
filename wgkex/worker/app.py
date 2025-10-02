@@ -89,7 +89,7 @@ def clean_up_worker() -> None:
 def check_all_domains_unique(domains, prefixes):
     """strips off prefixes and checks if domains are unique
 
-    Args:
+    Arguments:
         domains: [str]
     Returns:
         boolean
