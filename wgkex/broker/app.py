@@ -15,6 +15,7 @@ from flask_mqtt import Mqtt
 from waitress import serve
 
 from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.broker.signer import sign_response
 from wgkex.common import logger
 from wgkex.common.mqtt import (
     CONNECTED_PEERS_METRIC,
@@ -300,7 +301,28 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         ],
     )
 
-    return dataclasses.asdict(response), 200
+    data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + "\n".encode(
+        "utf-8"
+    )
+    if config.get_config().broker_signing_key is None:
+        logger.error(
+            "Parker is enabled, but no broker_signing_key is set in the config file. Can't respond to key exchange."
+        )
+        return {
+            "error": {"message": "Internal signature error. Please try again later."}
+        }, 500
+
+    signature: bytes = sign_response(data)
+
+    full_response: bytes = data + signature
+
+    return (
+        Response(
+            response=full_response,
+            mimetype="text/plain",
+        ),
+        200,
+    )
 
 
 def get_range6(pubkey: str) -> ipaddress.IPv6Network:
