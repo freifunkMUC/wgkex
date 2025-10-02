@@ -7,3 +7,4 @@ waitress~=3.0.0
 # Common
 prometheus-client~=0.26.0
 paho-mqtt~=2.1.0
+ecdsa~=0.19.1

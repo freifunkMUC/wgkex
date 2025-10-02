@@ -489,6 +489,8 @@ class Config:
     rate_limit: RateLimit = dataclasses.field(default_factory=RateLimit)
     key_lists: KeyLists = dataclasses.field(default_factory=KeyLists)
     broker: Broker = dataclasses.field(default_factory=Broker)
+    parker: bool = False
+    broker_signing_key: str | None = None
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
@@ -501,6 +503,12 @@ class Config:
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
         workers_cfg = Workers.from_dict(cfg.get("workers", {}))
+        parker = cfg.get("parker", False)
+        broker_signing_key = cfg.get("broker_signing_key", None)
+        if parker and broker_signing_key is None:
+            raise ValueError(
+                "Parker is enabled, but no broker_signing_key is set in the config file"
+            )
         return cls(
             raw=cfg,
             domains=cfg["domains"],
@@ -516,6 +524,8 @@ class Config:
             rate_limit=RateLimit.from_dict(cfg.get("rate_limit") or {}),
             key_lists=KeyLists.from_dict(cfg.get("key_lists") or {}),
             broker=Broker.from_dict(cfg.get("broker") or {}),
+            parker=parker,
+            broker_signing_key=broker_signing_key,
         )
 
     def get(self, key: str) -> Any:
