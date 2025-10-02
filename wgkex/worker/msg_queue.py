@@ -1,10 +1,16 @@
+import json
 import threading
 import time
 from queue import Empty, Queue
 from typing import NamedTuple
 
 from wgkex.common import logger
-from wgkex.worker.netlink import WireGuardClient, link_handler
+from wgkex.worker.netlink import (
+    ParkerWireGuardClient,
+    WireGuardClient,
+    link_handler,
+    parker_link_handler,
+)
 from wgkex.worker.observability import PEER_OPS, QUEUE_DEPTH
 from wgkex.worker.rebalance import peer_add_tracker
 
@@ -58,14 +64,33 @@ QUEUE_DEPTH.set_function(lambda: q.qsize())
 _MAX_BATCH = 256
 
 
-def watch_queue() -> None:
+def watch_queue(parker: bool = False) -> None:
     """Watches the queue for new messages."""
     logger.debug("Starting queue watcher")
     threading.Thread(target=pick_from_queue, daemon=True).start()
 
 
-def process_item(item: PeerOp) -> None:
+def process_parker_item(item: str) -> None:
+    """Adds a Parker peer from a JSON queue item."""
+    message = json.loads(item)
+    client = ParkerWireGuardClient(
+        # TODO use shared data class
+        public_key=message.get("PublicKey"),
+        range6=message.get("Range6"),
+        keepalive=message.get("Keepalive"),
+        remove=False,
+    )
+    logger.info(
+        f"Processing queue for key {client.public_key} with range {client.range6}"
+    )
+    logger.debug(parker_link_handler(client))
+
+
+def process_item(item: PeerOp | str) -> None:
     """Adds or removes a peer."""
+    if isinstance(item, str):
+        process_parker_item(item)
+        return
     client = WireGuardClient(
         public_key=item.public_key,
         domain=item.domain,
