@@ -27,6 +27,7 @@ jobs:
           current_version=$(cat .bazelversion | tr -d '[:space:]')
           if [ "$current_version" != "${{ steps.extract_version.outputs.bazel_version }}" ]; then
             echo "${{ steps.extract_version.outputs.bazel_version }}" > .bazelversion
+            echo "# make sure that the image in the Dockerfile and this version are identical" >> .bazelversion
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add .bazelversion
