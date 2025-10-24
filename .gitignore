@@ -312,3 +312,6 @@ docker-compose.override.yaml
 
 # config file
 wgkex.yaml
+
+# possible netbox docker installation
+/netbox-docker

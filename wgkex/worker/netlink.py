@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from textwrap import wrap
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import pyroute2
 import pyroute2.netlink
@@ -60,6 +60,21 @@ class WireGuardClient:
         return f"wg-{self.domain}"
 
 
+@dataclass
+class ParkerWireGuardClient:
+    """A Class representing a Project Parker WireGuard client.
+
+    Attributes:
+        public_key: The public key to use for this client.
+        remove: If this is to be removed or not.
+    """
+
+    public_key: str
+    range6: str
+    remove: bool
+    keepalive: Optional[int] = None
+
+
 def wg_flush_stale_peers(domain: str) -> List[Dict]:
     """Removes stale peers.
 
@@ -87,8 +102,12 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
     return link_handled
 
 
-# pyroute2 stuff
-def link_handler(client: WireGuardClient) -> Dict:
+##################
+# pyroute2 stuff #
+##################
+
+
+def link_handler(client: Union[WireGuardClient, ParkerWireGuardClient]) -> Dict:
     """Updates fdb, route and WireGuard peers tables for a given WireGuard peer.
 
     Arguments:
@@ -108,9 +127,10 @@ def link_handler(client: WireGuardClient) -> Dict:
         # TODO(ruairi): re-raise exception here.
         logger.error("Failed to update route for %s (%s)", client, e)
         results.update({"Route": e})
-    # Updates WireGuard FDB.
-    results.update({"Bridge FDB": bridge_fdb_handler(client)})
-    logger.debug("Updated Bridge FDB for %s", client)
+    if isinstance(client, WireGuardClient):
+        # Updates WireGuard FDB.
+        results.update({"Bridge FDB": bridge_fdb_handler(client)})
+        logger.debug("Updated Bridge FDB for %s", client)
     return results
 
 
@@ -136,7 +156,9 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
         )
 
 
-def update_wireguard_peer(client: WireGuardClient) -> Dict:
+def update_wireguard_peer(
+    client: Union[WireGuardClient, ParkerWireGuardClient],
+) -> Dict:
     """Handles updates of WireGuard peers to netlink.
 
     Note that set will remove a peer if remove is set to True.
@@ -149,15 +171,27 @@ def update_wireguard_peer(client: WireGuardClient) -> Dict:
     """
     # TODO(ruairi): Splice this into an add_ and remove_ function.
     with pyroute2.WireGuard() as wg:
-        wg_peer = {
-            "public_key": client.public_key,
-            "allowed_ips": [client.lladdr],
-            "remove": client.remove,
-        }
-        return wg.set(client.wg_interface, peer=wg_peer)
+        if isinstance(client, WireGuardClient):
+            wg_peer = {
+                "public_key": client.public_key,
+                "allowed_ips": [client.lladdr],
+                "remove": client.remove,
+            }
+            wg_interface = client.wg_interface
+        elif isinstance(client, ParkerWireGuardClient):
+            wg_peer = {
+                "public_key": client.public_key,
+                "allowed_ips": [client.range6],
+                "remove": client.remove,
+            }
+            if client.keepalive is not None:
+                wg_peer["persistent_keepalive"] = client.keepalive
+            wg_interface = "wg-nodes"  # TODO make interface name configurable
+
+        return wg.set(interface=wg_interface, peer=wg_peer)
 
 
-def route_handler(client: WireGuardClient) -> Dict:
+def route_handler(client: Union[WireGuardClient, ParkerWireGuardClient]) -> Dict:
     """Handles updates of routes towards WireGuard peers.
 
     Note that set will remove a route if remove is set to True.
@@ -171,11 +205,20 @@ def route_handler(client: WireGuardClient) -> Dict:
     # TODO(ruairi): Determine what Exceptions are raised by ip.route
     # TODO(ruairi): Splice this into an add_ and remove_ function.
     with pyroute2.IPRoute() as ip:
-        return ip.route(
+        if isinstance(client, WireGuardClient):
+            dst = client.lladdr
+            oif = ip.link_lookup(client.wg_interface)[0]
+
+        elif isinstance(client, ParkerWireGuardClient):
+            dst = client.range6
+            oif = ip.link_lookup("wg-nodes")[0]  # TODO make interface name configurable
+
+        result = ip.route(
             "del" if client.remove else "replace",
-            dst=client.lladdr,
-            oif=ip.link_lookup(ifname=client.wg_interface)[0],
+            dst=dst,
+            oif=oif,
         )
+        return dict(result) if isinstance(result, dict) else {"result": result}
 
 
 def find_stale_wireguard_clients(wg_interface: str) -> List:

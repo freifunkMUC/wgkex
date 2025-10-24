@@ -246,6 +246,11 @@ and it should output something similar to:
 }
 ```
 
+Or for /api/v3 (Parker):
+```sh
+wget -q -O- 'http://127.0.0.1:5000/api/v3/wg/key/exchange?v6mtu=1500&pubkey=TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=&nonce=123456''
+```
+
 Or use Python instead of wget:
 
 ```python

@@ -89,7 +89,7 @@ def clean_up_worker() -> None:
 def check_all_domains_unique(domains, prefixes):
     """strips off prefixes and checks if domains are unique
 
-    Args:
+    Arguments:
         domains: [str]
     Returns:
         boolean
@@ -129,17 +129,23 @@ def main():
 
     signal.signal(signal.SIGINT, on_exit)
 
-    domains = config.get_config().domains
-    prefixes = config.get_config().domain_prefixes
-    if not domains:
-        raise DomainsNotInConfig("Could not locate domains in configuration.")
-    if not check_all_domains_unique(domains, prefixes):
-        raise DomainsAreNotUnique("There are non-unique domains! Check config.")
-    for domain in domains:
-        if not is_valid_domain(domain):
-            raise InvalidDomain(f"Domain {domain} has invalid prefix.")
-    clean_up_worker()
-    watch_queue()
+    parker_enabled = config.get_config().parker.enabled
+    if parker_enabled:
+        logger.info("Parker mode is enabled")
+    else:
+
+        domains = config.get_config().domains
+        prefixes = config.get_config().domain_prefixes
+        if not domains:
+            raise DomainsNotInConfig("Could not locate domains in configuration.")
+        if not check_all_domains_unique(domains, prefixes):
+            raise DomainsAreNotUnique("There are non-unique domains! Check config.")
+        for domain in domains:
+            if not is_valid_domain(domain):
+                raise InvalidDomain(f"Domain {domain} has invalid prefix.")
+        clean_up_worker()
+
+    watch_queue(parker_enabled)
     mqtt.connect(exit_event)
 
 

@@ -9,13 +9,17 @@ import mock
 import paho.mqtt.client
 import pyroute2.netlink.exceptions
 
-from wgkex.common.mqtt import TOPIC_CONNECTED_PEERS
+from wgkex.common.mqtt import MQTTTopics
 from wgkex.worker import mqtt
 
 
-def _get_config_mock(domains=None, mqtt=None):
+def _get_config_mock(domains=None, mqtt=None, parker=None):
     test_prefixes = ["_ffmuc_", "_TEST_PREFIX2_"]
     config_mock = mock.MagicMock()
+    if parker:
+        config_mock.parker = parker
+    else:
+        config_mock.parker.enabled = False
     config_mock.domains = (
         domains if domains is not None else [f"{test_prefixes[0]}domain.one"]
     )
@@ -113,7 +117,7 @@ class MQTTTest(unittest.TestCase):
 
         conn_peers_mock.assert_called_with("wg-domain.one")
         mqtt_client.publish.assert_called_with(
-            TOPIC_CONNECTED_PEERS.format(
+            MQTTTopics.TOPIC_CONNECTED_PEERS.format(
                 domain="_ffmuc_domain.one", worker=socket.gethostname()
             ),
             20,
@@ -177,7 +181,7 @@ class MQTTTest(unittest.TestCase):
 
         domain = mqtt.get_config().domains[0]
         hostname = socket.gethostname()
-        topic = TOPIC_CONNECTED_PEERS.format(domain=domain, worker=hostname)
+        topic = MQTTTopics.TOPIC_CONNECTED_PEERS.format(domain=domain, worker=hostname)
 
         # Must not raise NetlinkDumpInterrupted, but handle gracefully by doing nothing
         mqtt.publish_metrics(mqtt_client, topic, domain)
