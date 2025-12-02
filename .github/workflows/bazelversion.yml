@@ -21,25 +21,18 @@ jobs:
         run: |
           version=$(grep -oP '(?<=gcr.io/bazel-public/bazel:)[0-9]+\.[0-9]+\.[0-9]+' Dockerfile)
           echo "bazel_version=$version" >> $GITHUB_OUTPUT
-      
+
       - name: Update .bazelversion if different
         run: |
-          new_version="${{ steps.extract_version.outputs.bazel_version }}"
           current_version=$(cat .bazelversion | tr -d '[:space:]')
-      
-          if [ "$current_version" != "$new_version" ]; then
-            printf "%s\n# make sure that the image in the Dockerfile and this version are identical\n" "$new_version" > .bazelversion
-      
-            # Commit only if there are real changes
-            if ! git diff --quiet; then
-              git config user.name "github-actions[bot]"
-              git config user.email "github-actions[bot]@users.noreply.github.com"
-              git add .bazelversion
-              git commit -m "chore: sync .bazelversion with Dockerfile"
-              git push origin ${{ github.head_ref }}
-            else
-              echo "No changes detected after update."
-            fi
+          if [ "$current_version" != "${{ steps.extract_version.outputs.bazel_version }}" ]; then
+            echo "${{ steps.extract_version.outputs.bazel_version }}" > .bazelversion
+            echo "# make sure that the image in the Dockerfile and this version are identical" >> .bazelversion
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add .bazelversion
+            git commit -m "chore: sync .bazelversion with Dockerfile"
+            git push origin ${{ github.head_ref }}
           else
             echo ".bazelversion is already up to date."
           fi
