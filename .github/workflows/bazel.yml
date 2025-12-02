@@ -30,7 +30,7 @@ jobs:
             --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.12.0/__main__.py \
             --test_verbose_timeout_warnings --define=config_file=test ...:all
       - name: Coveralls
-        uses: coverallsapp/github-action@648a8eb78e6d50909eff900e4ec85cab4524a45b # v2.3.6
+        uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2.3.7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path-to-lcov: bazel-out/_coverage/_coverage_report.dat
