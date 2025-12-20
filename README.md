@@ -46,6 +46,7 @@ an MQTT bus for all workers to consume.
 The frontend broker exposes the following API endpoints for use:
 
 ```
+/api/v1/locations
 /api/v1/wg/key/exchange
 /api/v2/wg/key/exchange
 ```
@@ -58,6 +59,19 @@ broker_listen:
   host: 0.0.0.0
   # port defaults to 5000 if unspecified
   port: 5000
+```
+
+#### GET /api/v1/locations
+
+Returns a list of available location identifiers configured for the gateways.
+This endpoint can be used by clients to discover which location preferences are supported.
+
+Example response:
+
+```json
+{
+  "locations": ["MUC", "Vienna"]
+}
 ```
 
 #### POST /api/v1/wg/key/exchange
@@ -81,9 +95,14 @@ JSON POST'd to this endpoint should be in this format:
 ```json
 {
   "domain": "CONFIGURED_DOMAIN",
-  "public_key": "PUBLIC_KEY"
+  "public_key": "PUBLIC_KEY",
+  "location": "PREFERRED_LOCATION"
 }
 ```
+
+The `location` field is optional. If specified, the broker will prefer selecting a gateway in the requested location,
+while still maintaining load balancing within that location. If the requested location has no available gateways
+or is unknown, the broker will fall back to selecting from all available gateways.
 
 The broker will validate the domain and public key, and if valid, will push the key onto the MQTT bus.
 Additionally it chooses a worker (aka gateway, endpoint) that the client should connect to.
