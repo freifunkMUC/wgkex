@@ -32,10 +32,12 @@ class KeyExchange:
     Attributes:
         public_key: The public key for this exchange.
         domain: The domain for this exchange.
+        location: Optional preferred location for gateway selection.
     """
 
     public_key: str
     domain: str
+    location: str = None
 
     @classmethod
     def from_dict(cls, msg: dict) -> "KeyExchange":
@@ -50,7 +52,8 @@ class KeyExchange:
         domain = str(msg.get("domain"))
         if not is_valid_domain(domain):
             raise ValueError(f"Domain {domain} not in configured domains.")
-        return cls(public_key=public_key, domain=domain)
+        location = msg.get("location")
+        return cls(public_key=public_key, domain=domain, location=location)
 
 
 def _fetch_app_config() -> Flask_app:
@@ -80,6 +83,27 @@ worker_data: Dict[Tuple[str, str], Dict] = {}
 def index() -> str:
     """Returns main page"""
     return render_template("index.html")
+
+
+@app.route("/api/v1/locations", methods=["GET"])
+def wg_api_v1_locations() -> Tuple[Response | Dict, int]:
+    """Returns list of available locations.
+    Returns:
+        JSON response with list of locations.
+    """
+    try:
+        worker_cfg = config.get_config().workers
+        locations = worker_cfg.get_locations()
+        return {"locations": locations}, 200
+    except Exception as ex:
+        logger.error(
+            "Exception occurred in /api/v1/locations: %s", ex, exc_info=True
+        )
+        return {
+            "error": {
+                "message": "An internal error has occurred. Please try again later."
+            }
+        }, 500
 
 
 @app.route("/api/v1/wg/key/exchange", methods=["POST"])
@@ -131,13 +155,18 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
 
     key = data.public_key
     domain = data.domain
+    location = data.location
     # in case we want to decide here later we want to publish it only to dedicated gateways
     gateway = "all"
-    logger.info(f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}")
+    logger.info(
+        f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}, Location:{location}"
+    )
 
     mqtt.publish(f"wireguard/{domain}/{gateway}", key)
 
-    best_worker, diff, current_peers = worker_metrics.get_best_worker(domain)
+    best_worker, diff, current_peers = worker_metrics.get_best_worker(
+        domain, location=location
+    )
     if best_worker is None:
         logger.warning(f"No worker online for domain {domain}")
         return {
