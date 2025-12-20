@@ -293,10 +293,14 @@ def check_blacklist(pubkey: str) -> None:
     bl = blacklist_module.get_blacklist()
     if bl and bl.is_blacklisted(pubkey):
         reason = bl.get_reason(pubkey)
-        if reason:
-            raise ValueError(f"Key is blacklisted. Reason: {reason}")
-        else:
-            raise ValueError("Key is blacklisted.")
+        # Log the blacklist attempt for security monitoring
+        # We log the full key since it's needed for admin tracking
+        logger.warning(
+            f"Blacklisted key rejected: {pubkey[:8]}...{pubkey[-8:]} "
+            f"(Reason: {reason if reason else 'No reason specified'})"
+        )
+        # Don't expose the reason to the client for security
+        raise ValueError("Key is blacklisted.")
 
 
 def join_host_port(host: str, port: str) -> str:

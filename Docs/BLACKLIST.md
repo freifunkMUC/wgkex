@@ -58,7 +58,9 @@ When a blacklisted key is rejected, the broker returns:
 }
 ```
 
-The actual error (including the reason if provided) is logged on the broker for administrators to review.
+**Security Note**: The blacklist reason is **not** exposed to the client to prevent information leakage. The detailed reason is only logged server-side for administrators to review. This helps prevent attackers from learning why specific keys were blocked.
+
+The broker logs blacklist rejections with the key (truncated for log readability) and reason for security monitoring purposes.
 
 ## Example Usage
 
