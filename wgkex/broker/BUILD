@@ -37,3 +37,15 @@ py_binary(
         ":metrics"
     ],
 )
+
+py_test(
+    name="app_test",
+    srcs=["app_test.py"],
+    deps=[
+        ":app",
+        "//wgkex/allowlist:allowlist",
+        requirement("PyYAML"),
+        requirement("mock"),
+    ],
+    size="small",
+)

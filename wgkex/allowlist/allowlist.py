@@ -24,9 +24,7 @@ class AllowlistManager:
         _stop_event: Event to signal the refresh thread to stop.
     """
 
-    def __init__(
-        self, allowlist_file: str, refresh_interval: int = 300
-    ):
+    def __init__(self, allowlist_file: str, refresh_interval: int = 300):
         """Initialize the AllowlistManager.
 
         Args:
@@ -55,7 +53,7 @@ class AllowlistManager:
             yaml.YAMLError: If the YAML file is malformed.
         """
         logger.info(f"Loading allowlist from {self.allowlist_file}")
-        
+
         if not os.path.exists(self.allowlist_file):
             logger.warning(
                 f"Allowlist file {self.allowlist_file} not found. Using empty allowlist."
@@ -83,9 +81,7 @@ class AllowlistManager:
                     )
                     continue
                 new_allowlist[domain] = set(keys)
-                logger.info(
-                    f"Loaded {len(keys)} allowed keys for domain {domain}"
-                )
+                logger.info(f"Loaded {len(keys)} allowed keys for domain {domain}")
 
             with self._lock:
                 self._allowlist = new_allowlist
@@ -115,12 +111,10 @@ class AllowlistManager:
             if domain not in self._allowlist:
                 logger.debug(f"Domain {domain} not in allowlist")
                 return False
-            
+
             allowed = public_key in self._allowlist[domain]
             if not allowed:
-                logger.debug(
-                    f"Key {public_key} not in allowlist for domain {domain}"
-                )
+                logger.debug(f"Key {public_key} not in allowlist for domain {domain}")
             return allowed
 
     def get_allowed_keys(self, domain: str) -> List[str]:
@@ -147,9 +141,7 @@ class AllowlistManager:
     def _start_refresh_thread(self) -> None:
         """Start the background refresh thread."""
         self._stop_event.clear()
-        self._refresh_thread = threading.Thread(
-            target=self._refresh_loop, daemon=True
-        )
+        self._refresh_thread = threading.Thread(target=self._refresh_loop, daemon=True)
         self._refresh_thread.start()
         logger.info(
             f"Started allowlist refresh thread (interval: {self.refresh_interval}s)"

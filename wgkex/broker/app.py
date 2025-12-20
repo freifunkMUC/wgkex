@@ -56,14 +56,12 @@ class KeyExchange:
         domain = str(msg.get("domain"))
         if not is_valid_domain(domain):
             raise ValueError(f"Domain {domain} not in configured domains.")
-        
+
         # Check allowlist if enabled
         if allowlist_mgr is not None:
             if not allowlist_mgr.is_key_allowed(domain, public_key):
-                raise ValueError(
-                    f"Public key not in allowlist for domain {domain}."
-                )
-        
+                raise ValueError(f"Public key not in allowlist for domain {domain}.")
+
         return cls(public_key=public_key, domain=domain)
 
 
