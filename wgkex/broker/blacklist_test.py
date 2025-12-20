@@ -172,7 +172,9 @@ class TestBlacklist(unittest.TestCase):
         max_wait = 15  # seconds
         start = time.time()
         while time.time() - start < max_wait:
-            if not blacklist.is_blacklisted("Key1") and blacklist.is_blacklisted("Key2"):
+            if not blacklist.is_blacklisted("Key1") and blacklist.is_blacklisted(
+                "Key2"
+            ):
                 break
             time.sleep(0.5)
 

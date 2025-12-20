@@ -133,7 +133,9 @@ class Blacklist:
                         last_mtime = self._last_mtime
 
                     if last_mtime is None or mtime > last_mtime:
-                        logger.info(f"Blacklist file changed, reloading: {self.filepath}")
+                        logger.info(
+                            f"Blacklist file changed, reloading: {self.filepath}"
+                        )
                         self._load_blacklist()
                 elif self._last_mtime is not None:
                     # File was deleted
