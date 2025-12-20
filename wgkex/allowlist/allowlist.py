@@ -24,6 +24,9 @@ class AllowlistManager:
         _stop_event: Event to signal the refresh thread to stop.
     """
 
+    # Thread join timeout in seconds
+    _THREAD_JOIN_TIMEOUT = 5
+
     def __init__(self, allowlist_file: str, refresh_interval: int = 300):
         """Initialize the AllowlistManager.
 
@@ -48,8 +51,9 @@ class AllowlistManager:
     def reload(self) -> None:
         """Reload the allowlist from the file.
 
+        If the file doesn't exist, logs a warning and uses an empty allowlist.
+
         Raises:
-            FileNotFoundError: If the allowlist file doesn't exist.
             yaml.YAMLError: If the YAML file is malformed.
         """
         logger.info(f"Loading allowlist from {self.allowlist_file}")
@@ -160,7 +164,7 @@ class AllowlistManager:
         if self._refresh_thread is not None and self._refresh_thread.is_alive():
             logger.info("Stopping allowlist refresh thread")
             self._stop_event.set()
-            self._refresh_thread.join(timeout=5)
+            self._refresh_thread.join(timeout=self._THREAD_JOIN_TIMEOUT)
 
     def __del__(self):
         """Cleanup when the object is destroyed."""

@@ -97,7 +97,9 @@ if cfg.allowlist.enabled:
             cfg.allowlist.file, cfg.allowlist.refresh_interval
         )
     else:
-        logger.error("Allowlist enabled but no file specified in configuration")
+        error_msg = "Allowlist enabled but no file specified in configuration"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
 else:
     logger.info("Allowlist disabled, accepting all keys")
 

@@ -153,13 +153,23 @@ class Allowlist:
 
         Returns:
             An Allowlist object.
+
+        Raises:
+            ValueError: If refresh_interval is not a valid integer.
         """
+        try:
+            refresh_interval = int(
+                allowlist_cfg.get("refresh_interval", cls.refresh_interval)
+            )
+        except (ValueError, TypeError) as e:
+            raise ValueError(
+                f"Invalid refresh_interval in allowlist configuration: {e}"
+            )
+
         return cls(
             enabled=bool(allowlist_cfg.get("enabled", cls.enabled)),
             file=allowlist_cfg.get("file"),
-            refresh_interval=int(
-                allowlist_cfg.get("refresh_interval", cls.refresh_interval)
-            ),
+            refresh_interval=refresh_interval,
         )
 
 
