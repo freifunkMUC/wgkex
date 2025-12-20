@@ -96,9 +96,7 @@ def wg_api_v1_locations() -> Tuple[Response | Dict, int]:
         locations = worker_cfg.get_locations()
         return {"locations": locations}, 200
     except Exception as ex:
-        logger.error(
-            "Exception occurred in /api/v1/locations: %s", ex, exc_info=True
-        )
+        logger.error("Exception occurred in /api/v1/locations: %s", ex, exc_info=True)
         return {
             "error": {
                 "message": "An internal error has occurred. Please try again later."

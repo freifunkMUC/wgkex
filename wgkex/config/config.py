@@ -74,7 +74,7 @@ class Workers:
 
     def get_locations(self) -> List[str]:
         """Returns a list of unique locations configured for workers.
-        
+
         Returns:
             A list of location strings, excluding None values.
         """
@@ -86,15 +86,16 @@ class Workers:
 
     def get_workers_by_location(self, location: str) -> List[str]:
         """Returns a list of worker names that match the given location.
-        
+
         Args:
             location: The location to filter by.
-            
+
         Returns:
             A list of worker names matching the location.
         """
         return [
-            name for name, worker in self._workers.items()
+            name
+            for name, worker in self._workers.items()
             if worker.location == location
         ]
 
