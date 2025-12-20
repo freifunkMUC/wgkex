@@ -140,6 +140,7 @@ class Config:
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        key_whitelist: Optional list of public keys that should never be cleaned up (worker-only).
     """
 
     raw: Dict[str, Any]
@@ -149,6 +150,7 @@ class Config:
     mqtt: MQTT
     workers: Workers
     external_name: Optional[str]
+    key_whitelist: Optional[List[str]]
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
@@ -169,6 +171,7 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            key_whitelist=cfg.get("key_whitelist"),
         )
 
     def get(self, key: str) -> Any:

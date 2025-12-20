@@ -71,6 +71,23 @@ class TestConfig(unittest.TestCase):
         with mock.patch("builtins.open", mock_open):
             self.assertIsNone(config.get_config().raw.get("key_does_not_exist"))
 
+    def test_key_whitelist_success(self):
+        """Test key_whitelist is properly parsed when present."""
+        cfg_with_whitelist = (
+            "domain_prefixes:\n- ffmuc_\ndomains:\n- a\nmqtt:\n  broker_port: 1883"
+            "\n  broker_url: mqtt://broker\n  keepalive: 5\n  password: pass\n  tls: true\n  username: user\n"
+            "key_whitelist:\n- key1\n- key2\n"
+        )
+        mock_open = mock.mock_open(read_data=cfg_with_whitelist)
+        with mock.patch("builtins.open", mock_open):
+            self.assertListEqual(["key1", "key2"], config.get_config().key_whitelist)
+
+    def test_key_whitelist_not_present(self):
+        """Test key_whitelist is None when not in config."""
+        mock_open = mock.mock_open(read_data=_VALID_CFG)
+        with mock.patch("builtins.open", mock_open):
+            self.assertIsNone(config.get_config().key_whitelist)
+
 
 if __name__ == "__main__":
     unittest.main()

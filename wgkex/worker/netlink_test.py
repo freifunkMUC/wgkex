@@ -59,20 +59,65 @@ class NetlinkTest(unittest.TestCase):
         self.route_info_mock = iproute_instance.__enter__.return_value
         # self.addCleanup(mock.patch.stopall)
 
-    def test_find_stale_wireguard_clients_success_with_non_stale_peer(self):
+    @mock.patch("wgkex.worker.netlink.config.get_config")
+    def test_find_stale_wireguard_clients_success_with_non_stale_peer(self, config_mock):
         """Tests find_stale_wireguard_clients no operation on non-stale peers."""
+        # Setup config mock with no whitelist
+        config_instance = mock.MagicMock()
+        config_instance.key_whitelist = None
+        config_mock.return_value = config_instance
+        
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
             int((datetime.now() - timedelta(seconds=3)).timestamp()),
         )
         self.assertListEqual([], netlink.find_stale_wireguard_clients("some_interface"))
 
-    def test_find_stale_wireguard_clients_success_stale_peer(self):
+    @mock.patch("wgkex.worker.netlink.config.get_config")
+    def test_find_stale_wireguard_clients_success_stale_peer(self, config_mock):
         """Tests find_stale_wireguard_clients removal of stale peer"""
+        # Setup config mock with no whitelist
+        config_instance = mock.MagicMock()
+        config_instance.key_whitelist = None
+        config_mock.return_value = config_instance
+        
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY_STALE",
             int((datetime.now() - timedelta(hours=5)).timestamp()),
         )
+        self.assertListEqual(
+            ["WGPEER_A_PUBLIC_KEY_STALE"],
+            netlink.find_stale_wireguard_clients("some_interface"),
+        )
+
+    @mock.patch("wgkex.worker.netlink.config.get_config")
+    def test_find_stale_wireguard_clients_with_whitelist(self, config_mock):
+        """Tests find_stale_wireguard_clients excludes whitelisted keys."""
+        # Setup config mock with whitelist
+        config_instance = mock.MagicMock()
+        config_instance.key_whitelist = ["WGPEER_A_PUBLIC_KEY_WHITELISTED"]
+        config_mock.return_value = config_instance
+        
+        _wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY_WHITELISTED",
+            int((datetime.now() - timedelta(hours=5)).timestamp()),
+        )
+        # Whitelisted key should not be returned even though it's stale
+        self.assertListEqual([], netlink.find_stale_wireguard_clients("some_interface"))
+
+    @mock.patch("wgkex.worker.netlink.config.get_config")
+    def test_find_stale_wireguard_clients_whitelist_none(self, config_mock):
+        """Tests find_stale_wireguard_clients when whitelist is None."""
+        # Setup config mock with no whitelist
+        config_instance = mock.MagicMock()
+        config_instance.key_whitelist = None
+        config_mock.return_value = config_instance
+        
+        _wg_info_mock = _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY_STALE",
+            int((datetime.now() - timedelta(hours=5)).timestamp()),
+        )
+        # Should work normally when whitelist is None
         self.assertListEqual(
             ["WGPEER_A_PUBLIC_KEY_STALE"],
             netlink.find_stale_wireguard_clients("some_interface"),
@@ -170,8 +215,14 @@ class NetlinkTest(unittest.TestCase):
             },
         )
 
-    def test_wg_flush_stale_peers_not_stale_success(self):
+    @mock.patch("wgkex.worker.netlink.config.get_config")
+    def test_wg_flush_stale_peers_not_stale_success(self, config_mock):
         """Tests processing of non-stale WireGuard Peer."""
+        # Setup config mock with no whitelist
+        config_instance = mock.MagicMock()
+        config_instance.key_whitelist = None
+        config_mock.return_value = config_instance
+        
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
             int((datetime.now() - timedelta(seconds=3)).timestamp()),
@@ -182,8 +233,14 @@ class NetlinkTest(unittest.TestCase):
         # TODO(ruairi): Understand why pyroute.WireGuard.set
         # wg_info_mock.set.assert_not_called()
 
-    def test_wg_flush_stale_peers_stale_success(self):
+    @mock.patch("wgkex.worker.netlink.config.get_config")
+    def test_wg_flush_stale_peers_stale_success(self, config_mock):
         """Tests processing of stale WireGuard Peer."""
+        # Setup config mock with no whitelist
+        config_instance = mock.MagicMock()
+        config_instance.key_whitelist = None
+        config_mock.return_value = config_instance
+        
         expected = [
             {
                 "Wireguard": {"WireGuard": "set"},

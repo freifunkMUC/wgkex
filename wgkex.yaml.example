@@ -13,6 +13,11 @@ domain_prefixes:
   - ffmuc_
   - ffdon_
   - ffwert_
+# [worker] Optional list of public keys that should never be cleaned up (e.g., gateway keys)
+# Uncomment and add keys to whitelist them from automatic peer cleanup
+# key_whitelist:
+#   - "public_key_1_here"
+#   - "public_key_2_here"
 # [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution
 workers:
   gw04.in.ffmuc.net:
