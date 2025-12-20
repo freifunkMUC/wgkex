@@ -82,8 +82,11 @@ class TestConfig(unittest.TestCase):
         mock_open = mock.mock_open(read_data=cfg_with_whitelist)
         with mock.patch("builtins.open", mock_open):
             self.assertListEqual(
-                ["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBE="], 
-                config.get_config().key_whitelist
+                [
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBE=",
+                ],
+                config.get_config().key_whitelist,
             )
 
     def test_key_whitelist_not_present(self):

@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from textwrap import wrap
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import pyroute2
 import pyroute2.netlink
@@ -194,12 +194,12 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
     logger.info(
         "Starting search for stale wireguard peers for interface %s.", wg_interface
     )
-    
+
     # Get whitelist from configuration
     whitelist = config.get_config().key_whitelist or []
     if whitelist:
         logger.info("Key whitelist active with %d keys", len(whitelist))
-    
+
     with pyroute2.WireGuard() as wg:
         all_peers = []
         msgs = wg.info(wg_interface)

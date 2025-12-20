@@ -60,13 +60,15 @@ class NetlinkTest(unittest.TestCase):
         # self.addCleanup(mock.patch.stopall)
 
     @mock.patch("wgkex.worker.netlink.config.get_config")
-    def test_find_stale_wireguard_clients_success_with_non_stale_peer(self, config_mock):
+    def test_find_stale_wireguard_clients_success_with_non_stale_peer(
+        self, config_mock
+    ):
         """Tests find_stale_wireguard_clients no operation on non-stale peers."""
         # Setup config mock with no whitelist
         config_instance = mock.MagicMock()
         config_instance.key_whitelist = None
         config_mock.return_value = config_instance
-        
+
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
             int((datetime.now() - timedelta(seconds=3)).timestamp()),
@@ -80,7 +82,7 @@ class NetlinkTest(unittest.TestCase):
         config_instance = mock.MagicMock()
         config_instance.key_whitelist = None
         config_mock.return_value = config_instance
-        
+
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY_STALE",
             int((datetime.now() - timedelta(hours=5)).timestamp()),
@@ -97,7 +99,7 @@ class NetlinkTest(unittest.TestCase):
         config_instance = mock.MagicMock()
         config_instance.key_whitelist = ["WGPEER_A_PUBLIC_KEY_WHITELISTED"]
         config_mock.return_value = config_instance
-        
+
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY_WHITELISTED",
             int((datetime.now() - timedelta(hours=5)).timestamp()),
@@ -112,7 +114,7 @@ class NetlinkTest(unittest.TestCase):
         config_instance = mock.MagicMock()
         config_instance.key_whitelist = None
         config_mock.return_value = config_instance
-        
+
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY_STALE",
             int((datetime.now() - timedelta(hours=5)).timestamp()),
@@ -222,7 +224,7 @@ class NetlinkTest(unittest.TestCase):
         config_instance = mock.MagicMock()
         config_instance.key_whitelist = None
         config_mock.return_value = config_instance
-        
+
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
             int((datetime.now() - timedelta(seconds=3)).timestamp()),
@@ -240,7 +242,7 @@ class NetlinkTest(unittest.TestCase):
         config_instance = mock.MagicMock()
         config_instance.key_whitelist = None
         config_mock.return_value = config_instance
-        
+
         expected = [
             {
                 "Wireguard": {"WireGuard": "set"},

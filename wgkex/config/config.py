@@ -166,7 +166,7 @@ class Config:
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
         workers_cfg = Workers.from_dict(cfg.get("workers", {}))
-        
+
         # Validate key_whitelist if present
         key_whitelist = cfg.get("key_whitelist")
         if key_whitelist is not None:
@@ -174,10 +174,14 @@ class Config:
                 raise ValueError("key_whitelist must be a list")
             for key in key_whitelist:
                 if not isinstance(key, str):
-                    raise ValueError(f"key_whitelist entries must be strings, got: {type(key)}")
+                    raise ValueError(
+                        f"key_whitelist entries must be strings, got: {type(key)}"
+                    )
                 if not WG_PUBKEY_PATTERN.match(key):
-                    raise ValueError(f"Invalid WireGuard public key in whitelist: {key}")
-        
+                    raise ValueError(
+                        f"Invalid WireGuard public key in whitelist: {key}"
+                    )
+
         return cls(
             raw=cfg,
             domains=cfg["domains"],
