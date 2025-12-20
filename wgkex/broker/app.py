@@ -12,6 +12,7 @@ from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
 from waitress import serve
 
+from wgkex.broker import blacklist as blacklist_module
 from wgkex.broker.metrics import WorkerMetricsCollection
 from wgkex.common import logger
 from wgkex.common.mqtt import (
@@ -50,6 +51,7 @@ class KeyExchange:
         domain = str(msg.get("domain"))
         if not is_valid_domain(domain):
             raise ValueError(f"Domain {domain} not in configured domains.")
+        check_blacklist(public_key)
         return cls(public_key=public_key, domain=domain)
 
 
@@ -279,6 +281,24 @@ def is_valid_wg_pubkey(pubkey: str) -> str:
     return pubkey
 
 
+def check_blacklist(pubkey: str) -> None:
+    """Check if a key is blacklisted.
+
+    Arguments:
+        pubkey: The key to check.
+
+    Raises:
+        ValueError: If the key is blacklisted.
+    """
+    bl = blacklist_module.get_blacklist()
+    if bl and bl.is_blacklisted(pubkey):
+        reason = bl.get_reason(pubkey)
+        if reason:
+            raise ValueError(f"Key is blacklisted. Reason: {reason}")
+        else:
+            raise ValueError("Key is blacklisted.")
+
+
 def join_host_port(host: str, port: str) -> str:
     """Concatenate a port string with a host string using a colon.
     The host may be either a hostname, IPv4 or IPv6 address.
@@ -293,10 +313,17 @@ def join_host_port(host: str, port: str) -> str:
 
 
 if __name__ == "__main__":
+    cfg = config.get_config()
+    
+    # Initialize blacklist if configured
+    if cfg.blacklist_file:
+        logger.info(f"Initializing blacklist from {cfg.blacklist_file}")
+        blacklist_module.init_blacklist(cfg.blacklist_file, auto_reload=True)
+    
     listen_host = None
     listen_port = None
 
-    listen_config = config.get_config().broker_listen
+    listen_config = cfg.broker_listen
     if listen_config is not None:
         listen_host = listen_config.host
         listen_port = listen_config.port
