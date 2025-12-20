@@ -314,12 +314,12 @@ def join_host_port(host: str, port: str) -> str:
 
 if __name__ == "__main__":
     cfg = config.get_config()
-    
+
     # Initialize blacklist if configured
     if cfg.blacklist_file:
         logger.info(f"Initializing blacklist from {cfg.blacklist_file}")
         blacklist_module.init_blacklist(cfg.blacklist_file, auto_reload=True)
-    
+
     listen_host = None
     listen_port = None
 

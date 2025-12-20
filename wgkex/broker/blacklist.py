@@ -178,14 +178,20 @@ class Blacklist:
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._stop_monitoring.set()
             self._monitor_thread.join(timeout=5)
+            if self._monitor_thread.is_alive():
+                logger.warning(
+                    "Blacklist monitor thread did not stop within timeout, "
+                    "continuing as daemon"
+                )
 
     def reload(self) -> None:
         """Manually reload the blacklist from file."""
         self._load_blacklist()
 
 
-# Global blacklist instance
+# Global blacklist instance and lock
 _blacklist_instance: Optional[Blacklist] = None
+_blacklist_lock = threading.Lock()
 
 
 def init_blacklist(filepath: str, auto_reload: bool = True) -> None:
@@ -196,9 +202,10 @@ def init_blacklist(filepath: str, auto_reload: bool = True) -> None:
         auto_reload: Whether to monitor file for changes and auto-reload.
     """
     global _blacklist_instance
-    if _blacklist_instance is not None:
-        _blacklist_instance.stop()
-    _blacklist_instance = Blacklist(filepath, auto_reload)
+    with _blacklist_lock:
+        if _blacklist_instance is not None:
+            _blacklist_instance.stop()
+        _blacklist_instance = Blacklist(filepath, auto_reload)
 
 
 def get_blacklist() -> Optional[Blacklist]:
@@ -207,4 +214,5 @@ def get_blacklist() -> Optional[Blacklist]:
     Returns:
         The blacklist instance, or None if not initialized.
     """
-    return _blacklist_instance
+    with _blacklist_lock:
+        return _blacklist_instance
