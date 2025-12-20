@@ -4,7 +4,7 @@
 import dataclasses
 import json
 import re
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import paho.mqtt.client as mqtt_client
 from flask import Flask, Response, render_template, request
@@ -12,6 +12,7 @@ from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
 from waitress import serve
 
+from wgkex.allowlist.allowlist import AllowlistManager
 from wgkex.broker.metrics import WorkerMetricsCollection
 from wgkex.common import logger
 from wgkex.common.mqtt import (
@@ -38,18 +39,31 @@ class KeyExchange:
     domain: str
 
     @classmethod
-    def from_dict(cls, msg: dict) -> "KeyExchange":
+    def from_dict(
+        cls, msg: dict, allowlist_mgr: Optional[AllowlistManager] = None
+    ) -> "KeyExchange":
         """Creates a new KeyExchange message from dict.
 
         Arguments:
             msg: The message to convert.
+            allowlist_mgr: Optional allowlist manager for key validation.
         Returns:
             A KeyExchange object.
+        Raises:
+            ValueError: If validation fails.
         """
         public_key = is_valid_wg_pubkey(msg.get("public_key"))
         domain = str(msg.get("domain"))
         if not is_valid_domain(domain):
             raise ValueError(f"Domain {domain} not in configured domains.")
+        
+        # Check allowlist if enabled
+        if allowlist_mgr is not None:
+            if not allowlist_mgr.is_key_allowed(domain, public_key):
+                raise ValueError(
+                    f"Public key not in allowlist for domain {domain}."
+                )
+        
         return cls(public_key=public_key, domain=domain)
 
 
@@ -75,6 +89,20 @@ mqtt = Mqtt(app)
 worker_metrics = WorkerMetricsCollection()
 worker_data: Dict[Tuple[str, str], Dict] = {}
 
+# Initialize allowlist manager if enabled
+allowlist_manager: Optional[AllowlistManager] = None
+cfg = config.get_config()
+if cfg.allowlist.enabled:
+    if cfg.allowlist.file:
+        logger.info(f"Allowlist enabled, loading from {cfg.allowlist.file}")
+        allowlist_manager = AllowlistManager(
+            cfg.allowlist.file, cfg.allowlist.refresh_interval
+        )
+    else:
+        logger.error("Allowlist enabled but no file specified in configuration")
+else:
+    logger.info("Allowlist disabled, accepting all keys")
+
 
 @app.route("/", methods=["GET"])
 def index() -> str:
@@ -89,7 +117,7 @@ def wg_api_v1_key_exchange() -> Tuple[Response | Dict, int]:
         Status message.
     """
     try:
-        data = KeyExchange.from_dict(request.get_json(force=True))
+        data = KeyExchange.from_dict(request.get_json(force=True), allowlist_manager)
     except Exception as ex:
         logger.error(
             "Exception occurred in /api/v1/wg/key/exchange: %s", ex, exc_info=True
@@ -118,7 +146,7 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
         Status message, Endpoint with address/domain, port pubic key and link address.
     """
     try:
-        data = KeyExchange.from_dict(request.get_json(force=True))
+        data = KeyExchange.from_dict(request.get_json(force=True), allowlist_manager)
     except Exception as ex:
         logger.error(
             "Exception occurred in /api/v2/wg/key/exchange: %s", ex, exc_info=True

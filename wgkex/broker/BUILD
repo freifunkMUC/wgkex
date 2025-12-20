@@ -33,6 +33,7 @@ py_binary(
         requirement("waitress"),
         "//wgkex/config:config",
         "//wgkex/common:mqtt",
+        "//wgkex/allowlist:allowlist",
         ":metrics"
     ],
 )

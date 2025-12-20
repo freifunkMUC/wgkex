@@ -131,6 +131,39 @@ class MQTT:
 
 
 @dataclasses.dataclass
+class Allowlist:
+    """A representation of the 'allowlist' key in Configuration file.
+
+    Attributes:
+        enabled: Whether allowlist is enabled.
+        file: Path to the allowlist YAML file.
+        refresh_interval: Time in seconds between automatic refreshes (0 to disable).
+    """
+
+    enabled: bool = False
+    file: Optional[str] = None
+    refresh_interval: int = 300
+
+    @classmethod
+    def from_dict(cls, allowlist_cfg: Dict[str, Any]) -> "Allowlist":
+        """Creates an Allowlist object from a configuration dict.
+
+        Args:
+            allowlist_cfg: The allowlist configuration as a dict.
+
+        Returns:
+            An Allowlist object.
+        """
+        return cls(
+            enabled=bool(allowlist_cfg.get("enabled", cls.enabled)),
+            file=allowlist_cfg.get("file"),
+            refresh_interval=int(
+                allowlist_cfg.get("refresh_interval", cls.refresh_interval)
+            ),
+        )
+
+
+@dataclasses.dataclass
 class Config:
     """A representation of the configuration file.
 
@@ -140,6 +173,7 @@ class Config:
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        allowlist: The allowlist configuration (broker-only).
     """
 
     raw: Dict[str, Any]
@@ -149,6 +183,7 @@ class Config:
     mqtt: MQTT
     workers: Workers
     external_name: Optional[str]
+    allowlist: Allowlist
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
@@ -161,6 +196,7 @@ class Config:
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
         workers_cfg = Workers.from_dict(cfg.get("workers", {}))
+        allowlist_cfg = Allowlist.from_dict(cfg.get("allowlist", {}))
         return cls(
             raw=cfg,
             domains=cfg["domains"],
@@ -169,6 +205,7 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            allowlist=allowlist_cfg,
         )
 
     def get(self, key: str) -> Any:
