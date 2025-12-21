@@ -9,7 +9,7 @@ services:
       - ./volumes/mosquitto/data:/mosquitto/data
       - ./volumes/mosquitto/log:/mosquitto/log
     ports:
-      - "9001:9001"
+      - "1883:1883"
 
   broker:
     image: ghcr.io/freifunkmuc/wgkex:latest
