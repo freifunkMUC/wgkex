@@ -48,6 +48,7 @@ The frontend broker exposes the following API endpoints for use:
 ```
 /api/v1/wg/key/exchange
 /api/v2/wg/key/exchange
+/api/v3/config
 ```
 
 The listen address and port for the Flask server can be configured in `wgkex.yaml` under the `broker_listen` key:
@@ -101,6 +102,31 @@ The response is JSON data containing the connection details for the chosen gatew
   }
 }
 ```
+
+
+#### GET /api/v3/config
+
+This is the endpoint for Parker nodes. See [PARKER.md](./PARKER.md) for more information.
+
+It requires the following URL request arguments to be sent by the client:
+
+```
+v6mtu (int): The maximum transmission unit (MTU) size the client can handle.
+pubkey (str): The client's WireGuard public key, base64 encoded. (Remember to url-encode)
+nonce (str): A unique nonce value to prevent replay attacks.
+```
+
+The broker will validate the public key, and if valid, will push the key onto the MQTT bus.
+Additionally it chooses a worker (aka concentrator, gateway, endpoint) that the client should connect to.
+The response is a concatenation of JSON data containing the connection details for the chosen gateway, and a signature of the JSON string appended as separate line at the end.
+
+```json
+{"nonce": "e08e20da001fd06a523f7fe8e7dfe455", "time": 1753997082, "id": "OmaOePJh+hrEZETlPEdNWj7qZn7GTbCno678kH0uLHs=", "mtu": 1375, "address6": "2001:db8:ed0:2::1", "concentrators": [{"address4": "10.0.0.1", "address6": "fe80::28f:a7ff:fec6:7530", "endpoint": "pgw01.ext.ffmuc.net:40000", "pubkey": "4WAyZBpHcyRE5+L4ApV+jjWgj4q1o3CrCQ3NjclXfV4=", "id": 1}], "range6": "2001:db8:ed0:2::/64", "xlat_range6": "2001:db8:ed0:3::/64", "range4": "10.80.96.0/22", "address4": "10.80.96.1", "wg_keepalive": 25, "retry": 120}
+RWSx0zTq9Vfdo8d8qG439G1Zl5B/7E62eok2hlGIpRyijGQOMphb8XP4jFWt9/EG4UeY77OSht+r2eezw9Rrrn7/jl9Co5lgAQ0=
+```
+(invalid signature in example)
+
+The client must validate the signature as well as the `nonce`, and may use `time` to send the system clock
 
 ### Backend worker
 
@@ -248,7 +274,11 @@ and it should output something similar to:
 
 Or for /api/v3 (Parker):
 ```sh
-wget -q -O- 'http://127.0.0.1:5000/api/v3/wg/key/exchange?v6mtu=1500&pubkey=TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=&nonce=123456''
+curl --get \
+  --data-urlencode "v6mtu=1500" \
+  --data-urlencode "pubkey=TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=" \
+  --data-urlencode "nonce=123456" \
+  "http://127.0.0.1:5000/api/v3/wg/key/exchange"
 ```
 
 Or use Python instead of wget:

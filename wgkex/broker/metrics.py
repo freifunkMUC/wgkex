@@ -1,6 +1,5 @@
 import dataclasses
-from operator import itemgetter
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from wgkex.common import logger
 from wgkex.common.mqtt import MQTTTopics
@@ -47,6 +46,15 @@ class WorkerMetrics:
             )
 
         return total
+
+
+@dataclasses.dataclass
+class WorkerResult:
+    name: str
+    id: int
+    diff: int
+    peers: int
+    target: int
 
 
 @dataclasses.dataclass
@@ -102,37 +110,104 @@ class WorkerMetricsCollection:
         return total
 
     def get_best_worker(self, domain: str) -> Tuple[Optional[str], int, int]:
-        """Analyzes the metrics and determines the best worker that a new client should connect to.
-        The best worker is defined as the one with the most number of clients missing
-        to its should-be target value according to its weight.
+        """See get_best_workers(), but only returns a single best worker.
+        The worker name can be None if none is online.
+        """
+        workers = self.get_best_workers(domain, [])
+        if len(workers) == 0:
+            return None, 0, 0
+        # Sort by diff (ascending), workers with most peers missing to target are sorted first
+        worker = sorted(workers, key=lambda wr: wr.diff)[0]
+        return (worker.name, worker.diff, worker.peers)
+
+    def get_best_workers(
+        self, domain: str, current_selected_workers: Optional[List[str]]
+    ) -> List[WorkerResult]:
+        """Analyzes the metrics and determines the best worker for each PoP that a node should connect to.
+
+        If no current_selected_workers is passed (None or empty):
+            The best worker is defined as the one with the most number of clients missing
+            to its should-be target value according to its weight.
+
+        If current_selected_workers is passed:
+            First it is checked whether the workers in the list are still online and not
+            more than the configured treshold above the should-be target value.
+            For any where this isn't the case, they are replaced as per the logic below:
+
+            The best worker is defined as the one with the most number of clients missing
+            to its should-be target value according to its weight.
 
         Returns:
-            A 3-tuple containing the worker name, difference to target peers, number of connected peers.
-            The worker name can be None if none is online.
+            A List of WorkerResult containing the worker name, difference to target peers, number of connected peers.
+            The list can be empty if no suitable worker could be determined.
         """
-        # Map metrics to a list of (target diff, peer count, worker) tuples for online workers
 
-        peers_worker_tuples = []
-        total_peers = self.get_total_peer_count()
-        worker_cfg = config.get_config().workers
+        new_selected_workers: List[WorkerResult] = []
+        workers_cfg = config.get_config().workers
 
-        for wm in self.data.values():
-            if not wm.is_online(domain):
-                continue
+        print(workers_cfg.all_pops)
+        print(self.data.values())
 
-            peers = wm.get_peer_count()
-            rel_weight = worker_cfg.relative_worker_weight(wm.worker)
-            target = rel_weight * total_peers
-            diff = peers - target
-            logger.debug(
-                f"Worker candidate {wm.worker}: current {peers}, target {target} (total {total_peers}, rel weight {rel_weight}), diff {diff}"
-            )
-            peers_worker_tuples.append((diff, peers, wm.worker))
+        for pop in workers_cfg.all_pops:
+            candidates: List[WorkerResult] = []
+            total_peers = self.get_total_peer_count()
 
-        # Sort by diff (ascending), workers with most peers missing to target are sorted first
-        peers_worker_tuples = sorted(peers_worker_tuples, key=itemgetter(0))
+            # Map metrics to a list of (target diff, peer count, worker) tuples for online workers
+            for wm in self.data.values():
+                worker_cfg = workers_cfg.get(wm.worker) or config.Worker(
+                    id=0, weight=1, pop=""
+                )
 
-        if len(peers_worker_tuples) > 0:
-            best = peers_worker_tuples[0]
-            return best[2], best[0], best[1]
-        return None, 0, 0
+                print(worker_cfg)
+
+                if worker_cfg.pop != pop:
+                    continue
+
+                if not wm.is_online(domain):
+                    continue
+
+                peers = wm.get_peer_count()
+                rel_weight = workers_cfg.relative_worker_weight(wm.worker)
+                target = round(rel_weight * total_peers)
+                diff = peers - target
+                logger.debug(
+                    f"Worker candidate {wm.worker} for PoP {pop}: current {peers}, target {target} (total {total_peers}, rel weight {rel_weight}), diff {diff}"
+                )
+                candidates.append(
+                    WorkerResult(wm.worker, worker_cfg.id, diff, peers, target)
+                )
+
+            # If one of the currently selected workers is a valid candidate, and below a certain treshold, keep it
+            if current_selected_workers:
+                any_hit = False
+
+                for w in current_selected_workers:
+                    all_matched = [cand for cand in candidates if cand.name == w]
+                    if len(all_matched) > 0:
+                        matched = all_matched[0]
+
+                        if (
+                            matched.diff > 0
+                            and matched.diff
+                            > workers_cfg.sticky_worker_tolerance * matched.target
+                        ):
+                            continue
+
+                        new_selected_workers.append(matched)
+                        any_hit = True
+                        logger.debug(
+                            f"Sticky worker candidate {matched.name} selected, below treshold"
+                        )
+                        break
+
+                if any_hit:
+                    continue  # to next PoP
+
+            # Sort by diff (ascending), workers with most peers missing to target are sorted first
+            candidates = sorted(candidates, key=lambda wm: wm.diff)
+
+            if len(candidates) > 0:
+                best = candidates[0]
+                new_selected_workers.append(best)
+
+        return new_selected_workers

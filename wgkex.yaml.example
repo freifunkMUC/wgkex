@@ -13,16 +13,26 @@ domain_prefixes:
   - ffmuc_
   - ffdon_
   - ffwert_
-# [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution
+# [broker] The dict of workers mapping their hostname to their respective weight (for weighted peer distribution) and PoP (for multi-tunnel support, esp. in Parker)
 workers:
   gw04.in.ffmuc.net:
     weight: 30
+    pop: vie01
   gw05.in.ffmuc.net:
     weight: 30
+    pop: vie01
   gw06.in.ffmuc.net:
     weight: 20
+    pop: muc01
   gw07.in.ffmuc.net:
     weight: 20
+    pop: muc01
+# [broker] how much peers above the target value a worker may have (in percent rel. to the target value) to let clients stick to their current worker.
+# Default: 10
+# Example: with a value of '10', an active peer count 170 and target of 150 of 'Worker A',
+# a requesting client who is currently connected to 'Worker A' will get redirected to a new worker with lower peer count.
+# 10% * 150 = 15 -> (170-150) > 15
+sticky_worker_tolerance: 15
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
 # [broker, worker]

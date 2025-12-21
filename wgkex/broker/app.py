@@ -3,6 +3,7 @@
 
 import dataclasses
 import json
+import random
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
@@ -16,7 +17,7 @@ from waitress import serve
 from wgkex.broker.ipam import ParkerIPAM
 from wgkex.broker.ipam_netbox import NetboxIPAM
 from wgkex.broker.ipam_json import JSONFileIPAM
-from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
 from wgkex.broker.parker import ParkerQuery, ParkerResponse
 from wgkex.broker.signer import sign_response
 from wgkex.common import logger
@@ -208,6 +209,7 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
 
 
 @app.route("/api/v3/wg/key/exchange", methods=["GET"])
+@app.route("/api/v3/config", methods=["GET"])
 def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     if not config.get_config().parker.enabled or ipam is None:
         return {
@@ -229,7 +231,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         }, 400
 
     try:
-        _, full_range6 = ipam.get_or_allocate_prefix(
+        _, full_range6, old_selected_concentrators = ipam.get_or_allocate_prefix(
             req_data.pubkey,
             not config.get_config().parker.xlat,
             True,
@@ -272,30 +274,63 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     domain = "parker"
 
-    # TODO add PoP awareness and multi-tunnel support, select best worker per PoP
-
-    best_worker, diff, current_peers = parker_worker_metrics.get_best_worker(domain)
-    if best_worker is None:
-        logger.warning("No worker online for Parker network")
-        return {"error": {"message": "no gateway online, please try again later"}}, 400
-
-    # Update number of peers locally to interpolate data between MQTT updates from the worker
-    current_peers = (
-        parker_worker_metrics.get(best_worker)
-        .get_domain_metrics(domain)
-        .get(MQTTTopics.CONNECTED_PEERS_METRIC, 0)
-    )
-    parker_worker_metrics.update(
-        best_worker, domain, MQTTTopics.CONNECTED_PEERS_METRIC, current_peers + 1
-    )
-    logger.debug(
-        f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
+    selected_workers = parker_worker_metrics.get_best_workers(
+        domain, old_selected_concentrators
     )
 
-    w_data = parker_worker_data.get(best_worker, None)
-    if w_data is None:
-        logger.error(f"Couldn't get worker endpoint data for {best_worker}")
-        return {"error": {"message": "could not get gateway data"}}, 500
+    ipam.update_prefix(
+        req_data.pubkey,
+        not config.get_config().parker.xlat,
+        True,
+        [w.name for w in selected_workers],
+    )
+
+    if len(selected_workers) == 0:
+        logger.error("No worker online for Parker network")
+        if len(parker_worker_data) > 0:
+            # Emergency mode - try to randomly select one for which we still have connection data cached
+            selected_workers.append(
+                WorkerResult(
+                    name=random.choice(list(parker_worker_data.keys())),
+                    id=0,
+                    diff=0,
+                    peers=0,
+                    target=0,
+                )
+            )
+        else:
+            return {
+                "error": {"message": "no gateway online, please try again later"}
+            }, 400
+
+    concentrators = []
+
+    for worker in selected_workers:
+        # Update number of peers locally to interpolate data between MQTT updates from the worker.
+        # Only do so if this is a newly selected concentrator, as not to inflate the numbers when clients just check for new config.
+        # TODO account for multiple brokers running (increase by number of brokers)
+        if worker.name not in old_selected_concentrators:
+            parker_worker_metrics.update(
+                worker.name, domain, MQTTTopics.CONNECTED_PEERS_METRIC, worker.peers + 1
+            )
+        logger.debug(
+            f"Chose worker {worker.name} with {worker.peers} connected clients ({worker.diff})"
+        )
+
+        w_data = parker_worker_data.get(worker.name, None)
+        if w_data is None:
+            logger.error(f"Couldn't get worker endpoint data for {worker.name}")
+            return {"error": {"message": "could not get gateway data"}}, 500
+
+        concentrators.append(
+            {
+                "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
+                "address6": w_data.get("LinkAddress"),
+                "endpoint": f"{w_data.get("ExternalAddress")}:{str(w_data.get("Port"))}",
+                "pubkey": w_data.get("PublicKey"),  # type: ignore
+                "id": worker.id,
+            }
+        )
 
     response = ParkerResponse(
         nonce=req_data.nonce,
@@ -305,16 +340,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         range6=str(range6),
         xlat_range6=str(xlat_range6),
         address6=str(range6.network_address + 1),
-        selected_concentrators="1",
-        concentrators=[  # TODO fetch real concentrator data from worker status
-            {
-                "address4": "10.0.0.1",
-                "address6": w_data.get("LinkAddress"),
-                "endpoint": f"{w_data.get("ExternalAddress")}:{str(w_data.get("Port"))}",
-                "pubkey": w_data.get("PublicKey"),  # type: ignore
-                "id": 1,
-            }
-        ],
+        concentrators=concentrators,
     )
 
     data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + "\n".encode(

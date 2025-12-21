@@ -5,7 +5,7 @@ import logging
 import os
 import sys
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
@@ -27,15 +27,21 @@ class Worker:
     """A representation of the values of the 'workers' dict in the configuration file.
 
     Attributes:
+        id: A unique, as-static-as-possible ID for this worker.
         weight: The relative weight of a worker, defaults to 1.
+        pop: The PoP (Point of Presence) this worker is located in
     """
 
+    id: int
     weight: int
+    pop: str
 
     @classmethod
     def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
         return cls(
-            weight=int(worker_cfg["weight"]) if worker_cfg["weight"] else 1,
+            weight=int(worker_cfg.get("weight", 1)),
+            pop=worker_cfg.get("pop", ""),
+            id=worker_cfg["id"],
         )
 
 
@@ -45,21 +51,45 @@ class Workers:
 
     Attributes:
         total_weight: Calculated on init, the total weight of all configured workers.
+        all_pops
+        sticky_worker_tolerance: percentage between 0 and 1 as float
     """
 
     total_weight: int
+    all_pops: Set[str]
+    sticky_worker_tolerance: float
     _workers: Dict[str, Worker]
 
     @classmethod
-    def from_dict(cls, workers_cfg: Dict[str, Dict[str, Any]]) -> "Workers":
-        d = {key: Worker.from_dict(value) for (key, value) in workers_cfg.items()}
+    def from_dict(
+        cls, workers_cfg: Dict[str, Dict[str, Any]], sticky_worker_tolerance: int
+    ) -> "Workers":
+        d = {
+            key: Worker.from_dict({"id": id, **value})
+            for (id, (key, value)) in enumerate(workers_cfg.items(), start=1)
+        }
 
         total = 0
+        # add "empty" PoP to set to support dynamically added workers
+        pops = {
+            "",
+        }
         for worker in d.values():
             total += worker.weight
+            pops.add(worker.pop)
         total = max(total, 1)
 
-        return cls(total_weight=total, _workers=d)
+        if not 0 <= sticky_worker_tolerance <= 100:
+            raise ValueError(
+                "sticky_worker_tolerance must be a percentage between 0 and 100"
+            )
+
+        return cls(
+            total_weight=total,
+            all_pops=pops,
+            _workers=d,
+            sticky_worker_tolerance=sticky_worker_tolerance / 100,
+        )
 
     def get(self, worker: str) -> Optional[Worker]:
         return self._workers.get(worker)
@@ -359,7 +389,9 @@ class Config:
         """
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
-        workers_cfg = Workers.from_dict(cfg.get("workers", {}))
+        workers_cfg = Workers.from_dict(
+            cfg.get("workers", {}), cfg.get("sticky_worker_tolerance", 10)
+        )
         parker = Parker.from_dict(cfg.get("parker", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
 

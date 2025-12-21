@@ -1,7 +1,7 @@
 import ipaddress
 import json
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from wgkex.broker.ipam import ParkerIPAM
 from wgkex.common import logger
@@ -28,9 +28,11 @@ class JSONFileIPAM(ParkerIPAM):
         ipv6: bool,
         ipv4_prefix_length: int = 22,
         ipv6_prefix_length: int = 63,
-    ) -> Tuple[Optional[ipaddress.IPv4Network], Optional[ipaddress.IPv6Network]]:
+    ) -> Tuple[
+        Optional[ipaddress.IPv4Network], Optional[ipaddress.IPv6Network], List[str]
+    ]:
         """Returns the IPv6 range for a node with a given public key.
-        Only supports 464XLAT mode"""
+        Only supports 464XLAT mode. Does not support storing the selected gateways"""
 
         if ipv4:
             raise NotImplementedError(
@@ -38,7 +40,7 @@ class JSONFileIPAM(ParkerIPAM):
             )
 
         if not ipv6:
-            return None, None
+            return None, None, []
 
         ranges: Dict[str, str] = {}
         parent_prefix = ipaddress.IPv6Network(
@@ -72,7 +74,7 @@ class JSONFileIPAM(ParkerIPAM):
                     break
             if range6 is None:
                 logger.error(f"No IPv6 range available for public key {pubkey}.")
-                return None, None
+                return None, None, []
             else:
                 logger.info(
                     f"No existing IPv6 range found for public key {pubkey}, assigning {range6}"
@@ -82,7 +84,13 @@ class JSONFileIPAM(ParkerIPAM):
             with open(FILE_PATH, "w", encoding="utf-8") as f:
                 json.dump({"parent_prefix": str(parent_prefix), "ranges": ranges}, f)
 
-        return None, ipaddress.IPv6Network(range6)
+        return None, ipaddress.IPv6Network(range6), []
 
     def release_prefix(self, pubkey: str) -> None:
         raise NotImplementedError
+
+    def update_prefix(
+        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: List[str]
+    ) -> None:
+        """No-op for JSON file IPAM"""
+        pass
