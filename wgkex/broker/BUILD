@@ -2,6 +2,34 @@ load("@rules_python//python:defs.bzl", "py_binary", "py_test")
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
+    name = "blacklist",
+    srcs = ["blacklist.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+       requirement("PyYAML"),
+    ],
+)
+
+py_test(
+    name="blacklist_test",
+    srcs=["blacklist_test.py"],
+    deps = [
+       "//wgkex/broker:blacklist",
+    ],
+    size="small",
+)
+
+py_test(
+    name="app_test",
+    srcs=["app_test.py"],
+    deps = [
+       "//wgkex/broker:blacklist",
+    ],
+    size="small",
+)
+
+py_library(
     name = "metrics",
     srcs = ["metrics.py"],
     visibility = ["//visibility:public"],
@@ -33,6 +61,7 @@ py_binary(
         requirement("waitress"),
         "//wgkex/config:config",
         "//wgkex/common:mqtt",
-        ":metrics"
+        ":metrics",
+        ":blacklist"
     ],
 )
