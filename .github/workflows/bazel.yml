@@ -23,11 +23,11 @@ jobs:
           sudo apt-get install -y lcov
           mkdir "${GITHUB_WORKSPACE}/src"
           cd "${GITHUB_WORKSPACE}/src"
-          curl -L https://files.pythonhosted.org/packages/89/26/4a96807b193b011588099c3b5c89fbb05294e5b90e71018e065465f34eb6/coverage-7.12.0.tar.gz | tar xvz
+          curl -L https://files.pythonhosted.org/packages/23/f9/e92df5e07f3fc8d4c7f9a0f146ef75446bf870351cd37b788cf5897f8079/coverage-7.13.1.tar.gz | tar xvz
           cd "${GITHUB_WORKSPACE}"
           bazel coverage --combined_report=lcov --java_runtime_version=remotejdk_11 -t- --instrument_test_targets \
             --test_output=errors --linkopt=--coverage --linkopt=-lc \
-            --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.12.0/__main__.py \
+            --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.13.1/__main__.py \
             --test_verbose_timeout_warnings --define=config_file=test ...:all
       - name: Coveralls
         uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2.3.7
