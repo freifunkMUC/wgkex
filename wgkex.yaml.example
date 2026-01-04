@@ -14,15 +14,20 @@ domain_prefixes:
   - ffdon_
   - ffwert_
 # [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution
+# Each worker can optionally have a 'location' field for location-based routing
 workers:
   gw04.in.ffmuc.net:
     weight: 30
+    location: MUC
   gw05.in.ffmuc.net:
     weight: 30
+    location: MUC
   gw06.in.ffmuc.net:
     weight: 20
+    location: Vienna
   gw07.in.ffmuc.net:
     weight: 20
+    location: Vienna
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
 # [broker, worker] MQTT connection informations

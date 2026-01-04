@@ -141,6 +141,100 @@ class TestMetrics(unittest.TestCase):
         (worker, _, _) = worker_metrics.get_best_worker("d")
         self.assertIsNone(worker)
 
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_worker_with_location_filter(self, config_mock):
+        """Verify get_best_worker filters by location when specified."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_workers = config.Workers.from_dict(
+            {
+                "worker1": {"weight": 50, "location": "MUC"},
+                "worker2": {"weight": 50, "location": "Vienna"},
+            }
+        )
+        test_config.workers = test_workers
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("worker1", "d", "connected_peers", 10)
+        worker_metrics.update("worker2", "d", "connected_peers", 5)
+        worker_metrics.set_online("worker1")
+        worker_metrics.set_online("worker2")
+
+        (worker, _, _) = worker_metrics.get_best_worker("d", location="MUC")
+        self.assertEqual(worker, "worker1")
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_worker_location_fallback(self, config_mock):
+        """Verify get_best_worker falls back to all workers if location has no online workers."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_workers = config.Workers.from_dict(
+            {
+                "worker1": {"weight": 50, "location": "MUC"},
+                "worker2": {"weight": 50, "location": "Vienna"},
+            }
+        )
+        test_config.workers = test_workers
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("worker1", "d", "connected_peers", 10)
+        worker_metrics.update("worker2", "d", "connected_peers", 5)
+        worker_metrics.set_online("worker1")
+        worker_metrics.set_offline("worker2")
+
+        # Request Vienna location, but Vienna worker is offline, should fall back to worker1
+        (worker, _, _) = worker_metrics.get_best_worker("d", location="Vienna")
+        self.assertEqual(worker, "worker1")
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_worker_unknown_location_fallback(self, config_mock):
+        """Verify get_best_worker falls back to all workers for unknown location."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_workers = config.Workers.from_dict(
+            {
+                "worker1": {"weight": 50, "location": "MUC"},
+                "worker2": {"weight": 50, "location": "Vienna"},
+            }
+        )
+        test_config.workers = test_workers
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("worker1", "d", "connected_peers", 10)
+        worker_metrics.update("worker2", "d", "connected_peers", 5)
+        worker_metrics.set_online("worker1")
+        worker_metrics.set_online("worker2")
+
+        # Request non-existent Berlin location, should fall back to best available
+        (worker, _, _) = worker_metrics.get_best_worker("d", location="Berlin")
+        self.assertEqual(worker, "worker2")  # worker2 has fewer peers
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_worker_location_load_balancing(self, config_mock):
+        """Verify get_best_worker maintains load balancing within location."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_workers = config.Workers.from_dict(
+            {
+                "worker1": {"weight": 50, "location": "MUC"},
+                "worker2": {"weight": 50, "location": "MUC"},
+                "worker3": {"weight": 50, "location": "Vienna"},
+            }
+        )
+        test_config.workers = test_workers
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("worker1", "d", "connected_peers", 20)
+        worker_metrics.update("worker2", "d", "connected_peers", 10)
+        worker_metrics.update("worker3", "d", "connected_peers", 5)
+        worker_metrics.set_online("worker1")
+        worker_metrics.set_online("worker2")
+        worker_metrics.set_online("worker3")
+
+        # Request MUC location, should get worker2 (least loaded in MUC)
+        (worker, _, _) = worker_metrics.get_best_worker("d", location="MUC")
+        self.assertEqual(worker, "worker2")
+
 
 if __name__ == "__main__":
     unittest.main()
