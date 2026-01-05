@@ -3,6 +3,7 @@
 import dataclasses
 import logging
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,8 @@ class ConfigFileNotFoundError(Error):
 
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
 WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
+# WireGuard public key format: 44 characters base64 (with specific ending characters)
+WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 
 
 @dataclasses.dataclass
@@ -140,6 +143,7 @@ class Config:
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        key_whitelist: Optional list of public keys that should never be cleaned up (worker-only).
     """
 
     raw: Dict[str, Any]
@@ -149,6 +153,7 @@ class Config:
     mqtt: MQTT
     workers: Workers
     external_name: Optional[str]
+    key_whitelist: Optional[List[str]]
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
@@ -161,6 +166,22 @@ class Config:
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
         workers_cfg = Workers.from_dict(cfg.get("workers", {}))
+
+        # Validate key_whitelist if present
+        key_whitelist = cfg.get("key_whitelist")
+        if key_whitelist is not None:
+            if not isinstance(key_whitelist, list):
+                raise ValueError("key_whitelist must be a list")
+            for key in key_whitelist:
+                if not isinstance(key, str):
+                    raise ValueError(
+                        f"key_whitelist entries must be strings, got: {type(key)}"
+                    )
+                if not WG_PUBKEY_PATTERN.match(key):
+                    raise ValueError(
+                        f"Invalid WireGuard public key in whitelist: {key}"
+                    )
+
         return cls(
             raw=cfg,
             domains=cfg["domains"],
@@ -169,6 +190,7 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            key_whitelist=key_whitelist,
         )
 
     def get(self, key: str) -> Any:
