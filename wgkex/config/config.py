@@ -140,6 +140,7 @@ class Config:
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        blacklist_file: Path to the blacklist YAML file (broker-only, optional).
     """
 
     raw: Dict[str, Any]
@@ -149,6 +150,7 @@ class Config:
     mqtt: MQTT
     workers: Workers
     external_name: Optional[str]
+    blacklist_file: Optional[str]
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
@@ -169,6 +171,7 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            blacklist_file=cfg.get("blacklist_file"),
         )
 
     def get(self, key: str) -> Any:

@@ -1,0 +1,26 @@
+# Blacklist file for WireGuard keys
+# This file contains WireGuard public keys that should be rejected by the broker.
+# The file is automatically reloaded when changed (if auto_reload is enabled).
+#
+# Format options:
+#
+# 1. Simple list of keys:
+# - Key1
+# - Key2
+#
+# 2. Keys with reasons:
+# - Key1:
+#     reason: "Abuse"
+# - Key2:
+#     reason: "Spam"
+#
+# 3. Mixed format:
+# - Key1
+# - Key2:
+#     reason: "Abuse"
+#
+# Example entries (replace with actual keys):
+# - o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg=:
+#     reason: "Abusive behavior"
+# - TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=:
+#     reason: "Spam"
