@@ -37,6 +37,14 @@ mqtt:
 broker_listen:
   host: 0.0.0.0
   port: 5000
+# [broker] Optional allowlist for pre-approved keys (disabled by default)
+# When enabled, only keys in the allowlist file will be accepted for key exchange
+allowlist:
+  enabled: false
+  # Path to the YAML file containing allowed keys per domain
+  file: /etc/wgkex-allowlist.yaml
+  # Refresh interval in seconds (0 to disable periodic refresh)
+  refresh_interval: 300
 # [broker, worker]
 logging_config:
   formatters:
