@@ -112,8 +112,9 @@ flask==3.1.2 \
     # via
     #   -r requirements.txt
     #   flask-mqtt
-flask-mqtt==1.1.1 \
-    --hash=sha256:6d37c5ebb8e180f6aaa409d776a04f6dcf2fcd61cc22d67341bc146db36641e0
+flask-mqtt==1.2.1 \
+    --hash=sha256:0a93ec45fc3176647e7e56d8d9047a51680a6c0fcb14b174aea6bacc161bbd06 \
+    --hash=sha256:48d0d44b16e6cb5309b9ebb1d62f1de80633852c426d97c86d348f67e4a65555
     # via -r requirements.txt
 ipaddress==1.0.23 \
     --hash=sha256:6e0f4a39e66cb5bb9a137b00276a2eff74f93b71dcbdad6f10ff7df9d3557fcc \
