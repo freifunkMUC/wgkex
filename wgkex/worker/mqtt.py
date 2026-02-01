@@ -133,7 +133,7 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         # Publish worker data (WG pubkeys, ports, local addresses)
         iface = wg_interface_name(domain)
         if iface:
-            (port, public_key, link_address) = get_device_data(iface)
+            port, public_key, link_address = get_device_data(iface)
             data = {
                 "ExternalAddress": own_external_name,
                 "Port": port,

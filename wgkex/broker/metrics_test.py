@@ -79,7 +79,7 @@ class TestMetrics(unittest.TestCase):
         worker_metrics.set_online("1")
         worker_metrics.set_online("2")
 
-        (worker, diff, connected) = worker_metrics.get_best_worker("d")
+        worker, diff, connected = worker_metrics.get_best_worker("d")
         self.assertEqual(worker, "2")
         self.assertEqual(diff, -20)  # 19-(1*(20+19))
         self.assertEqual(connected, 19)
@@ -99,7 +99,7 @@ class TestMetrics(unittest.TestCase):
         worker_metrics.set_online("1")
         worker_metrics.set_online("2")
 
-        (worker, diff, connected) = worker_metrics.get_best_worker("domain1")
+        worker, diff, connected = worker_metrics.get_best_worker("domain1")
         self.assertEqual(worker, "1")
         self.assertEqual(diff, -40)  # 30-(1*(25+5+20+20))
         self.assertEqual(connected, 30)
@@ -119,7 +119,7 @@ class TestMetrics(unittest.TestCase):
         worker_metrics.set_online("1")
         worker_metrics.set_online("2")
 
-        (worker, _, _) = worker_metrics.get_best_worker("d")
+        worker, _, _ = worker_metrics.get_best_worker("d")
         config_mock.assert_called()
         self.assertEqual(worker, "1")
 
@@ -131,14 +131,14 @@ class TestMetrics(unittest.TestCase):
         worker_metrics.set_offline("1")
         worker_metrics.set_offline("2")
 
-        (worker, _, _) = worker_metrics.get_best_worker("d")
+        worker, _, _ = worker_metrics.get_best_worker("d")
         self.assertIsNone(worker)
 
     def test_get_best_worker_no_worker_registered_returns_none(self):
         """Verify get_best_worker returns None if there is no online worker."""
         worker_metrics = WorkerMetricsCollection()
 
-        (worker, _, _) = worker_metrics.get_best_worker("d")
+        worker, _, _ = worker_metrics.get_best_worker("d")
         self.assertIsNone(worker)
 
 
