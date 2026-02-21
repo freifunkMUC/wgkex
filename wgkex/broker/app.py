@@ -557,7 +557,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             {
                 "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
                 "address6": w_data.get("LinkAddress"),
-                "endpoint": f"{w_data.get("ExternalAddress")}:{str(w_data.get("Port"))}",
+                "endpoint": f"{w_data.get('ExternalAddress')}:{str(w_data.get('Port'))}",
                 "pubkey": w_data.get("PublicKey"),  # type: ignore
                 "id": worker.id,
             }
