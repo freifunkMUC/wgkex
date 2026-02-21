@@ -70,7 +70,7 @@ class TestMetrics(unittest.TestCase):
     def test_get_best_worker_returns_best(self, config_mock):
         """Verify get_best_worker returns the worker with least connected clients for equally weighted workers."""
         test_config = mock.MagicMock(spec=config.Config)
-        test_config.workers = config.Workers.from_dict({})
+        test_config.workers = config.Workers.from_dict({}, 25)
         config_mock.return_value = test_config
 
         worker_metrics = WorkerMetricsCollection()
@@ -88,7 +88,7 @@ class TestMetrics(unittest.TestCase):
     def test_get_best_worker_returns_best_imbalanced_domains(self, config_mock):
         """Verify get_best_worker returns the worker with overall least connected clients even if it has more clients on this domain."""
         test_config = mock.MagicMock(spec=config.Config)
-        test_config.workers = config.Workers.from_dict({})
+        test_config.workers = config.Workers.from_dict({}, 25)
         config_mock.return_value = test_config
 
         worker_metrics = WorkerMetricsCollection()
@@ -109,7 +109,7 @@ class TestMetrics(unittest.TestCase):
         """Verify get_best_worker returns the worker with least client differential for weighted workers."""
         test_config = mock.MagicMock(spec=config.Config)
         test_config.workers = config.Workers.from_dict(
-            {"1": {"weight": 84}, "2": {"weight": 42}}
+            {"1": {"weight": 84}, "2": {"weight": 42}}, 25
         )
         config_mock.return_value = test_config
 
