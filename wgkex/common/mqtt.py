@@ -14,3 +14,7 @@ class MQTTTopics:
     TOPIC_PARKER_CONNECTED_PEERS = (
         "parker/wireguard-metrics/{worker}/" + CONNECTED_PEERS_METRIC
     )
+
+    # Brokers announce themselves on this topic. Payload 1 = online, 0 = offline.
+    TOPIC_BROKER_ANNOUNCE = "wireguard-broker/{broker}/status"
+    TOPIC_PARKER_BROKER_ANNOUNCE = "parker/" + TOPIC_BROKER_ANNOUNCE

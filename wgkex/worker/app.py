@@ -135,6 +135,7 @@ def main():
         sys.exit()
 
     signal.signal(signal.SIGINT, on_exit)
+    signal.signal(signal.SIGTERM, on_exit)
 
     parker_enabled = config.get_config().parker.enabled
     if parker_enabled:

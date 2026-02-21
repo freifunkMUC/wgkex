@@ -33,7 +33,7 @@ Nodes change active tunnel (from the current configuration) after the WireGuard 
 The retry interval can't be set too short, as otherwise it causes considerable load and "balance" issues, and possibly more frequent outages due to changed selected concentrators.
 It can't be set too high because otherwise a node stays offline a long time when all its current gateways happen to go offline. It might also delay connectivity after reboot.
 
-To reduce the amount of times that the selected concentrators change for a node, there a stickyness feature. On every request, the selected concentrators are saved in the IPAM alongside the Prefix information. On following requests, we first consider the stored concentrators, and only when a concentrator is more than `sticky_worker_tolerance`% peers over its calculated target, a node is redirected to a new concentrator with the most free capacity ("missing peers").
+To reduce the amount of times that the selected concentrators change for a node, there is a stickyness feature. On every request, the selected concentrators are saved in the IPAM alongside the Prefix information. On following requests, we first consider the stored concentrators, and only when a concentrator is more than `sticky_worker_tolerance`% peers over its calculated target, a node is redirected to a new concentrator with the most free capacity ("missing peers").
 
 To make the peer counting work, the counts are interpolated between metric updates from the concentrators (same as with non-Parker /api/v2). The locally cached concentrator peer count is increased by 1 for each selected concentrator on each request.
 This is only done when a concentrator has changed compared to the previous value compared in the IPAM, so we don't inflate the peer counts when a node won't actually create a new connection.
@@ -43,4 +43,4 @@ This is only done when a concentrator has changed compared to the previous value
 - Nodes do active connectivity checks across the active or even both tunnels, e.g. every 10s:
   - Quicker switchover to backup tunnels
   - Immediately fetch config when all tunnels are inactive. This would also allow increasing `retry_interval` a lot
-- Improve interpolation by increasing by number of broker instances (needs e.g. brokers announcing themselves over MQTT)
+- ✅ ~~Improve interpolation by increasing by number of broker instances (needs e.g. brokers announcing themselves over MQTT)~~
