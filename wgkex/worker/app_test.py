@@ -105,7 +105,7 @@ class AppTest(unittest.TestCase):
         )
 
         thread = threading.Thread(
-            target=app.flush_workers, args=("dummy_domain",), daemon=True
+            target=app.flush_workers, args=(False, "dummy_domain"), daemon=True
         )
         thread.start()
 

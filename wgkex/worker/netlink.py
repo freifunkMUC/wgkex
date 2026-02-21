@@ -75,7 +75,7 @@ class ParkerWireGuardClient:
     keepalive: Optional[int] = None
 
 
-def wg_flush_stale_peers(domain: str) -> List[Dict]:
+def wg_flush_stale_peers(parker: bool = False, domain: str = "") -> List[Dict]:
     """Removes stale peers.
 
     Arguments:
@@ -84,21 +84,29 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
     Returns:
         The peers which we can remove.
     """
-    logger.info("Searching for stale clients for %s", domain)
-    stale_clients = [
-        stale_client for stale_client in find_stale_wireguard_clients("wg-" + domain)
-    ]
-    logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
-    stale_wireguard_clients = [
-        WireGuardClient(public_key=stale_client, domain=domain, remove=True)
-        for stale_client in stale_clients
-    ]
+    if parker:
+        logger.info("Searching for staleclients")
+        stale_clients = find_stale_wireguard_clients(parker, "wg-nodes")
+        logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
+        stale_wireguard_clients = [
+            ParkerWireGuardClient(public_key=stale_client, range6=range6, remove=True)
+            for (stale_client, range6) in stale_clients
+        ]
+    else:
+        logger.info("Searching for stale clients for %s", domain)
+        stale_clients = find_stale_wireguard_clients(parker, "wg-" + domain)
+        logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
+        stale_wireguard_clients = [
+            WireGuardClient(public_key=stale_client, domain=domain, remove=True)
+            for (stale_client, _) in stale_clients
+        ]
+
     logger.debug("Found stale WireGuard clients: %s", stale_wireguard_clients)
-    logger.info("Processing clients.")
+    logger.info("Processing stale WireGuard clients.")
     link_handled = [
         link_handler(stale_client) for stale_client in stale_wireguard_clients
     ]
-    logger.debug("Handled the following clients: %s", link_handled)
+    logger.debug("Handled the following stale clients: %s", link_handled)
     return link_handled
 
 
@@ -221,7 +229,7 @@ def route_handler(client: Union[WireGuardClient, ParkerWireGuardClient]) -> Dict
         return dict(result) if isinstance(result, dict) else {"result": result}
 
 
-def find_stale_wireguard_clients(wg_interface: str) -> List:
+def find_stale_wireguard_clients(parker: bool, wg_interface: str) -> List:
     """Fetches and returns a list of peers which have not had recent handshakes.
 
     Arguments:
@@ -233,6 +241,7 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
     three_hrs_in_secs = int(
         (datetime.now() - timedelta(hours=_PEER_TIMEOUT_HOURS)).timestamp()
     )
+    five_mins_in_secs = int((datetime.now() - timedelta(minutes=5)).timestamp())
     logger.info(
         "Starting search for stale wireguard peers for interface %s.", wg_interface
     )
@@ -245,11 +254,21 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
             logger.debug("Got clients: %s.", peers)
             if peers:
                 all_peers.extend(peers)
+
         ret = [
-            peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
+            (
+                peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8"),
+                (
+                    allowed_ips[0].get("addr")  # addr contains the prefix as string
+                    if parker
+                    and len(allowed_ips := peer.get_attr("WGPEER_A_ALLOWEDIPS")) > 0
+                    else None
+                ),
+            )
             for peer in all_peers
             if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
-            and hshk_time.get("tv_sec", int()) < three_hrs_in_secs
+            and hshk_time.get("tv_sec", int())
+            < (five_mins_in_secs if parker else three_hrs_in_secs)
         ]
         return ret
 
