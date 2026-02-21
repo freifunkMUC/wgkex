@@ -35,10 +35,10 @@ class InvalidDomain(Error):
     """If the domains is invalid and is not listed in the configuration file."""
 
 
-def flush_workers(domain: str) -> None:
+def flush_workers(parker: bool, domain: str) -> None:
     """Removes stale peers every peer_cleanup.interval seconds."""
     cleanup_cfg = config.get_config().peer_cleanup
-    wg_interface = f"wg-{domain}"
+    wg_interface = "wg-nodes" if parker else f"wg-{domain}"
 
     def keep(public_key: str) -> bool:
         if is_allowlisted(public_key):
@@ -54,7 +54,9 @@ def flush_workers(domain: str) -> None:
         try:
             time.sleep(cleanup_cfg.interval)
             logger.info(f"Running cleanup task for {domain}")
-            removed = wg_flush_stale_peers(domain, cleanup_cfg.stale_timeout, keep=keep)
+            removed = wg_flush_stale_peers(
+                parker, domain, cleanup_cfg.stale_timeout, keep=keep
+            )
             logger.info("Removed %d stale peers from %s", len(removed), domain)
             logger.debug("Cleanup results: %s", removed)
         except Exception as e:  # noqa: BLE001
@@ -64,12 +66,19 @@ def flush_workers(domain: str) -> None:
             )
 
 
-def clean_up_worker() -> None:
+def clean_up_worker(parker: bool) -> None:
     """Wraps flush_workers in a thread for all given domains.
 
     Arguments:
-        domains: list of domains.
+        parker: Whether Parker mode is enabled.
     """
+    if parker:
+        thread = threading.Thread(
+            target=flush_workers, args=(parker, "parker"), daemon=True
+        )
+        thread.start()
+        return
+
     domains = config.get_config().domains
     prefixes = config.get_config().domain_prefixes
     logger.debug("Cleaning up the following domains: %s", domains)
@@ -90,7 +99,7 @@ def clean_up_worker() -> None:
                     )
                     continue
                 thread = threading.Thread(
-                    target=flush_workers, args=(cleaned_domain,), daemon=True
+                    target=flush_workers, args=(parker, cleaned_domain), daemon=True
                 )
                 thread.start()
     if cleanup_counter < len(domains):
@@ -161,7 +170,6 @@ def main():
     if parker_enabled:
         logger.info("Parker mode is enabled")
     else:
-
         domains = config.get_config().domains
         prefixes = config.get_config().domain_prefixes
         if not domains:
@@ -171,9 +179,9 @@ def main():
         for domain in domains:
             if not is_valid_domain(domain):
                 raise InvalidDomain(f"Domain {domain} has invalid prefix.")
-        clean_up_worker()
 
     start_metrics_server()
+    clean_up_worker(parker_enabled)
     watch_queue(parker_enabled)
     mqtt.connect(exit_event)
 

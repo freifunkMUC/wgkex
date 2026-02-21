@@ -21,6 +21,7 @@ from wgkex.common.utils import mac2eui64
 from wgkex.worker.observability import NETLINK_OP_SECONDS, NETLINK_RECONNECTS
 
 _DEFAULT_PEER_TIMEOUT = 1800
+_PARKER_PEER_TIMEOUT = 300
 
 
 class _Handles:
@@ -175,7 +176,8 @@ class ParkerWireGuardClient:
 
 
 def wg_flush_stale_peers(
-    domain: str,
+    parker: bool = False,
+    domain: str = "",
     timeout: int = _DEFAULT_PEER_TIMEOUT,
     keep: Callable[[str], bool] | None = None,
 ) -> list[dict]:
@@ -189,23 +191,40 @@ def wg_flush_stale_peers(
     Returns:
         The peers which we can remove.
     """
-    logger.info("Searching for stale clients for %s", domain)
-    stale_clients = [
-        stale_client
-        for stale_client in find_stale_wireguard_clients("wg-" + domain, timeout)
-        if keep is None or not keep(stale_client)
-    ]
-    logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
-    stale_wireguard_clients = [
-        WireGuardClient(public_key=stale_client, domain=domain, remove=True)
-        for stale_client in stale_clients
-    ]
+    if parker:
+        logger.info("Searching for stale clients")
+        stale_clients = [
+            (stale_client, range6)
+            for (stale_client, range6) in find_stale_wireguard_clients(
+                True, "wg-nodes", _PARKER_PEER_TIMEOUT
+            )
+            if keep is None or not keep(stale_client)
+        ]
+        logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
+        stale_wireguard_clients: list[WireGuardClient | ParkerWireGuardClient] = [
+            ParkerWireGuardClient(public_key=stale_client, range6=range6, remove=True)
+            for (stale_client, range6) in stale_clients
+        ]
+    else:
+        logger.info("Searching for stale clients for %s", domain)
+        stale_clients = [
+            (stale_client, range6)
+            for (stale_client, range6) in find_stale_wireguard_clients(
+                False, "wg-" + domain, timeout
+            )
+            if keep is None or not keep(stale_client)
+        ]
+        logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
+        stale_wireguard_clients = [
+            WireGuardClient(public_key=stale_client, domain=domain, remove=True)
+            for (stale_client, _) in stale_clients
+        ]
     logger.debug("Found stale WireGuard clients: %s", stale_wireguard_clients)
-    logger.info("Processing clients.")
+    logger.info("Processing stale WireGuard clients.")
     link_handled = [
         link_handler(stale_client) for stale_client in stale_wireguard_clients
     ]
-    logger.debug("Handled the following clients: %s", link_handled)
+    logger.debug("Handled the following stale clients: %s", link_handled)
     return link_handled
 
 
@@ -334,8 +353,8 @@ def route_handler(client: WireGuardClient | ParkerWireGuardClient) -> dict:
 
 
 def find_stale_wireguard_clients(
-    wg_interface: str, timeout: int = _DEFAULT_PEER_TIMEOUT
-) -> list:
+    parker: bool, wg_interface: str, timeout: int = _DEFAULT_PEER_TIMEOUT
+) -> list[tuple[str, str | None]]:
     """Fetches and returns a list of peers which have not had recent handshakes.
 
     Arguments:
@@ -343,7 +362,7 @@ def find_stale_wireguard_clients(
         timeout: Seconds without handshake after which a peer is stale.
 
     Returns:
-        # A list of peers which have not recently seen a handshake.
+        A list of (public key, Parker range6 or None) of peers which have not recently seen a handshake.
     """
     stale_before = int((datetime.now(UTC) - timedelta(seconds=timeout)).timestamp())
     logger.info(
@@ -356,7 +375,15 @@ def find_stale_wireguard_clients(
         if peers:
             all_peers.extend(peers)
     ret = [
-        peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
+        (
+            peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8"),
+            (
+                allowed_ips[0].get("addr")  # addr contains the prefix as string
+                if parker
+                and len(allowed_ips := peer.get_attr("WGPEER_A_ALLOWEDIPS") or []) > 0
+                else None
+            ),
+        )
         for peer in all_peers
         if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
         and hshk_time.get("tv_sec", 0) < stale_before
