@@ -71,6 +71,24 @@ class TestConfig(unittest.TestCase):
         with mock.patch("builtins.open", mock_open):
             self.assertIsNone(config.get_config().raw.get("key_does_not_exist"))
 
+    def test_valid_parker_configs_success(self):
+        """Test valid parker configs are accepted."""
+        mock_open = mock.mock_open(
+            read_data=_VALID_CFG
+            + "\nparker:\n  enabled: true\n  ipam: json\n  464xlat: true\n  prefixes:\n    ipv4:\n      clat_subnet: 10.80.96.0/22\n    ipv6:\n      length: 63\nbroker_signing_key: asdfasdfasdf"
+        )
+        with mock.patch("builtins.open", mock_open):
+            cfg = config.get_config()
+            self.assertTrue(cfg.parker.enabled)
+            self.assertEqual(cfg.parker.ipam, config.Parker.IPAM.JSON)
+
+    def test_invalid_parker_configs_throw(self):
+        """Test invalid parker configs throw errors."""
+        mock_open = mock.mock_open(read_data=_VALID_CFG + "\nparker:\n  enabled: true")
+        with mock.patch("builtins.open", mock_open):
+            with self.assertRaises(ValueError):
+                config.get_config()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,7 +32,19 @@ def _get_peer_mock(public_key, last_handshake_time):
         if attr == "WGPEER_A_PUBLIC_KEY":
             return public_key.encode()
         if attr == "WGPEER_A_ALLOWEDIPS":
-            return []
+            return [
+                {
+                    "attrs": [
+                        ("WGALLOWEDIP_A_CIDR_MASK", 63),
+                        ("WGALLOWEDIP_A_FAMILY", 10),
+                        (
+                            "WGALLOWEDIP_A_IPADDR",
+                            "20:01:0d:b8:0e:d0:00:0a:00:00:00:00:00:00:00:00",
+                        ),
+                    ],
+                    "addr": "2001:db8:ed0:a::/63",
+                }
+            ]
 
     peer_mock = mock.Mock()
     peer_mock.get_attr.side_effect = peer_get_attr
@@ -267,6 +279,40 @@ class NetlinkTest(unittest.TestCase):
 
         ret = netlink.get_device_data("wg-welt")
         self.assertTupleEqual(ret, (51820, "TEST_PUBLIC_KEY", mock.ANY))
+
+    def test_find_stale_wireguard_clients_parker_stale_peer(self):
+        """Tests find_stale_wireguard_clients in parker mode returning range6."""
+
+        _ = _get_wg_mock(
+            "PARKER_PUBLIC_KEY", int((datetime.now() - timedelta(hours=1)).timestamp())
+        )
+
+        self.assertListEqual(
+            [("PARKER_PUBLIC_KEY", "2001:db8:ed0:a::/63")],
+            netlink.find_stale_wireguard_clients(True, "wg-nodes"),
+        )
+
+    def test_wg_flush_stale_peers_parker_stale_success(self):
+        """Tests processing of stale WireGuard Peer in parker mode."""
+
+        _ = _get_wg_mock(
+            "PARKER_PUBLIC_KEY", int((datetime.now() - timedelta(hours=1)).timestamp())
+        )
+
+        expected = [
+            {
+                "Wireguard": {"WireGuard": "set"},
+                "Route": {"IPRoute": "route"},
+            }
+        ]
+
+        ret = netlink.wg_flush_stale_peers(True, "parker")
+        self.assertListEqual(expected, ret)
+
+        # Verify the stale peer resulted in a route deletion for the parker range
+        self.route_info_mock.route.assert_called_with(
+            "del", dst="2001:db8:ed0:a::/63", oif=mock.ANY
+        )
 
 
 if __name__ == "__main__":
