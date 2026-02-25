@@ -36,25 +36,32 @@ class InvalidDomain(Error):
     """If the domains is invalid and is not listed in the configuration file."""
 
 
-def flush_workers(domain: Text) -> None:
+def flush_workers(parker: bool, domain: Text) -> None:
     """Calls peer flush every _CLEANUP_TIME interval."""
     while True:
         try:
             time.sleep(_CLEANUP_TIME)
             logger.info(f"Running cleanup task for {domain}")
-            logger.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
+            logger.info("Cleaned up domains: %s", wg_flush_stale_peers(parker, domain))
         except Exception as e:
             # Don't crash the thread when an exception is encountered
             logger.error(f"Exception during cleanup task for {domain}:")
             logger.error(e)
 
 
-def clean_up_worker() -> None:
+def clean_up_worker(parker: bool) -> None:
     """Wraps flush_workers in a thread for all given domains.
 
     Arguments:
-        domains: list of domains.
+        parker: Whether Parker mode is enabled.
     """
+    if parker:
+        thread = threading.Thread(
+            target=flush_workers, args=(parker, "parker"), daemon=True
+        )
+        thread.start()
+        return
+
     domains = config.get_config().domains
     prefixes = config.get_config().domain_prefixes
     logger.debug("Cleaning up the following domains: %s", domains)
@@ -75,7 +82,7 @@ def clean_up_worker() -> None:
                     )
                     continue
                 thread = threading.Thread(
-                    target=flush_workers, args=(cleaned_domain,), daemon=True
+                    target=flush_workers, args=(parker, cleaned_domain), daemon=True
                 )
                 thread.start()
     if cleanup_counter < len(domains):
@@ -89,7 +96,7 @@ def clean_up_worker() -> None:
 def check_all_domains_unique(domains, prefixes):
     """strips off prefixes and checks if domains are unique
 
-    Args:
+    Arguments:
         domains: [str]
     Returns:
         boolean
@@ -128,18 +135,24 @@ def main():
         sys.exit()
 
     signal.signal(signal.SIGINT, on_exit)
+    signal.signal(signal.SIGTERM, on_exit)
 
-    domains = config.get_config().domains
-    prefixes = config.get_config().domain_prefixes
-    if not domains:
-        raise DomainsNotInConfig("Could not locate domains in configuration.")
-    if not check_all_domains_unique(domains, prefixes):
-        raise DomainsAreNotUnique("There are non-unique domains! Check config.")
-    for domain in domains:
-        if not is_valid_domain(domain):
-            raise InvalidDomain(f"Domain {domain} has invalid prefix.")
-    clean_up_worker()
-    watch_queue()
+    parker_enabled = config.get_config().parker.enabled
+    if parker_enabled:
+        logger.info("Parker mode is enabled")
+    else:
+        domains = config.get_config().domains
+        prefixes = config.get_config().domain_prefixes
+        if not domains:
+            raise DomainsNotInConfig("Could not locate domains in configuration.")
+        if not check_all_domains_unique(domains, prefixes):
+            raise DomainsAreNotUnique("There are non-unique domains! Check config.")
+        for domain in domains:
+            if not is_valid_domain(domain):
+                raise InvalidDomain(f"Domain {domain} has invalid prefix.")
+
+    clean_up_worker(parker_enabled)
+    watch_queue(parker_enabled)
     mqtt.connect(exit_event)
 
 

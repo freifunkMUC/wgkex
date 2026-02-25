@@ -3,26 +3,33 @@
 
 import dataclasses
 import json
-import re
-from typing import Any, Dict, Tuple
+import random
+import signal
+import socket
+import sys
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
+import paho.mqtt.enums
 import paho.mqtt.client as mqtt_client
 from flask import Flask, Response, render_template, request
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
 from waitress import serve
 
-from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.broker.ipam import ParkerIPAM
+from wgkex.broker.ipam_netbox import NetboxIPAM
+from wgkex.broker.ipam_json import JSONFileIPAM
+from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
+from wgkex.broker.parker import ParkerQuery, ParkerResponse
+from wgkex.broker.signer import sign_response
 from wgkex.common import logger
-from wgkex.common.mqtt import (
-    CONNECTED_PEERS_METRIC,
-    TOPIC_WORKER_STATUS,
-    TOPIC_WORKER_WG_DATA,
-)
-from wgkex.common.utils import is_valid_domain
+from wgkex.common.mqtt import MQTTTopics
+from wgkex.common.utils import is_valid_domain, is_valid_wg_pubkey
 from wgkex.config import config
 
-WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
+_HOSTNAME = socket.gethostname()
 
 
 @dataclasses.dataclass
@@ -67,13 +74,71 @@ def _fetch_app_config() -> Flask_app:
     app.config["MQTT_PASSWORD"] = mqtt_cfg.password
     app.config["MQTT_KEEPALIVE"] = mqtt_cfg.keepalive
     app.config["MQTT_TLS_ENABLED"] = mqtt_cfg.tls
+    # Configure a Last Will so other instances learn this broker went away
+    last_will_topic = (
+        MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE
+        if config.get_config().parker.enabled
+        else MQTTTopics.TOPIC_BROKER_ANNOUNCE
+    ).format(broker=_HOSTNAME)
+    app.config["MQTT_LAST_WILL_TOPIC"] = last_will_topic
+    app.config["MQTT_LAST_WILL_MESSAGE"] = 0
+    app.config["MQTT_LAST_WILL_QOS"] = 1
+    app.config["MQTT_LAST_WILL_RETAIN"] = True
     return app
 
 
+def _load_parker_ipam() -> Optional[ParkerIPAM]:
+    if not config.get_config().parker.enabled:
+        return None
+
+    ipam: ParkerIPAM
+    ipam_type = config.get_config().parker.ipam
+
+    match ipam_type:
+        case config.Parker.IPAM.JSON:
+            ipam = JSONFileIPAM()
+        case config.Parker.IPAM.NETBOX:
+            netbox_cfg = config.get_config().netbox
+            if netbox_cfg is None:
+                # This should not happen due to earlier config validation
+                raise Exception(
+                    "Missing config for NetBox IPAM. This is also a config parser bug, please report."
+                )
+
+            ipam = NetboxIPAM(
+                api_url=netbox_cfg.url,
+                token=netbox_cfg.api_key,
+                xlat=True,
+            )
+        case _:
+            raise NotImplementedError(f"Invalid IPAM type {ipam_type}")
+
+    return ipam
+
+
 app = _fetch_app_config()
-mqtt = Mqtt(app)
+mqtt = Mqtt(mqtt_logging=True)
 worker_metrics = WorkerMetricsCollection()
+parker_worker_metrics = WorkerMetricsCollection()
 worker_data: Dict[Tuple[str, str], Dict] = {}
+parker_worker_data: Dict[str, Dict] = {}
+ipam: Optional[ParkerIPAM] = _load_parker_ipam()
+# Track active brokers announced over MQTT
+active_brokers: set[str] = set()
+parker_active_brokers: set[str] = set()
+
+
+def get_active_brokers_count(parker: bool) -> int:
+    """Return the number of currently announced brokers.
+
+    Falls back to 1 if no broker announcements are present to avoid dividing by
+    zero and to be conservative when no announcements are available.
+    """
+    if parker:
+        c = len(parker_active_brokers)
+    else:
+        c = len(active_brokers)
+    return max(c, 1)
 
 
 @app.route("/", methods=["GET"])
@@ -147,14 +212,18 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
         }, 400
 
     # Update number of peers locally to interpolate data between MQTT updates from the worker
-    # TODO fix data race
+    # Increment by the number of active brokers to account for multiple broker instances distributing peers.
+    # Assumes an even distribution of peers across brokers.
     current_peers_domain = (
         worker_metrics.get(best_worker)
         .get_domain_metrics(domain)
-        .get(CONNECTED_PEERS_METRIC, 0)
+        .get(MQTTTopics.CONNECTED_PEERS_METRIC, 0)
     )
     worker_metrics.update(
-        best_worker, domain, CONNECTED_PEERS_METRIC, current_peers_domain + 1
+        best_worker,
+        domain,
+        MQTTTopics.CONNECTED_PEERS_METRIC,
+        current_peers_domain + get_active_brokers_count(parker=False),
     )
     logger.debug(
         f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
@@ -175,20 +244,217 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     return {"Endpoint": endpoint}, 200
 
 
+@app.route("/api/v3/wg/key/exchange", methods=["GET"])
+@app.route("/api/v3/config", methods=["GET"])
+def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
+    if not config.get_config().parker.enabled or ipam is None:
+        return {
+            "error": {"message": "Parker support is not enabled on this broker"}
+        }, 400
+
+    try:
+        req_data = ParkerQuery.from_dict(request.args)
+    except Exception as ex:
+        logger.warning(
+            "Couldn't parse client query in /api/v3/wg/key/exchange: %s",
+            ex,
+            exc_info=True,
+        )
+        return {
+            "error": {
+                "message": "Invalid data received. Please check your request and try again."
+            }
+        }, 400
+
+    try:
+        _, full_range6, old_selected_concentrators = ipam.get_or_allocate_prefix(
+            req_data.pubkey,
+            not config.get_config().parker.xlat,
+            True,
+            config.get_config().parker.prefixes.ipv4.length or 0,
+            config.get_config().parker.prefixes.ipv6.length,
+        )
+    except Exception as ex:
+        logger.error(
+            "Exception occurred while fetching/allocating IPv6 prefix for public key %s: %s",
+            req_data.pubkey,
+            ex,
+            exc_info=True,
+        )
+        return {
+            "error": {
+                "message": "Internal error while allocating IP range. Please try again later."
+            }
+        }, 500
+
+    if full_range6 is None:
+        return {
+            "error": {
+                "message": "No IPv6 range available for this public key. Please try again later."
+            }
+        }, 500
+    ranges = full_range6.subnets(new_prefix=64)
+    range6 = next(ranges)
+    xlat_range6 = next(ranges)
+
+    gateway: str = "all"
+
+    mqtt_data = {
+        "PublicKey": req_data.pubkey,
+        "Range6": str(full_range6),
+        "Keepalive": None,  # TODO make configurable
+    }
+
+    logger.info(f"wg_api_v3_key_exchange: Key:{req_data.pubkey}")
+    mqtt.publish(f"parker/wireguard/{gateway}", json.dumps(mqtt_data).encode("utf-8"))
+
+    domain = "parker"
+
+    selected_workers = parker_worker_metrics.get_best_workers(
+        domain, old_selected_concentrators
+    )
+
+    ipam.update_prefix(
+        req_data.pubkey,
+        not config.get_config().parker.xlat,
+        True,
+        [w.name for w in selected_workers],
+    )
+
+    if len(selected_workers) == 0:
+        logger.error("No worker online for Parker network")
+        if len(parker_worker_data) > 0:
+            # Emergency mode - try to randomly select one for which we still have connection data cached
+            selected_workers.append(
+                WorkerResult(
+                    name=random.choice(list(parker_worker_data.keys())),
+                    id=0,
+                    diff=0,
+                    peers=0,
+                    target=0,
+                )
+            )
+        else:
+            return {
+                "error": {"message": "no gateway online, please try again later"}
+            }, 400
+
+    concentrators = []
+
+    for worker in selected_workers:
+        # Update number of peers locally to interpolate data between MQTT updates from the worker.
+        # Only do so if this is a newly selected concentrator, as not to inflate the numbers when clients just check for new config.
+        if worker.name not in old_selected_concentrators:
+            # Increment by the number of active brokers to account for multiple broker instances distributing peers.
+            # Assumes an even distribution of peers across brokers.
+            parker_worker_metrics.update(
+                worker.name,
+                domain,
+                MQTTTopics.CONNECTED_PEERS_METRIC,
+                worker.peers + get_active_brokers_count(parker=True),
+            )
+        logger.debug(
+            f"Chose worker {worker.name} with {worker.peers} connected clients ({worker.diff})"
+        )
+
+        w_data = parker_worker_data.get(worker.name, None)
+        if w_data is None:
+            logger.error(f"Couldn't get worker endpoint data for {worker.name}")
+            return {"error": {"message": "could not get gateway data"}}, 500
+
+        concentrators.append(
+            {
+                "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
+                "address6": w_data.get("LinkAddress"),
+                "endpoint": f"{w_data.get('ExternalAddress')}:{str(w_data.get('Port'))}",
+                "pubkey": w_data.get("PublicKey"),  # type: ignore
+                "id": worker.id,
+            }
+        )
+
+    response = ParkerResponse(
+        nonce=req_data.nonce,
+        time=int(datetime.now(tz=timezone.utc).timestamp()),
+        id=req_data.pubkey,
+        mtu=min(req_data.v6mtu, 1375),
+        range6=str(range6),
+        xlat_range6=str(xlat_range6),
+        address6=str(range6.network_address + 1),
+        concentrators=concentrators,
+    )
+
+    data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + "\n".encode(
+        "utf-8"
+    )
+    if config.get_config().broker_signing_key is None:
+        logger.error(
+            "Parker is enabled, but no broker_signing_key is set in the config file. Can't respond to key exchange."
+        )
+        return {
+            "error": {"message": "Internal signature error. Please try again later."}
+        }, 500
+
+    signature: bytes = sign_response(data)
+
+    full_response: bytes = data + signature
+
+    return (
+        Response(
+            response=full_response,
+            mimetype="text/plain",
+        ),
+        200,
+    )
+
+
 @mqtt.on_connect()
 def handle_mqtt_connect(
     client: mqtt_client.Client, userdata: bytes, flags: Any, rc: Any
 ) -> None:
-    """Prints status of connect message."""
+    """Prints status of connect message and subscribes to relevant topics."""
     # TODO(ruairi): Clarify current usage of this function.
-    logger.debug(
-        "MQTT connected to {}:{}".format(
-            app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
+    match rc:
+        case paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED:
+            logger.debug(
+                "MQTT successfully connected to %s:%s",
+                client.host,
+                client.port,
+            )
+        case _:
+            logger.error(
+                "MQTT connection to %s:%s failed with return code %s (%s)",
+                client.host,
+                client.port,
+                rc,
+                paho.mqtt.enums.ConnackCode(rc).name,
+            )
+            return
+
+    if config.get_config().parker.enabled:
+        logger.debug("Parker mode is enabled, subscribing to parker topics")
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker="+"))
+        # Announce this broker as online
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
+            1,  # pyright: ignore[reportArgumentType]
+            qos=1,
+            retain=True,
         )
-    )
-    mqtt.subscribe("wireguard-metrics/#")
-    mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
-    mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+    else:
+        mqtt.subscribe(MQTTTopics.TOPIC_CONNECTED_PEERS.format(worker="+", domain="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker="+"))
+        # Announce this broker as online
+        mqtt.publish(
+            MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
+            1,  # pyright: ignore[reportArgumentType]
+            qos=1,
+            retain=True,
+        )
 
 
 @mqtt.on_topic("wireguard-metrics/#")
@@ -214,7 +480,27 @@ def handle_mqtt_message_metrics(
     worker_metrics.update(worker, domain, metric, data)
 
 
-@mqtt.on_topic(TOPIC_WORKER_STATUS.format(worker="+"))
+@mqtt.on_topic("parker/wireguard-metrics/#")
+def handle_mqtt_message_parker_metrics(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes published metrics from workers."""
+    logger.debug(
+        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+    )
+    _, _, worker, metric = message.topic.split("/", 3)
+
+    if not worker or not metric:
+        logger.error("Ignored MQTT message with empty worker or metrics label")
+        return
+
+    data = int(message.payload)
+
+    logger.info(f"Update Parker worker metrics: {metric} on {worker} = {data}")
+    parker_worker_metrics.update(worker, "parker", metric, data)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
 def handle_mqtt_message_status(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -230,7 +516,23 @@ def handle_mqtt_message_status(
         worker_metrics.set_online(worker)
 
 
-@mqtt.on_topic(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+def handle_mqtt_message_parker_status(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes status messages from workers."""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    status = int(message.payload)
+    if status < 1 and parker_worker_metrics.get(worker).is_online():
+        logger.warning(f"Marking Parker worker as offline: {worker}")
+        parker_worker_metrics.set_offline(worker)
+    elif status >= 1 and not parker_worker_metrics.get(worker).is_online():
+        logger.warning(f"Marking Parker worker as online: {worker}")
+        parker_worker_metrics.set_online(worker)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
 def handle_mqtt_message_data(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -239,7 +541,7 @@ def handle_mqtt_message_data(
     Stores them in a local dict"""
     _, worker, domain, _ = message.topic.split("/", 3)
     if not is_valid_domain(domain):
-        logger.error(f"Domain {domain} not in configured domains.")
+        logger.debug(f"Domain {domain} not in configured domains.")
         return
 
     data = json.loads(message.payload)
@@ -251,6 +553,96 @@ def handle_mqtt_message_data(
     worker_data[(worker, domain)] = data
 
 
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+", domain="+"))
+def handle_mqtt_message_parker_data(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes data messages from workers.
+
+    Stores them in a local dict"""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    data = json.loads(message.payload)
+    if not isinstance(data, dict):
+        logger.error("Invalid worker data received for %s: %s", worker, data)
+        return
+
+    logger.info("Worker data received for %s: %s", worker, data)
+    parker_worker_data[worker] = data
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker="+"))
+def handle_mqtt_message_broker_status(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Track online/offline brokers announced via MQTT.
+
+    Brokers should publish retained 1 when online and 0 when offline. LWT
+    causes retained 0 to be published on unexpected disconnect.
+    """
+    logger.debug(
+        f"Broker announce received on {message.topic}: {message.payload.decode()}"
+    )
+    _, broker, _ = message.topic.split("/")
+
+    try:
+        status = int(message.payload)
+    except Exception:
+        logger.error(
+            "Invalid broker announce payload for %s: %s", broker, message.payload
+        )
+        return
+
+    if status >= 1:
+        if broker not in active_brokers:
+            logger.info(
+                f"Broker marked online: {broker}, {len(active_brokers) + 1} brokers online"
+            )
+        active_brokers.add(broker)
+    else:
+        if broker in active_brokers:
+            logger.info(
+                f"Broker marked offline: {broker}, {len(active_brokers) - 1} brokers online"
+            )
+            active_brokers.discard(broker)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker="+"))
+def handle_mqtt_message_parker_broker_status(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Track online/offline brokers announced via MQTT.
+
+    Brokers should publish retained 1 when online and 0 when offline. LWT
+    causes retained 0 to be published on unexpected disconnect.
+    """
+    logger.debug(
+        f"Broker announce received on {message.topic}: {message.payload.decode()}"
+    )
+    _, _, broker, _ = message.topic.split("/")
+
+    try:
+        status = int(message.payload)
+    except Exception:
+        logger.error(
+            "Invalid broker announce payload for %s: %s", broker, message.payload
+        )
+        return
+
+    if status >= 1:
+        if broker not in parker_active_brokers:
+            logger.info(
+                f"Broker marked online: {broker}, {len(parker_active_brokers) + 1} Parker brokers online"
+            )
+        parker_active_brokers.add(broker)
+    else:
+        if broker in parker_active_brokers:
+            logger.info(
+                f"Broker marked offline: {broker}, {len(parker_active_brokers) - 1} Parker brokers online"
+            )
+            parker_active_brokers.discard(broker)
+
+
 @mqtt.on_message()
 def handle_mqtt_message(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
@@ -259,24 +651,6 @@ def handle_mqtt_message(
     logger.debug(
         f"MQTT message received on {message.topic}: {message.payload.decode()}"
     )
-
-
-def is_valid_wg_pubkey(pubkey: str) -> str:
-    """Verifies if key is a valid WireGuard public key or not.
-
-    Arguments:
-        pubkey: The key to verify.
-
-    Raises:
-        ValueError: If the Wireguard Key is invalid.
-
-    Returns:
-        The public key.
-    """
-    # TODO(ruairi): Refactor to return bool.
-    if WG_PUBKEY_PATTERN.match(pubkey) is None:
-        raise ValueError(f"Not a valid Wireguard public key: {pubkey}.")
-    return pubkey
 
 
 def join_host_port(host: str, port: str) -> str:
@@ -291,6 +665,33 @@ def join_host_port(host: str, port: str) -> str:
         return "[" + host + "]:" + port
     return host + ":" + port
 
+
+def _publish_offline_and_exit(signum, frame) -> None:
+    """Publish retained offline announce and exit the process."""
+    try:
+        logger.info("Broker shutting down, announcing offline status")
+        announce_topic = (
+            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker=_HOSTNAME)
+            if config.get_config().parker.enabled
+            else MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker=_HOSTNAME)
+        )
+        mqtt.publish(
+            announce_topic, 0, qos=1, retain=True
+        )  # pyright: ignore[reportArgumentType]
+        # Give the client loop a moment to send the message
+        time.sleep(2)
+    except Exception:
+        logger.error("Failed to publish offline announce")
+    finally:
+        sys.exit(0)
+
+
+# Manually re-init the mqtt client due to https://github.com/stlehmann/Flask-MQTT/issues/190
+mqtt.init_app(app)
+
+# Mark broker as offline on shutdown
+signal.signal(signal.SIGINT, _publish_offline_and_exit)
+signal.signal(signal.SIGTERM, _publish_offline_and_exit)
 
 if __name__ == "__main__":
     listen_host = None

@@ -31,6 +31,20 @@ def _get_peer_mock(public_key, last_handshake_time):
             return {"tv_sec": last_handshake_time}
         if attr == "WGPEER_A_PUBLIC_KEY":
             return public_key.encode()
+        if attr == "WGPEER_A_ALLOWEDIPS":
+            return [
+                {
+                    "attrs": [
+                        ("WGALLOWEDIP_A_CIDR_MASK", 63),
+                        ("WGALLOWEDIP_A_FAMILY", 10),
+                        (
+                            "WGALLOWEDIP_A_IPADDR",
+                            "20:01:0d:b8:0e:d0:00:0a:00:00:00:00:00:00:00:00",
+                        ),
+                    ],
+                    "addr": "2001:db8:ed0:a::/63",
+                }
+            ]
 
     peer_mock = mock.Mock()
     peer_mock.get_attr.side_effect = peer_get_attr
@@ -65,7 +79,9 @@ class NetlinkTest(unittest.TestCase):
             "WGPEER_A_PUBLIC_KEY",
             int((datetime.now() - timedelta(seconds=3)).timestamp()),
         )
-        self.assertListEqual([], netlink.find_stale_wireguard_clients("some_interface"))
+        self.assertListEqual(
+            [], netlink.find_stale_wireguard_clients(False, "some_interface")
+        )
 
     def test_find_stale_wireguard_clients_success_stale_peer(self):
         """Tests find_stale_wireguard_clients removal of stale peer"""
@@ -74,8 +90,8 @@ class NetlinkTest(unittest.TestCase):
             int((datetime.now() - timedelta(hours=5)).timestamp()),
         )
         self.assertListEqual(
-            ["WGPEER_A_PUBLIC_KEY_STALE"],
-            netlink.find_stale_wireguard_clients("some_interface"),
+            [("WGPEER_A_PUBLIC_KEY_STALE", None)],
+            netlink.find_stale_wireguard_clients(False, "some_interface"),
         )
 
     def test_route_handler_add_success(self):
@@ -104,7 +120,7 @@ class NetlinkTest(unittest.TestCase):
             {"WireGuard": "set"}, netlink.update_wireguard_peer(_WG_CLIENT_ADD)
         )
         wg_info_mock.set.assert_called_with(
-            "wg-add",
+            interface="wg-add",
             peer={
                 "public_key": "public_key",
                 "allowed_ips": ["fe80::282:6eff:fe9d:ecd3/128"],
@@ -162,7 +178,7 @@ class NetlinkTest(unittest.TestCase):
             "replace", dst="fe80::282:6eff:fe9d:ecd3/128", oif=mock.ANY
         )
         wg_info_mock.set.assert_called_with(
-            "wg-add",
+            interface="wg-add",
             peer={
                 "public_key": "public_key",
                 "allowed_ips": ["fe80::282:6eff:fe9d:ecd3/128"],
@@ -178,7 +194,7 @@ class NetlinkTest(unittest.TestCase):
         )
         self.route_info_mock.fdb.return_value = {"IPRoute": "fdb"}
         self.route_info_mock.route.return_value = {"IPRoute": "route"}
-        self.assertListEqual([], netlink.wg_flush_stale_peers("domain"))
+        self.assertListEqual([], netlink.wg_flush_stale_peers(False, "domain"))
         # TODO(ruairi): Understand why pyroute.WireGuard.set
         # wg_info_mock.set.assert_not_called()
 
@@ -198,7 +214,7 @@ class NetlinkTest(unittest.TestCase):
             int((datetime.now() - timedelta(hours=5)).timestamp()),
         )
         wg_info_mock.set.return_value = {"WireGuard": "set"}
-        self.assertListEqual(expected, netlink.wg_flush_stale_peers("domain"))
+        self.assertListEqual(expected, netlink.wg_flush_stale_peers(False, "domain"))
         self.route_info_mock.route.assert_called_with(
             "del", dst="fe80::281:16ff:fe49:395e/128", oif=mock.ANY
         )
@@ -263,6 +279,40 @@ class NetlinkTest(unittest.TestCase):
 
         ret = netlink.get_device_data("wg-welt")
         self.assertTupleEqual(ret, (51820, "TEST_PUBLIC_KEY", mock.ANY))
+
+    def test_find_stale_wireguard_clients_parker_stale_peer(self):
+        """Tests find_stale_wireguard_clients in parker mode returning range6."""
+
+        _ = _get_wg_mock(
+            "PARKER_PUBLIC_KEY", int((datetime.now() - timedelta(hours=1)).timestamp())
+        )
+
+        self.assertListEqual(
+            [("PARKER_PUBLIC_KEY", "2001:db8:ed0:a::/63")],
+            netlink.find_stale_wireguard_clients(True, "wg-nodes"),
+        )
+
+    def test_wg_flush_stale_peers_parker_stale_success(self):
+        """Tests processing of stale WireGuard Peer in parker mode."""
+
+        _ = _get_wg_mock(
+            "PARKER_PUBLIC_KEY", int((datetime.now() - timedelta(hours=1)).timestamp())
+        )
+
+        expected = [
+            {
+                "Wireguard": {"WireGuard": "set"},
+                "Route": {"IPRoute": "route"},
+            }
+        ]
+
+        ret = netlink.wg_flush_stale_peers(True, "parker")
+        self.assertListEqual(expected, ret)
+
+        # Verify the stale peer resulted in a route deletion for the parker range
+        self.route_info_mock.route.assert_called_with(
+            "del", dst="2001:db8:ed0:a::/63", oif=mock.ANY
+        )
 
 
 if __name__ == "__main__":

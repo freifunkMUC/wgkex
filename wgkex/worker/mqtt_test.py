@@ -9,13 +9,18 @@ import mock
 import paho.mqtt.client
 import pyroute2.netlink.exceptions
 
-from wgkex.common.mqtt import TOPIC_CONNECTED_PEERS
+from wgkex.common.mqtt import MQTTTopics
+from wgkex.config import config
 from wgkex.worker import mqtt
 
 
-def _get_config_mock(domains=None, mqtt=None):
+def _get_config_mock(domains=None, mqtt=None, parker=None):
     test_prefixes = ["_ffmuc_", "_TEST_PREFIX2_"]
     config_mock = mock.MagicMock()
+    if parker:
+        config_mock.parker = parker
+    else:
+        config_mock.parker.enabled = False
     config_mock.domains = (
         domains if domains is not None else [f"{test_prefixes[0]}domain.one"]
     )
@@ -92,6 +97,53 @@ class MQTTTest(unittest.TestCase):
             ]
         )
 
+    @mock.patch.object(mqtt.mqtt, "Client")
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_device_data")
+    def test_on_connect_with_parker_subscribes(
+        self, get_device_data_mock, config_mock, mqtt_client_mock
+    ):
+        """Test that the on_connect callback correctly subscribes to all domains and pushes device data"""
+        config_mqtt_mock = mock.MagicMock()
+        config_mqtt_mock.broker_url = "some_url"
+        config_mqtt_mock.broker_port = 1833
+        config_mqtt_mock.keepalive = False
+        _config = _get_config_mock(
+            mqtt=config_mqtt_mock,
+            parker=config.Parker(
+                enabled=True,
+                xlat=True,
+                prefixes=config.Parker.Prefixes(
+                    config.Parker.Prefixes.IPv4(clat_subnet="100.64.0.0/24"),
+                    config.Parker.Prefixes.IPv6(length=63),
+                ),
+                ipam=config.Parker.IPAM.JSON,
+            ),
+        )
+        _config.external_name = None
+        config_mock.return_value = _config
+        get_device_data_mock.return_value = (51820, "456asdf=", "fe80::1")
+
+        hostname = socket.gethostname()
+
+        mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+
+        mqtt_client_mock.assert_has_calls(
+            [
+                mock.call().subscribe("parker/wireguard/+"),
+                mock.call().publish(
+                    f"parker/wireguard-worker/{hostname}/data",
+                    '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
+                    % hostname,
+                    qos=1,
+                    retain=True,
+                ),
+                mock.call().publish(
+                    f"parker/wireguard-worker/{hostname}/status", 1, qos=1, retain=True
+                ),
+            ]
+        )
+
     @mock.patch.object(mqtt, "get_config")
     @mock.patch.object(mqtt, "get_connected_peers_count")
     def test_publish_metrics_loop_success(self, conn_peers_mock, config_mock):
@@ -113,9 +165,46 @@ class MQTTTest(unittest.TestCase):
 
         conn_peers_mock.assert_called_with("wg-domain.one")
         mqtt_client.publish.assert_called_with(
-            TOPIC_CONNECTED_PEERS.format(
+            MQTTTopics.TOPIC_CONNECTED_PEERS.format(
                 domain="_ffmuc_domain.one", worker=socket.gethostname()
             ),
+            20,
+            retain=True,
+        )
+
+        ee.set()
+
+        i = 0
+        while i < 20 and thread.is_alive():
+            i += 1
+            sleep(0.1)
+
+        self.assertFalse(thread.is_alive())
+
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_connected_peers_count")
+    def test_publish_metrics_loop_with_parker_success(
+        self, conn_peers_mock, config_mock
+    ):
+        config_mock.return_value = _get_config_mock()
+        conn_peers_mock.return_value = 20
+        mqtt_client = mock.MagicMock(spec=paho.mqtt.client.Client)
+
+        ee = threading.Event()
+        thread = threading.Thread(
+            target=mqtt.publish_metrics_loop,
+            args=(ee, mqtt_client, "", True),
+        )
+        thread.start()
+
+        i = 0
+        while i < 20 and not mqtt_client.publish.called:
+            i += 1
+            sleep(0.1)
+
+        conn_peers_mock.assert_called_with("wg-nodes")
+        mqtt_client.publish.assert_called_with(
+            MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker=socket.gethostname()),
             20,
             retain=True,
         )
@@ -177,7 +266,7 @@ class MQTTTest(unittest.TestCase):
 
         domain = mqtt.get_config().domains[0]
         hostname = socket.gethostname()
-        topic = TOPIC_CONNECTED_PEERS.format(domain=domain, worker=hostname)
+        topic = MQTTTopics.TOPIC_CONNECTED_PEERS.format(domain=domain, worker=hostname)
 
         # Must not raise NetlinkDumpInterrupted, but handle gracefully by doing nothing
         mqtt.publish_metrics(mqtt_client, topic, domain)
