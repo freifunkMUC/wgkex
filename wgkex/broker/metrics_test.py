@@ -70,7 +70,7 @@ class TestMetrics(unittest.TestCase):
     def test_get_best_worker_returns_best(self, config_mock):
         """Verify get_best_worker returns the worker with least connected clients for equally weighted workers."""
         test_config = mock.MagicMock(spec=config.Config)
-        test_config.workers = config.Workers.from_dict({})
+        test_config.workers = config.Workers.from_dict({}, 25)
         config_mock.return_value = test_config
 
         worker_metrics = WorkerMetricsCollection()
@@ -88,7 +88,7 @@ class TestMetrics(unittest.TestCase):
     def test_get_best_worker_returns_best_imbalanced_domains(self, config_mock):
         """Verify get_best_worker returns the worker with overall least connected clients even if it has more clients on this domain."""
         test_config = mock.MagicMock(spec=config.Config)
-        test_config.workers = config.Workers.from_dict({})
+        test_config.workers = config.Workers.from_dict({}, 25)
         config_mock.return_value = test_config
 
         worker_metrics = WorkerMetricsCollection()
@@ -109,7 +109,7 @@ class TestMetrics(unittest.TestCase):
         """Verify get_best_worker returns the worker with least client differential for weighted workers."""
         test_config = mock.MagicMock(spec=config.Config)
         test_config.workers = config.Workers.from_dict(
-            {"1": {"weight": 84}, "2": {"weight": 42}}
+            {"1": {"weight": 84}, "2": {"weight": 42}}, 25
         )
         config_mock.return_value = test_config
 
@@ -140,6 +140,32 @@ class TestMetrics(unittest.TestCase):
 
         worker, _, _ = worker_metrics.get_best_worker("d")
         self.assertIsNone(worker)
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_worker_stickyness(self, config_mock):
+        """Verify get_best_worker returns the current worker if it is an equally good choice.
+        Verify that a slightly worse worker is still chosen if within tolerance."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(
+            {"1": {"id": 1, "weight": 50}, "2": {"id": 2, "weight": 50}}, 25
+        )
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 20)
+        worker_metrics.update("2", "d", "connected_peers", 20)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+
+        results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "2")
+
+        worker_metrics.update("2", "d", "connected_peers", 24)
+
+        results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "2")
 
 
 if __name__ == "__main__":

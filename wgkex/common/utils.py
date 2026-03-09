@@ -5,6 +5,8 @@ import re
 
 from wgkex.config import config
 
+WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
+
 
 def mac2eui64(mac: str, prefix=None) -> str:
     """Converts a MAC address to an EUI64 identifier.
@@ -55,3 +57,21 @@ def is_valid_domain(domain: str) -> bool:
         if domain.startswith(prefix):
             return True
     return False
+
+
+def is_valid_wg_pubkey(pubkey: str) -> str:
+    """Verifies if key is a valid WireGuard public key or not.
+
+    Arguments:
+        pubkey: The key to verify.
+
+    Raises:
+        ValueError: If the Wireguard Key is invalid.
+
+    Returns:
+        The public key.
+    """
+    # TODO(ruairi): Refactor to return bool.
+    if WG_PUBKEY_PATTERN.match(pubkey) is None:
+        raise ValueError(f"Not a valid Wireguard public key: {pubkey}.")
+    return pubkey
