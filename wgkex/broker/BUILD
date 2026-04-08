@@ -33,6 +33,19 @@ py_binary(
         requirement("waitress"),
         "//wgkex/config:config",
         "//wgkex/common:mqtt",
+        "//wgkex/allowlist:allowlist",
         ":metrics"
     ],
+)
+
+py_test(
+    name="app_test",
+    srcs=["app_test.py"],
+    deps=[
+        ":app",
+        "//wgkex/allowlist:allowlist",
+        requirement("PyYAML"),
+        requirement("mock"),
+    ],
+    size="small",
 )
