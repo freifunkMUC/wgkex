@@ -250,9 +250,9 @@ paho-mqtt==2.1.0 \
     # via
     #   -r requirements.txt
     #   flask-mqtt
-pyroute2==0.9.5 \
-    --hash=sha256:a198ccbe545b031b00b10da4b44df33d548db04af944be8107c05a215ba03872 \
-    --hash=sha256:e7d485ce8274cbf473e9092fa65585faf8a3df5fe05ecf497cb9c5b1516ba09f
+pyroute2==0.9.6 \
+    --hash=sha256:3334091326e560a506635449af03b26920d22d4e5a7996aed354363d106fcef8 \
+    --hash=sha256:6bc5e2ea9a372ded682b4ede4028ba00236bd6e35b42d833f39a96b219ef1db2
     # via -r requirements.txt
 pyyaml==6.0.3 \
     --hash=sha256:00c4bdeba853cc34e7dd471f16b4114f4162dc03e6b7afcc2128711f0eca823c \
