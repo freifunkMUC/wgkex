@@ -98,10 +98,17 @@ class WorkerMetricsCollection:
 
         return total
 
-    def get_best_worker(self, domain: str) -> Tuple[Optional[str], int, int]:
+    def get_best_worker(
+        self, domain: str, location: Optional[str] = None
+    ) -> Tuple[Optional[str], int, int]:
         """Analyzes the metrics and determines the best worker that a new client should connect to.
         The best worker is defined as the one with the most number of clients missing
         to its should-be target value according to its weight.
+
+        Args:
+            domain: The domain to select a worker for.
+            location: Optional preferred location. If specified, only workers with matching location
+                     are considered. Falls back to all workers if no matching workers are online.
 
         Returns:
             A 3-tuple containing the worker name, difference to target peers, number of connected peers.
@@ -113,9 +120,23 @@ class WorkerMetricsCollection:
         total_peers = self.get_total_peer_count()
         worker_cfg = config.get_config().workers
 
+        # First, try with location filter if specified
+        location_workers = None
+        if location:
+            location_workers = set(worker_cfg.get_workers_by_location(location))
+            if location_workers:
+                logger.debug(
+                    f"Filtering workers by location '{location}': {location_workers}"
+                )
+
         for wm in self.data.values():
             if not wm.is_online(domain):
                 continue
+
+            # If location is specified and we have matching workers, filter by location
+            if location_workers is not None:
+                if wm.worker not in location_workers:
+                    continue
 
             peers = wm.get_peer_count()
             rel_weight = worker_cfg.relative_worker_weight(wm.worker)
@@ -125,6 +146,13 @@ class WorkerMetricsCollection:
                 f"Worker candidate {wm.worker}: current {peers}, target {target} (total {total_peers}, rel weight {rel_weight}), diff {diff}"
             )
             peers_worker_tuples.append((diff, peers, wm.worker))
+
+        # If we filtered by location but found no workers, try again without location filter
+        if location and len(peers_worker_tuples) == 0:
+            logger.warning(
+                f"No workers online for location '{location}', falling back to all workers"
+            )
+            return self.get_best_worker(domain, location=None)
 
         # Sort by diff (ascending), workers with most peers missing to target are sorted first
         peers_worker_tuples = sorted(peers_worker_tuples, key=itemgetter(0))
