@@ -71,6 +71,64 @@ class TestConfig(unittest.TestCase):
         with mock.patch("builtins.open", mock_open):
             self.assertIsNone(config.get_config().raw.get("key_does_not_exist"))
 
+    def test_worker_location_parsing(self):
+        """Test that worker location is correctly parsed from config."""
+        worker_cfg = {"weight": 10, "location": "MUC"}
+        worker = config.Worker.from_dict(worker_cfg)
+        self.assertEqual(worker.weight, 10)
+        self.assertEqual(worker.location, "MUC")
+
+    def test_worker_location_optional(self):
+        """Test that worker location is optional."""
+        worker_cfg = {"weight": 20}
+        worker = config.Worker.from_dict(worker_cfg)
+        self.assertEqual(worker.weight, 20)
+        self.assertIsNone(worker.location)
+
+    def test_workers_get_locations(self):
+        """Test getting unique locations from workers."""
+        workers_cfg = {
+            "worker1": {"weight": 10, "location": "MUC"},
+            "worker2": {"weight": 10, "location": "Vienna"},
+            "worker3": {"weight": 10, "location": "MUC"},
+            "worker4": {"weight": 10},
+        }
+        workers = config.Workers.from_dict(workers_cfg)
+        locations = workers.get_locations()
+        self.assertEqual(locations, ["MUC", "Vienna"])
+
+    def test_workers_get_locations_empty(self):
+        """Test getting locations when no locations are configured."""
+        workers_cfg = {
+            "worker1": {"weight": 10},
+            "worker2": {"weight": 10},
+        }
+        workers = config.Workers.from_dict(workers_cfg)
+        locations = workers.get_locations()
+        self.assertEqual(locations, [])
+
+    def test_workers_get_workers_by_location(self):
+        """Test filtering workers by location."""
+        workers_cfg = {
+            "worker1": {"weight": 10, "location": "MUC"},
+            "worker2": {"weight": 10, "location": "Vienna"},
+            "worker3": {"weight": 10, "location": "MUC"},
+            "worker4": {"weight": 10},
+        }
+        workers = config.Workers.from_dict(workers_cfg)
+        muc_workers = workers.get_workers_by_location("MUC")
+        self.assertEqual(set(muc_workers), {"worker1", "worker3"})
+
+    def test_workers_get_workers_by_location_none(self):
+        """Test filtering workers by location with no matches."""
+        workers_cfg = {
+            "worker1": {"weight": 10, "location": "MUC"},
+            "worker2": {"weight": 10, "location": "Vienna"},
+        }
+        workers = config.Workers.from_dict(workers_cfg)
+        berlin_workers = workers.get_workers_by_location("Berlin")
+        self.assertEqual(berlin_workers, [])
+
 
 if __name__ == "__main__":
     unittest.main()
