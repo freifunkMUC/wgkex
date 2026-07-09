@@ -73,6 +73,40 @@ JSON POST'd to this endpoint should be in this format:
 
 The broker will validate the domain and public key, and if valid, will push the key onto the MQTT bus.
 
+#### Key Allowlist (Optional)
+
+The broker can be configured to accept only pre-approved public keys per domain. This feature is useful for communities that want to restrict access to a pre-approved list of keys rather than accepting any key.
+
+To enable the allowlist feature, configure it in `wgkex.yaml`:
+
+```yaml
+allowlist:
+  enabled: true
+  file: /etc/wgkex-allowlist.yaml
+  refresh_interval: 300  # seconds, 0 to disable automatic refresh
+```
+
+The allowlist file should be a YAML file with the following format:
+
+```yaml
+# Example: wgkex-allowlist.yaml
+ffmuc_welt:
+  - "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="
+  - "another_allowed_key_here_base64_format_="
+
+ffmuc_muc_cty:
+  - "key1_for_city_domain_base64_format_____="
+  - "key2_for_city_domain_base64_format_____="
+```
+
+When the allowlist is enabled:
+- Only public keys listed in the allowlist file will be accepted for key exchange
+- Keys not in the allowlist will be rejected with an error
+- The allowlist is automatically refreshed at the configured interval
+- The feature is disabled by default for backward compatibility
+
+See [wgkex-allowlist.yaml.example](wgkex-allowlist.yaml.example) for a complete example.
+
 
 #### POST /api/v2/wg/key/exchange
 

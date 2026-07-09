@@ -1,0 +1,17 @@
+# Example allowlist file for wgkex
+# This file contains pre-approved WireGuard public keys organized by domain
+# Only keys listed here will be allowed to connect when allowlist is enabled
+
+# Example domain 1
+ffmuc_welt:
+  - "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="
+  - "another_allowed_key_here_base64_format_="
+  - "yet_another_allowed_key_base64_format_="
+
+# Example domain 2
+ffmuc_muc_cty:
+  - "key1_for_city_domain_base64_format_____="
+  - "key2_for_city_domain_base64_format_____="
+
+# Add more domains and keys as needed
+# Each key should be a valid WireGuard public key (44 characters, base64 encoded)
