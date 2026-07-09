@@ -14,6 +14,7 @@ import pyroute2.netlink.exceptions
 
 from wgkex.common import logger
 from wgkex.common.utils import mac2eui64
+from wgkex.config import config
 
 _PEER_TIMEOUT_HOURS = 3
 
@@ -193,6 +194,12 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
     logger.info(
         "Starting search for stale wireguard peers for interface %s.", wg_interface
     )
+
+    # Get whitelist from configuration
+    whitelist = config.get_config().key_whitelist or []
+    if whitelist:
+        logger.info("Key whitelist active with %d keys", len(whitelist))
+
     with pyroute2.WireGuard() as wg:
         all_peers = []
         msgs = wg.info(wg_interface)
@@ -207,6 +214,7 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
             for peer in all_peers
             if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
             and hshk_time.get("tv_sec", int()) < three_hrs_in_secs
+            and peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8") not in whitelist
         ]
         return ret
 

@@ -13,6 +13,12 @@ domain_prefixes:
   - ffmuc_
   - ffdon_
   - ffwert_
+# [worker] Optional list of public keys that should never be cleaned up (e.g., gateway keys)
+# Uncomment and add keys to whitelist them from automatic peer cleanup
+# Keys must be valid WireGuard public keys (44 characters, base64 encoded)
+# key_whitelist:
+#   - "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnA="
+#   - "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdE="
 # [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution
 workers:
   gw04.in.ffmuc.net:
