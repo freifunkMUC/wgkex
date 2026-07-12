@@ -301,6 +301,16 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
                 "message": "Allocated IPv6 range is invalid. Please try again later."
             }
         }, 500
+    expected_length = config.get_config().parker.prefixes.ipv6.length
+    if full_range6.prefixlen != expected_length:
+        logger.warning(
+            "IPv6 prefix %s for public key %s has length /%s, but /%s is configured. "
+            "Fix or delete the prefix in the IPAM.",
+            full_range6,
+            req_data.pubkey,
+            full_range6.prefixlen,
+            expected_length,
+        )
     ranges = full_range6.subnets(new_prefix=64)
     range6 = next(ranges)
     xlat_range6 = next(ranges)
