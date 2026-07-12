@@ -105,7 +105,7 @@ def _load_parker_ipam() -> Optional[ParkerIPAM]:
             ipam = NetboxIPAM(
                 api_url=netbox_cfg.url,
                 token=netbox_cfg.api_key,
-                xlat=True,
+                xlat=config.get_config().parker.xlat,
             )
         case _:
             raise NotImplementedError(f"Invalid IPAM type {ipam_type}")
