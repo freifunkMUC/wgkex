@@ -23,7 +23,7 @@ from wgkex.broker.ipam_netbox import NetboxIPAM
 from wgkex.broker.ipam_json import JSONFileIPAM
 from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
 from wgkex.broker.parker import ParkerQuery, ParkerResponse
-from wgkex.broker.signer import sign_response
+from wgkex.broker.signer import get_private_key, sign_response
 from wgkex.common import logger
 from wgkex.common.mqtt import MQTTTopics
 from wgkex.common.utils import is_valid_domain, is_valid_wg_pubkey
@@ -123,6 +123,9 @@ parker_worker_metrics = WorkerMetricsCollection()
 worker_data: Dict[Tuple[str, str], Dict] = {}
 parker_worker_data: Dict[str, Dict] = {}
 ipam: Optional[ParkerIPAM] = _load_parker_ipam()
+if config.get_config().parker.enabled:
+    # Ensure the signing key is loaded and valid at startup, so a broken config fails fast
+    get_private_key()
 # Track active brokers announced over MQTT
 active_brokers: set[str] = set()
 parker_active_brokers: set[str] = set()

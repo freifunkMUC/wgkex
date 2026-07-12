@@ -90,9 +90,6 @@ def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
     return (keytype, privkey, fingerprint_bytes)
 
 
-get_private_key()  # Ensure the private key is loaded at startup, and throws an error if it is invalid
-
-
 def sign_response(data: bytes) -> bytes:
     """
     Sign the response data with the private key from the configuration.

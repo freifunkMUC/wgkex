@@ -86,7 +86,23 @@ class ParkerResponse:
     range6: str
     address6: str
     xlat_range6: str
-    range4: str = config.get_config().parker.prefixes.ipv4.clat_subnet
-    address4: str = str(ipaddress.IPv4Network(range4).network_address + 1)
-    wg_keepalive: int = config.get_config().parker.wg_keepalive
-    retry: int = config.get_config().parker.retry_interval
+    # Config-derived defaults must be resolved lazily (at instantiation), because
+    # this module is also imported by brokers running with Parker disabled, where
+    # the parker config section is empty.
+    range4: str = dataclasses.field(
+        default_factory=lambda: config.get_config().parker.prefixes.ipv4.clat_subnet
+    )
+    address4: str = dataclasses.field(
+        default_factory=lambda: str(
+            ipaddress.IPv4Network(
+                config.get_config().parker.prefixes.ipv4.clat_subnet
+            ).network_address
+            + 1
+        )
+    )
+    wg_keepalive: int = dataclasses.field(
+        default_factory=lambda: config.get_config().parker.wg_keepalive
+    )
+    retry: int = dataclasses.field(
+        default_factory=lambda: config.get_config().parker.retry_interval
+    )
