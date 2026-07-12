@@ -1,4 +1,5 @@
 import base64
+import hashlib
 import importlib
 import sys
 import unittest
@@ -50,11 +51,21 @@ class TestSigner(unittest.TestCase):
         self.assertEqual(len(signature), 64)
         self.assertTrue(private_key.verifying_key.verify(signature, data))
 
-    def test_signify_key_preserves_fingerprint_in_signature(self):
+    @staticmethod
+    def _signify_key(kdfrounds: int = 0, valid_checksum: bool = True) -> bytearray:
         serialized_key = bytearray(104)
-        fingerprint = b"12345678"
-        serialized_key[32:40] = fingerprint
+        serialized_key[0:2] = b"Ed"
+        serialized_key[2:4] = b"BK"
+        serialized_key[4:8] = kdfrounds.to_bytes(4, "big")
+        serialized_key[32:40] = b"12345678"
         serialized_key[40:72] = bytes(range(32))
+        if valid_checksum:
+            serialized_key[24:32] = hashlib.sha512(serialized_key[40:104]).digest()[:8]
+        return serialized_key
+
+    def test_signify_key_preserves_fingerprint_in_signature(self):
+        serialized_key = self._signify_key()
+        fingerprint = bytes(serialized_key[32:40])
         config._parsed_config = _parker_config(
             base64.b64encode(serialized_key).decode()
         )
@@ -68,6 +79,26 @@ class TestSigner(unittest.TestCase):
         signature = base64.b64decode(self.signer.sign_response(data))
         self.assertEqual(signature[:10], b"Ed" + fingerprint)
         self.assertTrue(private_key.verifying_key.verify(signature[10:], data))
+
+    def test_signify_key_rejects_passphrase_protected_key(self):
+        serialized_key = self._signify_key(kdfrounds=42)
+        config._parsed_config = _parker_config(
+            base64.b64encode(serialized_key).decode()
+        )
+        self.signer.get_private_key.cache_clear()
+
+        with self.assertRaisesRegex(ValueError, "passphrase-protected"):
+            self.signer.get_private_key()
+
+    def test_signify_key_rejects_invalid_checksum(self):
+        serialized_key = self._signify_key(valid_checksum=False)
+        config._parsed_config = _parker_config(
+            base64.b64encode(serialized_key).decode()
+        )
+        self.signer.get_private_key.cache_clear()
+
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            self.signer.get_private_key()
 
     def test_signing_is_unavailable_when_parker_is_disabled(self):
         config._parsed_config = config.Config.from_dict(
