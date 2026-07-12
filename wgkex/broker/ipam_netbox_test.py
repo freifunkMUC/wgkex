@@ -246,6 +246,76 @@ class TestNetboxIPAM(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.ipam._deduplicate_prefixes("pubkey", 6)
 
+    def test_allocated_prefix_is_kept_when_requery_visibility_is_delayed(self):
+        allocated = mock.MagicMock(
+            id=10,
+            prefix="2001:db8:99::/63",
+            description='{"pubkey": "pubkey"}',
+        )
+
+        with mock.patch.object(self.ipam, "_get_prefixes", return_value=[]):
+            canonical = self.ipam._deduplicate_prefixes(
+                "pubkey", 6, allocated_prefix=allocated
+            )
+
+        self.assertIs(canonical, allocated)
+        allocated.delete.assert_not_called()
+
+    def test_concurrent_duplicate_delete_404_is_already_reconciled(self):
+        class FakeRequestError(Exception):
+            def __init__(self):
+                self.req = mock.MagicMock(status_code=404)
+
+        canonical = mock.MagicMock(
+            id=10,
+            prefix="2001:db8:99::/63",
+            description='{"pubkey": "pubkey"}',
+        )
+        duplicate = mock.MagicMock(
+            id=11,
+            prefix="2001:db8:99:2::/63",
+            description='{"pubkey": "pubkey"}',
+        )
+        duplicate.delete.side_effect = FakeRequestError()
+
+        with (
+            mock.patch.object(
+                self.ipam,
+                "_get_prefixes",
+                return_value=[canonical, duplicate],
+            ),
+            mock.patch(
+                "wgkex.broker.ipam_netbox.pynetbox.core.query.RequestError",
+                FakeRequestError,
+            ),
+        ):
+            reconciled = self.ipam._deduplicate_prefixes("pubkey", 6)
+
+        self.assertIs(reconciled, canonical)
+
+    def test_duplicate_delete_server_error_fails_reconciliation(self):
+        class FakeRequestError(Exception):
+            def __init__(self):
+                self.req = mock.MagicMock(status_code=500)
+
+        canonical = mock.MagicMock(id=10, prefix="2001:db8:99::/63")
+        duplicate = mock.MagicMock(id=11, prefix="2001:db8:99:2::/63")
+        duplicate.delete.side_effect = FakeRequestError()
+
+        with (
+            mock.patch.object(
+                self.ipam,
+                "_get_prefixes",
+                return_value=[canonical, duplicate],
+            ),
+            mock.patch(
+                "wgkex.broker.ipam_netbox.pynetbox.core.query.RequestError",
+                FakeRequestError,
+            ),
+            self.assertRaisesRegex(RuntimeError, "Failed to release duplicate prefix"),
+        ):
+            self.ipam._deduplicate_prefixes("pubkey", 6)
+
 
 if __name__ == "__main__":
     unittest.main()

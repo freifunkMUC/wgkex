@@ -65,6 +65,31 @@ class TestParkerQuery(unittest.TestCase):
         with self.assertRaises(ValueError):
             ParkerQuery.from_dict(data)
 
+    def test_parker_response_requires_clat_subnet_at_construction(self):
+        from wgkex.broker.parker import ParkerResponse
+
+        disabled_config = config.Config.from_dict(
+            {
+                "domains": [],
+                "domain_prefixes": [],
+                "mqtt": {"broker_url": "", "username": "", "password": ""},
+            }
+        )
+        with (
+            mock.patch.object(config, "get_config", return_value=disabled_config),
+            self.assertRaisesRegex(ValueError, "requires an IPv4 CLAT subnet"),
+        ):
+            ParkerResponse(
+                nonce="nonce",
+                time=0,
+                id="pubkey",
+                mtu=1280,
+                concentrators=[],
+                range6="2001:db8::/64",
+                address6="2001:db8::1",
+                xlat_range6="2001:db8:1::/64",
+            )
+
 
 class TestParker(unittest.TestCase):
     @classmethod
@@ -283,6 +308,33 @@ class TestParker(unittest.TestCase):
         broker_app.handle_mqtt_message_broker_status(None, None, msg)
         self.assertNotIn("broker1", broker_app.active_brokers)
         self.assertNotIn("broker1", broker_app.parker_active_brokers)
+
+    def test_parker_shutdown_clears_legacy_and_alias_status(self):
+        from wgkex.broker import app as broker_app
+        from wgkex.common.mqtt import MQTTTopics
+
+        legacy_topic = MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(
+            broker=broker_app._HOSTNAME
+        )
+        parker_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
+            broker=broker_app._HOSTNAME
+        )
+        with (
+            mock.patch.object(broker_app, "mqtt") as mqtt,
+            mock.patch.object(broker_app.time, "sleep") as sleep,
+            mock.patch.object(broker_app.sys, "exit") as exit_process,
+        ):
+            broker_app._publish_offline_and_exit(None, None)
+
+        mqtt.publish.assert_has_calls(
+            [
+                mock.call(legacy_topic, 0, qos=1, retain=True),
+                mock.call(parker_topic, b"", qos=1, retain=True),
+                mock.call(parker_topic, 0, qos=1, retain=False),
+            ]
+        )
+        sleep.assert_called_once_with(2)
+        exit_process.assert_called_once_with(0)
 
     def test_get_active_brokers_count(self):
         from wgkex.broker import app as broker_app

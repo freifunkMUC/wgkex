@@ -82,6 +82,7 @@ py_test(
     deps = [
        "//wgkex/broker:app",
        "//wgkex/broker:parker",
+       "//wgkex/broker:signer",
        "//wgkex/config:config",
        requirement("mock"),
        requirement("paho-mqtt"),
