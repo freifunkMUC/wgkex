@@ -1,6 +1,7 @@
 import ipaddress
 import json
 import os
+import threading
 from typing import Dict, List, Optional, Tuple
 
 from wgkex.broker.ipam import ParkerIPAM
@@ -21,6 +22,12 @@ FILE_PATH = "/var/local/wgkex/broker/ipv6_ranges.json"
 
 
 class JSONFileIPAM(ParkerIPAM):
+    def __init__(self) -> None:
+        # Serialize the read-modify-write of the JSON file: concurrent requests
+        # from waitress's thread pool could otherwise allocate the same prefix
+        # to two different pubkeys.
+        self._lock = threading.Lock()
+
     def get_or_allocate_prefix(
         self,
         pubkey: str,
@@ -42,49 +49,54 @@ class JSONFileIPAM(ParkerIPAM):
         if not ipv6:
             return None, None, []
 
-        ranges: Dict[str, str] = {}
-        parent_prefix = ipaddress.IPv6Network(
-            "2001:db8:ed0::/56"
-        )  # Default parent prefix
-        try:
-            with open(FILE_PATH, "r", encoding="utf-8") as f:
-                json_content = json.load(f)
-                ranges = json_content.get("ranges", {})
-                parent_prefix = ipaddress.IPv6Network(
-                    json_content.get("parent_prefix", parent_prefix)
-                )
-        except FileNotFoundError:
-            os.makedirs("/var/local/wgkex/broker", exist_ok=True)
-        except json.JSONDecodeError:
-            pass
+        with self._lock:
+            ranges: Dict[str, str] = {}
+            parent_prefix = ipaddress.IPv6Network(
+                "2001:db8:ed0::/56"
+            )  # Default parent prefix
+            try:
+                with open(FILE_PATH, "r", encoding="utf-8") as f:
+                    json_content = json.load(f)
+                    ranges = json_content.get("ranges", {})
+                    parent_prefix = ipaddress.IPv6Network(
+                        json_content.get("parent_prefix", parent_prefix)
+                    )
+            except FileNotFoundError:
+                os.makedirs("/var/local/wgkex/broker", exist_ok=True)
+            except json.JSONDecodeError:
+                pass
 
-        range6 = ranges.get(pubkey, None)
-        if range6 is None or not ipaddress.IPv6Network(range6).subnet_of(parent_prefix):
-            parsed_ranges = [
-                ipaddress.IPv6Network(rg)
-                for rg in ranges.values()
-                if ipaddress.IPv6Network(rg).subnet_of(parent_prefix)
-            ]  # Filter out any ranges that are not subnets of the parent prefix
+            range6 = ranges.get(pubkey, None)
+            if range6 is None or not ipaddress.IPv6Network(range6).subnet_of(
+                parent_prefix
+            ):
+                parsed_ranges = [
+                    ipaddress.IPv6Network(rg)
+                    for rg in ranges.values()
+                    if ipaddress.IPv6Network(rg).subnet_of(parent_prefix)
+                ]  # Filter out any ranges that are not subnets of the parent prefix
 
-            prefixes = parent_prefix.subnets(new_prefix=ipv6_prefix_length)
-            next(prefixes)  # skip first
-            for candidate in prefixes:
-                if candidate not in parsed_ranges:
-                    range6 = candidate
-                    break
-            if range6 is None:
-                logger.error(f"No IPv6 range available for public key {pubkey}.")
-                return None, None, []
-            else:
-                logger.info(
-                    f"No existing IPv6 range found for public key {pubkey}, assigning {range6}"
-                )
+                prefixes = parent_prefix.subnets(new_prefix=ipv6_prefix_length)
+                next(prefixes)  # skip first
+                for candidate in prefixes:
+                    if candidate not in parsed_ranges:
+                        range6 = candidate
+                        break
+                if range6 is None:
+                    logger.error(f"No IPv6 range available for public key {pubkey}.")
+                    return None, None, []
+                else:
+                    logger.info(
+                        f"No existing IPv6 range found for public key {pubkey}, assigning {range6}"
+                    )
 
-            ranges[pubkey] = str(range6)
-            with open(FILE_PATH, "w", encoding="utf-8") as f:
-                json.dump({"parent_prefix": str(parent_prefix), "ranges": ranges}, f)
+                ranges[pubkey] = str(range6)
+                with open(FILE_PATH, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {"parent_prefix": str(parent_prefix), "ranges": ranges}, f
+                    )
 
-        return None, ipaddress.IPv6Network(range6), []
+            return None, ipaddress.IPv6Network(range6), []
 
     def release_prefix(self, pubkey: str) -> None:
         raise NotImplementedError
