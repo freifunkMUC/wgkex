@@ -671,14 +671,18 @@ def handle_mqtt_message_broker_status(
                 f"Broker marked online: {broker}, {len(active_brokers) + 1} brokers online"
             )
         active_brokers.add(broker)
-        if config.get_config().parker.enabled:
-            parker_active_brokers.add(broker)
+        # Parker membership is only added via the Parker alias announce:
+        # a broker announcing on the legacy topic is not necessarily
+        # Parker-capable (e.g. during a staged rollout).
     else:
         if broker in active_brokers:
             logger.info(
                 f"Broker marked offline: {broker}, {len(active_brokers) - 1} brokers online"
             )
             active_brokers.discard(broker)
+        # The retained legacy status and its last will are the canonical
+        # liveness source, so an offline announcement also clears the
+        # broker's Parker alias membership.
         if config.get_config().parker.enabled:
             parker_active_brokers.discard(broker)
 
