@@ -155,8 +155,6 @@ class WorkerMetricsCollection:
                     id=0, weight=1, pop=""
                 )
 
-                print(worker_cfg)
-
                 if worker_cfg.pop != pop:
                     continue
 
