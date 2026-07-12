@@ -511,6 +511,31 @@ class TestBrokerApp(unittest.TestCase):
         )
         self.assertNotIn("broker", self.broker_app.parker_active_brokers)
 
+    def test_metric_and_status_handlers_ignore_invalid_payloads(self):
+        self.broker_app.handle_mqtt_message_metrics(
+            None,
+            b"",
+            _message(f"wireguard-metrics/{_DOMAIN}/worker/connected_peers", b""),
+        )
+        self.assertNotIn("worker", self.broker_app.worker_metrics.data)
+        self.broker_app.handle_mqtt_message_parker_metrics(
+            None,
+            b"",
+            _message("parker/wireguard-metrics/worker/connected_peers", b"invalid"),
+        )
+        self.assertNotIn("worker", self.broker_app.parker_worker_metrics.data)
+
+        with mock.patch.object(self.broker_app.worker_metrics, "get") as get:
+            self.broker_app.handle_mqtt_message_status(
+                None, b"", _message("wireguard-worker/worker/status", b"")
+            )
+        get.assert_not_called()
+        with mock.patch.object(self.broker_app.parker_worker_metrics, "get") as get:
+            self.broker_app.handle_mqtt_message_parker_status(
+                None, b"", _message("parker/wireguard-worker/worker/status", b"invalid")
+            )
+        get.assert_not_called()
+
     def test_shutdown_still_exits_when_publish_fails(self):
         with (
             mock.patch.object(

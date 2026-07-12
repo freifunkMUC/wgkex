@@ -512,7 +512,17 @@ def handle_mqtt_message_metrics(
         logger.error("Ignored MQTT message with empty worker or metrics label")
         return
 
-    data = int(message.payload)
+    try:
+        data = int(message.payload)
+    except Exception:
+        logger.error(
+            "Invalid metrics payload for %s/%s/%s: %s",
+            worker,
+            domain,
+            metric,
+            message.payload,
+        )
+        return
 
     logger.info(f"Update worker metrics: {metric} on {worker}/{domain} = {data}")
     worker_metrics.update(worker, domain, metric, data)
@@ -532,7 +542,13 @@ def handle_mqtt_message_parker_metrics(
         logger.error("Ignored MQTT message with empty worker or metrics label")
         return
 
-    data = int(message.payload)
+    try:
+        data = int(message.payload)
+    except Exception:
+        logger.error(
+            "Invalid metrics payload for %s/%s: %s", worker, metric, message.payload
+        )
+        return
 
     logger.info(f"Update Parker worker metrics: {metric} on {worker} = {data}")
     parker_worker_metrics.update(worker, "parker", metric, data)
@@ -545,7 +561,13 @@ def handle_mqtt_message_status(
     """Processes status messages from workers."""
     _, worker, _ = message.topic.split("/", 2)
 
-    status = int(message.payload)
+    try:
+        status = int(message.payload)
+    except Exception:
+        logger.error(
+            "Invalid worker status payload for %s: %s", worker, message.payload
+        )
+        return
     if status < 1 and worker_metrics.get(worker).is_online():
         logger.warning(f"Marking worker as offline: {worker}")
         worker_metrics.set_offline(worker)
@@ -561,7 +583,13 @@ def handle_mqtt_message_parker_status(
     """Processes status messages from workers."""
     _, _, worker, _ = message.topic.split("/", 3)
 
-    status = int(message.payload)
+    try:
+        status = int(message.payload)
+    except Exception:
+        logger.error(
+            "Invalid worker status payload for %s: %s", worker, message.payload
+        )
+        return
     if status < 1 and parker_worker_metrics.get(worker).is_online():
         logger.warning(f"Marking Parker worker as offline: {worker}")
         parker_worker_metrics.set_offline(worker)
