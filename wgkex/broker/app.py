@@ -97,9 +97,8 @@ def _load_parker_ipam() -> Optional[ParkerIPAM]:
         case config.Parker.IPAM.NETBOX:
             netbox_cfg = config.get_config().netbox
             if netbox_cfg is None:
-                # This should not happen due to earlier config validation
-                raise Exception(
-                    "Missing config for NetBox IPAM. This is also a config parser bug, please report."
+                raise ValueError(
+                    "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
                 )
 
             ipam = NetboxIPAM(

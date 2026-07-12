@@ -194,18 +194,20 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             config.Parker.from_dict(parker)
 
-    def test_parker_config_requires_signing_and_netbox_credentials(self):
+    def test_parker_config_without_broker_credentials_parses(self):
+        """broker_signing_key and netbox are broker-only settings; a worker
+        sharing the parker section must be able to load its config without
+        them."""
         cfg = _config_dict()
         cfg["parker"] = _parker_dict()
-        with self.assertRaisesRegex(ValueError, "broker_signing_key"):
-            config.Config.from_dict(cfg)
+        parsed = config.Config.from_dict(cfg)
+        self.assertTrue(parsed.parker.enabled)
+        self.assertIsNone(parsed.broker_signing_key)
+        self.assertIsNone(parsed.netbox)
 
         cfg["broker_signing_key"] = "key"
         cfg["parker"]["ipam"] = "netbox"
         cfg["parker"]["prefixes"]["ipv6"]["netbox_filter"] = {"role": "wgkex"}
-        with self.assertRaisesRegex(ValueError, "no netbox config"):
-            config.Config.from_dict(cfg)
-
         cfg["netbox"] = {"url": "https://netbox", "api_key": "token"}
         parsed = config.Config.from_dict(cfg)
         self.assertEqual(parsed.netbox.url, "https://netbox")
