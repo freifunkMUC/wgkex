@@ -84,5 +84,16 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
        "//wgkex/common:logger",
+       ":netlink",
     ],
+)
+
+py_test(
+    name = "msg_queue_test",
+    srcs = ["msg_queue_test.py"],
+    deps = [
+       ":msg_queue",
+       requirement("mock"),
+    ],
+    size="small",
 )

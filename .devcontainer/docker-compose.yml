@@ -15,6 +15,9 @@ services:
       - pip-cache:/root/.cache/pip
       - docker-cache:/var/lib/docker
 
+    cap_add:
+      - NET_ADMIN
+
     # Uncomment the next four lines if you will use a ptrace-based debugger like C++, Go, and Rust.
     # cap_add:
     #   - SYS_PTRACE

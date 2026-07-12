@@ -89,6 +89,27 @@ class TestConfig(unittest.TestCase):
             with self.assertRaises(ValueError):
                 config.get_config()
 
+    def test_parker_ipv6_prefix_length_must_contain_two_64s(self):
+        for prefix_length in (-1, 64, 128, "invalid"):
+            with self.subTest(prefix_length=prefix_length):
+                mock_open = mock.mock_open(
+                    read_data=_VALID_CFG
+                    + "\nparker:\n"
+                    + "  enabled: true\n"
+                    + "  ipam: json\n"
+                    + "  464xlat: true\n"
+                    + "  prefixes:\n"
+                    + "    ipv4:\n"
+                    + "      clat_subnet: 10.80.96.0/22\n"
+                    + "    ipv6:\n"
+                    + f"      length: {prefix_length}\n"
+                    + "broker_signing_key: asdfasdfasdf"
+                )
+                with mock.patch("builtins.open", mock_open):
+                    with self.assertRaises(ValueError):
+                        config.get_config()
+                config._parsed_config = None
+
 
 if __name__ == "__main__":
     unittest.main()

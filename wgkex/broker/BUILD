@@ -13,6 +13,15 @@ py_library(
 )
 
 py_test(
+    name="ipam_json_test",
+    srcs=["ipam_json_test.py"],
+    deps = [
+       "//wgkex/broker:ipam",
+    ],
+    size="small",
+)
+
+py_test(
     name="ipam_netbox_test",
     srcs=["ipam_netbox_test.py"],
     deps = [
@@ -62,6 +71,19 @@ py_test(
        "//wgkex/config:config",
        requirement("mock"),
        requirement("paho-mqtt"),
+    ],
+    size="small",
+)
+
+py_test(
+    name="startup_test",
+    srcs=["startup_test.py"],
+    deps = [
+       "//wgkex/broker:app",
+       "//wgkex/broker:parker",
+       "//wgkex/config:config",
+       requirement("flask-mqtt"),
+       requirement("mock"),
     ],
     size="small",
 )
