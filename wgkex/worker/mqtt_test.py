@@ -144,6 +144,27 @@ class MQTTTest(unittest.TestCase):
             ]
         )
 
+        # A missing wg-nodes interface must not raise into paho's loop; the
+        # worker skips the data publication but still subscribes and goes
+        # online.
+        mqtt_client_mock.reset_mock()
+        get_device_data_mock.side_effect = ValueError("no such device")
+
+        mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+
+        mqtt_client_mock.assert_has_calls(
+            [
+                mock.call().subscribe("parker/wireguard/+"),
+                mock.call().publish(
+                    f"parker/wireguard-worker/{hostname}/status", 1, qos=1, retain=True
+                ),
+            ]
+        )
+        published_topics = [
+            call.args[0] for call in mqtt_client_mock.return_value.publish.mock_calls
+        ]
+        self.assertNotIn(f"parker/wireguard-worker/{hostname}/data", published_topics)
+
     @mock.patch.object(mqtt, "get_config")
     @mock.patch.object(mqtt, "get_connected_peers_count")
     def test_publish_metrics_loop_success(self, conn_peers_mock, config_mock):
