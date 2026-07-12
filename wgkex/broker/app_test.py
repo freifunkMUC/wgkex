@@ -402,6 +402,15 @@ class TestBrokerApp(unittest.TestCase):
                 "Port": 51820,
                 "PublicKey": "gateway-key",
             }
+            # An unconfigured worker must not be used as emergency fallback:
+            # its concentrator ID would not be unique or stable.
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+            self.assertEqual(response.status_code, 400)
+
+            # A configured worker is used as fallback with its configured ID.
+            cfg.workers = config.Workers.from_dict({"worker": {"id": 7}}, 10)
             with mock.patch.object(
                 self.broker_app, "sign_response", return_value=b"signature"
             ):
@@ -410,7 +419,7 @@ class TestBrokerApp(unittest.TestCase):
                 )
             self.assertEqual(response.status_code, 200)
             payload = json.loads(response.data.split(b"\n", 1)[0])
-            self.assertEqual(payload["concentrators"][0]["id"], 0)
+            self.assertEqual(payload["concentrators"][0]["id"], 7)
 
             self.broker_app.parker_worker_data.clear()
             with mock.patch.object(
