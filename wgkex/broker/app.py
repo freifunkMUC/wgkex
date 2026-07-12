@@ -296,6 +296,25 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
                 "message": "No IPv6 range available for this public key. Please try again later."
             }
         }, 500
+
+    # The IPAM may return a pre-existing prefix whose length doesn't match the
+    # configured one (e.g. after a config change). We need at least two /64s below.
+    expected_length = config.get_config().parker.prefixes.ipv6.length
+    if full_range6.prefixlen != expected_length:
+        logger.error(
+            "IPv6 prefix %s for public key %s has length /%s, but /%s is configured. "
+            "Fix or delete the prefix in the IPAM.",
+            full_range6,
+            req_data.pubkey,
+            full_range6.prefixlen,
+            expected_length,
+        )
+        return {
+            "error": {
+                "message": "Internal error with the allocated IP range. Please contact the operator."
+            }
+        }, 500
+
     ranges = full_range6.subnets(new_prefix=64)
     range6 = next(ranges)
     xlat_range6 = next(ranges)
