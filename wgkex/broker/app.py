@@ -331,21 +331,27 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     domain = "parker"
 
     selected_workers = parker_worker_metrics.get_best_workers(
-        domain, old_selected_concentrators
+        domain, old_selected_concentrators, require_configured=True
     )
 
     if len(selected_workers) == 0:
         logger.error("No worker online for Parker network")
-        if len(parker_worker_data) > 0:
-            # Emergency mode - try to randomly select one for which we still have connection data cached
-            fallback_name = random.choice(list(parker_worker_data.keys()))
-            # Use the configured worker ID: the ID identifies the tunnel on the node,
-            # so it must not change depending on how the concentrator was selected
+        # Emergency mode - try to randomly select one for which we still have
+        # connection data cached. Only workers with a config entry qualify:
+        # the ID identifies the tunnel on the node, so it must be unique and
+        # stable, which requires an explicitly configured worker ID.
+        fallback_candidates = [
+            name
+            for name in parker_worker_data
+            if config.get_config().workers.get(name) is not None
+        ]
+        if fallback_candidates:
+            fallback_name = random.choice(fallback_candidates)
             fallback_cfg = config.get_config().workers.get(fallback_name)
             selected_workers.append(
                 WorkerResult(
                     name=fallback_name,
-                    id=fallback_cfg.id if fallback_cfg else 0,
+                    id=fallback_cfg.id,
                     diff=0,
                     peers=0,
                     target=0,

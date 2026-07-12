@@ -121,9 +121,18 @@ class WorkerMetricsCollection:
         return (worker.name, worker.diff, worker.peers)
 
     def get_best_workers(
-        self, domain: str, current_selected_workers: Optional[List[str]]
+        self,
+        domain: str,
+        current_selected_workers: Optional[List[str]],
+        require_configured: bool = False,
     ) -> List[WorkerResult]:
         """Analyzes the metrics and determines the best worker for each PoP that a node should connect to.
+
+        With require_configured, workers that are missing from the workers
+        config are skipped instead of getting a synthetic default config.
+        Parker mode requires this: the worker's id is the concentrator ID
+        identifying the tunnel on the node, so it must be unique and stable,
+        which a synthetic default (id=0 for every unconfigured worker) is not.
 
         If no current_selected_workers is passed (None or empty):
             The best worker is defined as the one with the most number of clients missing
@@ -151,9 +160,14 @@ class WorkerMetricsCollection:
 
             # Map metrics to a list of (target diff, peer count, worker) tuples for online workers
             for wm in self.data.values():
-                worker_cfg = workers_cfg.get(wm.worker) or config.Worker(
-                    id=0, weight=1, pop=""
-                )
+                worker_cfg = workers_cfg.get(wm.worker)
+                if worker_cfg is None:
+                    if require_configured:
+                        logger.warning(
+                            f"Worker {wm.worker} is not in the workers config, skipping"
+                        )
+                        continue
+                    worker_cfg = config.Worker(id=0, weight=1, pop="")
 
                 if worker_cfg.pop != pop:
                     continue

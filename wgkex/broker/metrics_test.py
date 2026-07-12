@@ -85,6 +85,29 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(connected, 19)
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_workers_require_configured_skips_unknown_workers(
+        self, config_mock
+    ):
+        """Verify require_configured only selects workers with a config entry."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict({"1": {"id": 5}}, 25)
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 20)
+        worker_metrics.update("2", "d", "connected_peers", 0)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+
+        results = worker_metrics.get_best_workers("d", [], require_configured=True)
+        self.assertEqual([r.name for r in results], ["1"])
+        self.assertEqual(results[0].id, 5)
+
+        # Without the flag, unconfigured workers stay selectable (legacy mode).
+        results = worker_metrics.get_best_workers("d", [])
+        self.assertIn("2", [r.name for r in results])
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
     def test_get_best_worker_returns_best_imbalanced_domains(self, config_mock):
         """Verify get_best_worker returns the worker with overall least connected clients even if it has more clients on this domain."""
         test_config = mock.MagicMock(spec=config.Config)
