@@ -87,7 +87,7 @@ def clean_up_worker(parker: bool) -> None:
                 thread.start()
     if cleanup_counter < len(domains):
         logger.error(
-            "Not every domain got cleaned. Check domains for missing prefixes",
+            "Not every domain got cleaned. Check domains %s for missing prefixes %s",
             repr(domains),
             repr(prefixes),
         )
