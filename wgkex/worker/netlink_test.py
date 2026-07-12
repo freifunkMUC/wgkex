@@ -30,13 +30,17 @@ _WG_CLIENT_DEL = netlink.WireGuardClient(
 )
 
 
-def _get_peer_mock(public_key, last_handshake_time):
+def _get_peer_mock(public_key, last_handshake_time, has_allowed_ips=True):
     def peer_get_attr(attr: str):
         if attr == "WGPEER_A_LAST_HANDSHAKE_TIME":
             return {"tv_sec": last_handshake_time}
         if attr == "WGPEER_A_PUBLIC_KEY":
             return public_key.encode()
         if attr == "WGPEER_A_ALLOWEDIPS":
+            if not has_allowed_ips:
+                # The kernel omits the attribute for peers without allowed
+                # IPs, in which case get_attr returns None.
+                return None
             return [
                 {
                     "attrs": [
@@ -56,8 +60,8 @@ def _get_peer_mock(public_key, last_handshake_time):
     return peer_mock
 
 
-def _get_wg_mock(public_key, last_handshake_time):
-    peer_mock = _get_peer_mock(public_key, last_handshake_time)
+def _get_wg_mock(public_key, last_handshake_time, has_allowed_ips=True):
+    peer_mock = _get_peer_mock(public_key, last_handshake_time, has_allowed_ips)
 
     def msg_get_attr(attr: str):
         if attr == "WGDEVICE_A_PEERS":
@@ -294,6 +298,20 @@ class NetlinkTest(unittest.TestCase):
 
         self.assertListEqual(
             [("PARKER_PUBLIC_KEY", "2001:db8:ed0:a::/63")],
+            netlink.find_stale_wireguard_clients(True, "wg-nodes"),
+        )
+
+    def test_find_stale_wireguard_clients_parker_stale_peer_without_allowed_ips(self):
+        """Tests that a stale peer without allowed IPs doesn't abort the search."""
+
+        _ = _get_wg_mock(
+            "PARKER_PUBLIC_KEY",
+            int((datetime.now() - timedelta(hours=1)).timestamp()),
+            has_allowed_ips=False,
+        )
+
+        self.assertListEqual(
+            [("PARKER_PUBLIC_KEY", None)],
             netlink.find_stale_wireguard_clients(True, "wg-nodes"),
         )
 
