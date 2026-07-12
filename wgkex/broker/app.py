@@ -332,13 +332,6 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         domain, old_selected_concentrators
     )
 
-    ipam.update_prefix(
-        req_data.pubkey,
-        not config.get_config().parker.xlat,
-        True,
-        [w.name for w in selected_workers],
-    )
-
     if len(selected_workers) == 0:
         logger.error("No worker online for Parker network")
         if len(parker_worker_data) > 0:
@@ -395,6 +388,16 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
                 "id": worker.id,
             }
         )
+
+    # Persist the selection (and refresh last_allocated_on) only after a full
+    # concentrator list has been built, so a failed request doesn't overwrite
+    # the stored selection and break stickyness.
+    ipam.update_prefix(
+        req_data.pubkey,
+        not config.get_config().parker.xlat,
+        True,
+        [w.name for w in selected_workers],
+    )
 
     response = ParkerResponse(
         nonce=req_data.nonce,
