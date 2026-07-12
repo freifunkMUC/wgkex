@@ -167,19 +167,29 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         client.subscribe(topic)
 
         # Publish worker data (WG pubkeys, ports, local addresses)
-        port, public_key, link_address = get_device_data("wg-nodes")
-        data = {
-            "ExternalAddress": own_external_name,
-            "Port": port,
-            "PublicKey": public_key,
-            "LinkAddress": link_address,
-        }
-        client.publish(
-            MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker=_HOSTNAME),
-            json.dumps(data),
-            qos=1,
-            retain=True,
-        )
+        try:
+            port, public_key, link_address = get_device_data("wg-nodes")
+        except Exception as ex:
+            # Don't let the exception escape into paho's network loop, which
+            # would kill the MQTT connection for good.
+            logger.error(
+                "Could not get device data for interface wg-nodes: %s. "
+                "Skipping worker data publication",
+                ex,
+            )
+        else:
+            data = {
+                "ExternalAddress": own_external_name,
+                "Port": port,
+                "PublicKey": public_key,
+                "LinkAddress": link_address,
+            }
+            client.publish(
+                MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker=_HOSTNAME),
+                json.dumps(data),
+                qos=1,
+                retain=True,
+            )
 
     else:
         domains = get_config().domains
