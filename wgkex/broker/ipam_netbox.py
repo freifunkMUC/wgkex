@@ -1,4 +1,5 @@
 import json
+import sys
 from datetime import datetime, timezone
 from ipaddress import IPv4Network, IPv6Network
 from typing import Any, List, Optional, Tuple
@@ -51,12 +52,11 @@ class NetboxIPAM(ParkerIPAM):
 
             self.parent_prefix_v4 = next(prefixes_v4)
 
-    def _get_prefix(
+    def _get_prefixes(
         self,
         pubkey: str,
         addr_family: int,
-    ) -> Optional[pynetbox.models.ipam.Prefixes]:
-        # Look for existing prefixes first
+    ) -> List[pynetbox.models.ipam.Prefixes]:
         # https://netboxlabs.com/docs/netbox/reference/filtering/#string-fields
         candidate_prefixes = self.nb.ipam.prefixes.filter(
             family=addr_family,
@@ -64,6 +64,7 @@ class NetboxIPAM(ParkerIPAM):
             description__ic=pubkey,  # __ic: Contains (case-insensitive)
         )
 
+        matching_prefixes = []
         for candidate in candidate_prefixes:
             try:
                 desc = json.loads(candidate.description)
@@ -77,9 +78,52 @@ class NetboxIPAM(ParkerIPAM):
                 )
                 continue
             if desc.get("pubkey") == pubkey:
-                return candidate
+                matching_prefixes.append(candidate)
 
-        return None
+        return matching_prefixes
+
+    @staticmethod
+    def _prefix_sort_key(prefix: pynetbox.models.ipam.Prefixes) -> Tuple[int, str]:
+        prefix_id = getattr(prefix, "id", None)
+        return (
+            int(prefix_id) if prefix_id is not None else sys.maxsize,
+            str(prefix.prefix),
+        )
+
+    def _deduplicate_prefixes(
+        self,
+        pubkey: str,
+        addr_family: int,
+        allocated_prefix: Optional[pynetbox.models.ipam.Prefixes] = None,
+    ) -> Optional[pynetbox.models.ipam.Prefixes]:
+        candidates = self._get_prefixes(pubkey, addr_family)
+        if allocated_prefix is not None and not any(
+            getattr(candidate, "id", None) == getattr(allocated_prefix, "id", None)
+            for candidate in candidates
+        ):
+            candidates.append(allocated_prefix)
+        if not candidates:
+            return None
+
+        canonical = min(candidates, key=self._prefix_sort_key)
+        for duplicate in candidates:
+            if duplicate is canonical:
+                continue
+            try:
+                if not duplicate.delete():
+                    raise RuntimeError(
+                        f"NetBox refused to release duplicate prefix "
+                        f"{duplicate.prefix} for pubkey {pubkey}"
+                    )
+            except pynetbox.core.query.RequestError as error:
+                if getattr(getattr(error, "req", None), "status_code", None) == 404:
+                    continue
+                raise RuntimeError(
+                    f"Failed to release duplicate prefix {duplicate.prefix} "
+                    f"for pubkey {pubkey}"
+                ) from error
+
+        return canonical
 
     def _get_or_allocate_prefix(
         self,
@@ -91,7 +135,7 @@ class NetboxIPAM(ParkerIPAM):
         prefix: Optional[pynetbox.models.ipam.Prefixes] = None
         selected_concentrators: List[str] = []
 
-        prefix = self._get_prefix(pubkey, addr_family)
+        prefix = self._deduplicate_prefixes(pubkey, addr_family)
 
         if prefix is not None:
             desc = json.loads(prefix.description)
@@ -145,7 +189,20 @@ class NetboxIPAM(ParkerIPAM):
                     res,
                 )
                 return None, []
-            prefix = res
+            prefix = self._deduplicate_prefixes(
+                pubkey, addr_family, allocated_prefix=res
+            )
+            if prefix is None:
+                logger.error(
+                    "Allocated prefix for pubkey %s disappeared during reconciliation",
+                    pubkey,
+                )
+                return None, []
+
+            desc = json.loads(prefix.description)
+            stored_concentrators = desc.get("selected_concentrators", [])
+            if isinstance(stored_concentrators, list):
+                selected_concentrators = stored_concentrators
 
         return prefix, selected_concentrators
 
@@ -213,7 +270,7 @@ class NetboxIPAM(ParkerIPAM):
     def _update_prefix(
         self, pubkey: str, addr_family: int, selected_concentrators: List[str]
     ) -> None:
-        prefix = self._get_prefix(pubkey, addr_family)
+        prefix = self._deduplicate_prefixes(pubkey, addr_family)
 
         if prefix is not None:
             desc = json.loads(prefix.description)

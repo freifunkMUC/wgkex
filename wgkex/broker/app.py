@@ -441,6 +441,7 @@ def _previous_workers(previous: Assignment, domain: str, worker: str) -> list[st
 
 @app.route("/api/v3/wg/key/exchange", methods=["GET"])
 @app.route("/api/v3/config", methods=["GET"])
+@app.route("/config", methods=["GET"])
 def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     if not config.get_config().parker.enabled or ipam is None:
         return {
@@ -486,6 +487,16 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         return {
             "error": {
                 "message": "No IPv6 range available for this public key. Please try again later."
+            }
+        }, 500
+    if full_range6.prefixlen > 63:
+        logger.error(
+            "Allocated IPv6 range %s is too small for Parker's two /64 networks",
+            full_range6,
+        )
+        return {
+            "error": {
+                "message": "Allocated IPv6 range is invalid. Please try again later."
             }
         }, 500
     ranges = full_range6.subnets(new_prefix=64)
@@ -557,7 +568,9 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             {
                 "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
                 "address6": w_data.get("LinkAddress"),
-                "endpoint": f"{w_data.get('ExternalAddress')}:{str(w_data.get('Port'))}",
+                "endpoint": join_host_port(
+                    str(w_data.get("ExternalAddress")), str(w_data.get("Port"))
+                ),
                 "pubkey": w_data.get("PublicKey"),  # type: ignore
                 "id": worker.id,
             }

@@ -80,7 +80,9 @@ def process_parker_item(item: str) -> None:
         remove=False,
     )
     logger.info(
-        f"Processing queue for key {client.public_key} with range {client.range6}"
+        "Processing queue for key %s with range %s",
+        client.public_key,
+        client.range6,
     )
     logger.debug(link_handler(client))
 

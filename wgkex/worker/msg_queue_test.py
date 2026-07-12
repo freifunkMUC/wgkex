@@ -1,5 +1,6 @@
 """Tests for msg_queue.py"""
 
+import json
 import threading
 import time
 import unittest
@@ -113,6 +114,47 @@ class ProcessBatchTest(unittest.TestCase):
             thread.join(2)
         self.assertFalse(thread.is_alive())
         self.assertEqual([PeerOp("d", "k")], results)
+
+
+class ParkerProcessBatchTest(unittest.TestCase):
+    def setUp(self):
+        self.q = UniqueQueue()
+        patcher = mock.patch.object(msg_queue, "q", self.q)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @mock.patch.object(msg_queue, "link_handler")
+    def test_bad_item_does_not_stop_processing_or_break_accounting(self, link_handler):
+        self.q.put("{malformed")
+        self.q.put("[]")
+        self.q.put(
+            json.dumps(
+                {
+                    "PublicKey": "valid-key",
+                    "Range6": "2001:db8::/63",
+                    "Keepalive": 25,
+                }
+            )
+        )
+
+        self.assertEqual(3, msg_queue.process_batch(timeout=0))
+
+        self.assertEqual(self.q.unfinished_tasks, 0)
+        self.assertEqual(link_handler.call_count, 1)
+        self.assertEqual(link_handler.call_args.args[0].public_key, "valid-key")
+
+    @mock.patch.object(
+        msg_queue, "link_handler", side_effect=[RuntimeError("netlink failed"), {}]
+    )
+    def test_netlink_failure_does_not_stop_following_item(self, link_handler):
+        self.q.put(PeerOp("domain", "first-key"))
+        self.q.put(PeerOp("domain", "second-key"))
+
+        self.assertEqual(2, msg_queue.process_batch(timeout=0))
+
+        self.assertEqual(self.q.unfinished_tasks, 0)
+        self.assertEqual(link_handler.call_count, 2)
+        self.assertEqual(link_handler.call_args.args[0].public_key, "second-key")
 
 
 if __name__ == "__main__":

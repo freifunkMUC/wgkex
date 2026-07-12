@@ -90,7 +90,9 @@ def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
     return (keytype, privkey, fingerprint_bytes)
 
 
-get_private_key()  # Ensure the private key is loaded at startup, and throws an error if it is invalid
+if config.get_config().parker.enabled:
+    # Validate the signing key at startup only when response signing is enabled.
+    get_private_key()
 
 
 def sign_response(data: bytes) -> bytes:

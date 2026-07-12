@@ -16,8 +16,15 @@ interface_linklocal() {
 sysctl -w net.ipv6.conf.all.addr_gen_mode=1
 
 for iface in wg-nodes wg-welt; do
-    # TODO userspace WireGuard can't be accessed using netlink by worker
-    wireguard-go $iface
+    if ip link show dev "$iface" >/dev/null 2>&1; then
+        if ! ip -details link show dev "$iface" | grep -qw wireguard; then
+            echo "Existing interface $iface is not a kernel WireGuard interface; the wgkex worker cannot manage it through generic netlink." >&2
+            exit 1
+        fi
+    elif ! ip link add dev "$iface" type wireguard; then
+        echo "Kernel WireGuard is unavailable. The wgkex worker requires host kernel WireGuard support and NET_ADMIN; userspace wireguard-go interfaces are not supported." >&2
+        exit 1
+    fi
     wg genkey | wg set $iface private-key /dev/stdin
     addr=$(interface_linklocal $(wg show $iface public-key))
     ip addr add $addr dev $iface

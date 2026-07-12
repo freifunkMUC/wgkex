@@ -1,6 +1,9 @@
 import ipaddress
+import json
 import mock
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 from wgkex.broker.ipam_netbox import NetboxIPAM
 from wgkex.config import config
@@ -51,6 +54,8 @@ def _mocked_netbox_response(*args, **kwargs):
                 status_code=200,
                 json_data={
                     "count": 1,
+                    "next": None,
+                    "previous": None,
                     "results": [
                         {
                             "id": 1,
@@ -70,6 +75,8 @@ def _mocked_netbox_response(*args, **kwargs):
                 status_code=200,
                 json_data={
                     "count": 1,
+                    "next": None,
+                    "previous": None,
                     "results": [
                         {
                             "id": 2,
@@ -140,6 +147,104 @@ class TestNetboxIPAM(unittest.TestCase):
             params=mock.ANY,
             json=mock.ANY,
         )
+
+    def test_concurrent_same_pubkey_allocations_converge_and_release_duplicate(self):
+        class FakePrefix:
+            def __init__(self, backend, prefix_id, prefix):
+                self.backend = backend
+                self.id = prefix_id
+                self.prefix = prefix
+                self.description = json.dumps(
+                    {
+                        "pubkey": "race-pubkey",
+                        "selected_concentrators": ["worker-a"],
+                    }
+                )
+
+            def delete(self):
+                with self.backend.lock:
+                    if self in self.backend.prefixes:
+                        self.backend.prefixes.remove(self)
+                return True
+
+        class SharedBackend:
+            def __init__(self):
+                self.lock = threading.Lock()
+                self.initial_lookup = threading.Barrier(2)
+                self.allocations = threading.Barrier(2)
+                self.prefixes = []
+                self.lookup_count = 0
+
+            def filter(self, **kwargs):
+                with self.lock:
+                    self.lookup_count += 1
+                    lookup_number = self.lookup_count
+                if lookup_number <= 2:
+                    self.initial_lookup.wait(timeout=5)
+                    return []
+                with self.lock:
+                    return list(self.prefixes)
+
+            def create(self, data):
+                with self.lock:
+                    prefix_id = len(self.prefixes) + 10
+                    prefix = FakePrefix(
+                        self,
+                        prefix_id,
+                        f"2001:db8:99:{(prefix_id - 10) * 2:x}::/63",
+                    )
+                    self.prefixes.append(prefix)
+                self.allocations.wait(timeout=5)
+                return prefix
+
+        backend = SharedBackend()
+
+        def make_ipam():
+            ipam = object.__new__(NetboxIPAM)
+            ipam.parent_prefix_v6 = mock.MagicMock(prefix="2001:db8:99::/48")
+            ipam.parent_prefix_v6.available_prefixes.create = backend.create
+            ipam.nb = mock.MagicMock()
+            ipam.nb.ipam.prefixes.filter = backend.filter
+            return ipam
+
+        def allocate(ipam):
+            return ipam._get_or_allocate_prefix("race-pubkey", 6, 63, None)
+
+        with (
+            mock.patch(
+                "wgkex.broker.ipam_netbox.pynetbox.models.ipam.Prefixes", FakePrefix
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            results = list(executor.map(allocate, [make_ipam(), make_ipam()]))
+
+        self.assertEqual([result[0].id for result in results], [10, 10])
+        self.assertEqual(
+            [result[1] for result in results],
+            [["worker-a"], ["worker-a"]],
+        )
+        self.assertEqual([prefix.id for prefix in backend.prefixes], [10])
+
+    def test_duplicate_release_failure_does_not_report_convergence(self):
+        canonical = mock.MagicMock(
+            id=10,
+            prefix="2001:db8:99::/63",
+            description='{"pubkey": "pubkey"}',
+        )
+        duplicate = mock.MagicMock(
+            id=11,
+            prefix="2001:db8:99:2::/63",
+            description='{"pubkey": "pubkey"}',
+        )
+        duplicate.delete.return_value = False
+
+        with mock.patch.object(
+            self.ipam,
+            "_get_prefixes",
+            return_value=[canonical, duplicate],
+        ):
+            with self.assertRaises(RuntimeError):
+                self.ipam._deduplicate_prefixes("pubkey", 6)
 
 
 if __name__ == "__main__":

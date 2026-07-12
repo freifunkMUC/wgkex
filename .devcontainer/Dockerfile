@@ -5,7 +5,6 @@ RUN git clone --single-branch --branch release https://github.com/netbox-communi
 
 RUN apt-get update && \
     apt-get install -yq --no-install-recommends \
-    wireguard-go \
     wireguard-tools && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
