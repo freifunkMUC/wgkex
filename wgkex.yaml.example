@@ -16,15 +16,23 @@ domain_prefixes:
 # [broker] The dict of workers mapping their hostname to their respective weight (for weighted peer distribution) and PoP (for multi-tunnel support, esp. in Parker)
 workers:
   gw04.in.ffmuc.net:
+    # A unique, static ID for this worker. In Parker mode it is the concentrator ID sent to
+    # nodes, identifying the tunnel on the node, so it must never change for a given worker.
+    # If omitted it defaults to the position in this map, which shifts when workers are
+    # added or removed - set it explicitly in production.
+    id: 1
     weight: 30
     pop: vie01
   gw05.in.ffmuc.net:
+    id: 2
     weight: 30
     pop: vie01
   gw06.in.ffmuc.net:
+    id: 3
     weight: 20
     pop: muc01
   gw07.in.ffmuc.net:
+    id: 4
     weight: 20
     pop: muc01
 # [broker] how much peers above the target value a worker may have (in percent rel. to the target value) to let clients stick to their current worker.
