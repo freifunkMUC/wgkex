@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import multiprocessing
 import os
@@ -48,6 +49,29 @@ class TestJSONFileIPAM(unittest.TestCase):
                     "pubkey-a": str(first_prefix),
                     "pubkey-b": str(second_prefix),
                 },
+            )
+
+    def test_allocation_avoids_overlap_with_differently_sized_ranges(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            with open(storage_path, "w", encoding="utf-8") as ranges_file:
+                json.dump(
+                    {
+                        "parent_prefix": "2001:db8:ed0::/56",
+                        # Stored with a different length than the requested
+                        # /63, e.g. after a config change.
+                        "ranges": {"pubkey-a": "2001:db8:ed0:2::/64"},
+                    },
+                    ranges_file,
+                )
+
+            _, new_prefix, _ = JSONFileIPAM(storage_path).get_or_allocate_prefix(
+                "pubkey-b", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+
+            self.assertIsNotNone(new_prefix)
+            self.assertFalse(
+                new_prefix.overlaps(ipaddress.IPv6Network("2001:db8:ed0:2::/64"))
             )
 
     def test_invalid_json_is_reported_without_overwriting_storage(self):
