@@ -410,17 +410,11 @@ class Config:
         parker = Parker.from_dict(cfg.get("parker", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
 
-        if parker.enabled and broker_signing_key is None:
-            raise ValueError(
-                "Parker is enabled, but no broker_signing_key is set in the config file"
-            )
-
+        # broker_signing_key and netbox are broker-only settings, but the
+        # parker section is shared with workers, so their presence is
+        # enforced by the broker (signer.py / _load_parker_ipam), not here.
         netbox_cfg = None
-        if parker.enabled and parker.ipam == Parker.IPAM.NETBOX:
-            if "netbox" not in cfg or not isinstance(cfg["netbox"], dict):
-                raise ValueError(
-                    "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
-                )
+        if isinstance(cfg.get("netbox"), dict):
             netbox_cfg = Netbox.from_dict(cfg["netbox"])
 
         return cls(

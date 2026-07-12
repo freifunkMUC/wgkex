@@ -216,7 +216,7 @@ class TestBrokerApp(unittest.TestCase):
         cfg.netbox = None
         with (
             mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
-            self.assertRaisesRegex(Exception, "Missing config for NetBox"),
+            self.assertRaisesRegex(ValueError, "no netbox config"),
         ):
             self.broker_app._load_parker_ipam()
 
