@@ -21,6 +21,7 @@ class NetboxIPAM(ParkerIPAM):
     def __init__(self, api_url, token, xlat: bool = False) -> None:
         self.nb = pynetbox.api(api_url, token=token)
         self.xlat = xlat
+        self.parent_prefix_v4 = None
 
         v6_filter: dict[str, Any] = (
             config.get_config().parker.prefixes.ipv6.netbox_filter or {}
@@ -51,6 +52,14 @@ class NetboxIPAM(ParkerIPAM):
 
             self.parent_prefix_v4 = next(prefixes_v4)
 
+    def _parent_prefix(self, addr_family: int) -> pynetbox.models.ipam.Prefixes:
+        """Returns the parent prefix for the given address family."""
+        if addr_family == 4:
+            if self.parent_prefix_v4 is None:
+                raise ValueError("No parent IPv4 prefix loaded (464XLAT mode enabled?)")
+            return self.parent_prefix_v4
+        return self.parent_prefix_v6
+
     def _get_prefix(
         self,
         pubkey: str,
@@ -60,7 +69,7 @@ class NetboxIPAM(ParkerIPAM):
         # https://netboxlabs.com/docs/netbox/reference/filtering/#string-fields
         candidate_prefixes = self.nb.ipam.prefixes.filter(
             family=addr_family,
-            within=self.parent_prefix_v6.prefix,
+            within=self._parent_prefix(addr_family).prefix,
             description__ic=pubkey,  # __ic: Contains (case-insensitive)
         )
 
@@ -122,7 +131,7 @@ class NetboxIPAM(ParkerIPAM):
             # Allocates a new free prefix in a concurrency-safe manner (handled by NetBox)
             # TODO: allow specifying a custom field to write this data into instead
             try:
-                res = self.parent_prefix_v6.available_prefixes.create(
+                res = self._parent_prefix(addr_family).available_prefixes.create(
                     {
                         "prefix_length": prefix_length,
                         "description": description,
