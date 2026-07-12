@@ -119,6 +119,68 @@ class AppTest(unittest.TestCase):
         self.assertTrue(thread.is_alive())
         # If Python would allow it without writing custom signalling, this would be the place to stop the thread again
 
+    @mock.patch.object(app.threading, "Thread")
+    def test_cleanup_schedules_parker_and_legacy_domains(self, thread):
+        app.clean_up_worker(True)
+        thread.assert_called_once_with(
+            target=app.flush_workers, args=(True, "parker"), daemon=True
+        )
+        thread.return_value.start.assert_called_once()
+
+        thread.reset_mock()
+        with mock.patch.object(
+            app.config,
+            "get_config",
+            return_value=_get_config_mock(
+                domains=["_TEST_PREFIX_domain.one", "unmatched"]
+            ),
+        ):
+            app.clean_up_worker(False)
+        thread.assert_called_once_with(
+            target=app.flush_workers, args=(False, "domain.one"), daemon=True
+        )
+        thread.return_value.start.assert_called_once()
+
+    @mock.patch.object(app.config, "get_config")
+    def test_main_parker_registers_shutdown_and_starts_components(self, config_mock):
+        config_mock.return_value = _get_config_mock(parker=mock.MagicMock(enabled=True))
+        callbacks = []
+        with (
+            mock.patch.object(
+                app.signal,
+                "signal",
+                side_effect=lambda _, callback: callbacks.append(callback),
+            ),
+            mock.patch.object(app, "clean_up_worker") as cleanup,
+            mock.patch.object(app, "watch_queue") as watch_queue,
+            mock.patch.object(app.mqtt, "connect") as connect,
+        ):
+            app.main()
+
+        cleanup.assert_called_once_with(True)
+        watch_queue.assert_called_once_with(True)
+        connect.assert_called_once()
+        self.assertEqual(len(callbacks), 2)
+
+        with (
+            mock.patch.object(app.time, "sleep") as sleep,
+            mock.patch.object(app.sys, "exit") as exit_process,
+        ):
+            callbacks[0](app.signal.SIGINT, None)
+        sleep.assert_called_once_with(2)
+        exit_process.assert_called_once()
+
+    @mock.patch.object(app.config, "get_config")
+    def test_main_rejects_duplicate_stripped_domains(self, config_mock):
+        config_mock.return_value = _get_config_mock(
+            domains=["_TEST_PREFIX_same", "_TEST_PREFIX2_same"]
+        )
+        with (
+            mock.patch.object(app.signal, "signal"),
+            self.assertRaises(app.DomainsAreNotUnique),
+        ):
+            app.main()
+
 
 if __name__ == "__main__":
     unittest.main()
