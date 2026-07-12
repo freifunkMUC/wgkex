@@ -27,7 +27,11 @@ class Worker:
     """A representation of the values of the 'workers' dict in the configuration file.
 
     Attributes:
-        id: A unique, as-static-as-possible ID for this worker.
+        id: A unique, static ID for this worker. In Parker mode this is the
+            concentrator ID sent to nodes, identifying the tunnel on the node, so it
+            must never change for a given worker. If not set explicitly in the config,
+            it defaults to the worker's position in the workers map - which shifts
+            when workers are added or removed, so set it explicitly in production.
         weight: The relative weight of a worker, defaults to 1.
         pop: The PoP (Point of Presence) this worker is located in
     """
@@ -41,7 +45,7 @@ class Worker:
         return cls(
             weight=int(worker_cfg.get("weight", 1)),
             pop=worker_cfg.get("pop", ""),
-            id=worker_cfg["id"],
+            id=int(worker_cfg["id"]),
         )
 
 
@@ -68,6 +72,12 @@ class Workers:
             key: Worker.from_dict({"id": id, **value})
             for (id, (key, value)) in enumerate(workers_cfg.items(), start=1)
         }
+
+        ids = [worker.id for worker in d.values()]
+        if len(set(ids)) != len(ids):
+            raise ValueError(
+                "Worker IDs must be unique. Set explicit unique 'id' values in the workers config."
+            )
 
         total = 0
         # add "empty" PoP to set to support dynamically added workers
