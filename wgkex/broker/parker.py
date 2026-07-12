@@ -20,10 +20,8 @@ class ParkerQuery:
     pubkey: str
     nonce: str
 
-    def __init__(self, v6mtu: int, pubkey: str, nonce: str) -> None:
-        self.v6mtu = v6mtu
-        self.pubkey = is_valid_wg_pubkey(pubkey)
-        self.nonce = nonce
+    def __post_init__(self) -> None:
+        self.pubkey = is_valid_wg_pubkey(self.pubkey)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ParkerQuery":
