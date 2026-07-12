@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from typing import Any
+from unittest import mock
 
 from wgkex.broker.ipam_json import JSONFileIPAM
 
@@ -62,6 +63,52 @@ class TestJSONFileIPAM(unittest.TestCase):
 
             with open(storage_path, "r", encoding="utf-8") as ranges_file:
                 self.assertEqual(ranges_file.read(), "{invalid")
+
+    def test_exhausted_parent_prefix_returns_no_allocation(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            with open(storage_path, "w", encoding="utf-8") as ranges_file:
+                json.dump(
+                    {
+                        "parent_prefix": "2001:db8::/126",
+                        "ranges": {"existing": "2001:db8::2/127"},
+                    },
+                    ranges_file,
+                )
+
+            _, prefix, _ = JSONFileIPAM(storage_path).get_or_allocate_prefix(
+                "new-pubkey", ipv4=False, ipv6=True, ipv6_prefix_length=127
+            )
+
+            self.assertIsNone(prefix)
+            with open(storage_path, "r", encoding="utf-8") as ranges_file:
+                self.assertEqual(
+                    json.load(ranges_file)["ranges"],
+                    {"existing": "2001:db8::2/127"},
+                )
+
+    def test_atomic_replace_failure_removes_temporary_file(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            with (
+                mock.patch(
+                    "wgkex.broker.ipam_json.os.replace",
+                    side_effect=OSError("replace failed"),
+                ),
+                self.assertRaisesRegex(OSError, "replace failed"),
+            ):
+                JSONFileIPAM(storage_path).get_or_allocate_prefix(
+                    "pubkey", ipv4=False, ipv6=True, ipv6_prefix_length=63
+                )
+
+            self.assertEqual(
+                [
+                    name
+                    for name in os.listdir(temporary_dir)
+                    if name.startswith(".ipv6_ranges.")
+                ],
+                [],
+            )
 
     def test_concurrent_processes_allocate_distinct_persistent_prefixes(self):
         context = multiprocessing.get_context("fork")

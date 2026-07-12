@@ -192,12 +192,6 @@ class NetboxIPAM(ParkerIPAM):
             prefix = self._deduplicate_prefixes(
                 pubkey, addr_family, allocated_prefix=res
             )
-            if prefix is None:
-                logger.error(
-                    "Allocated prefix for pubkey %s disappeared during reconciliation",
-                    pubkey,
-                )
-                return None, []
 
             desc = json.loads(prefix.description)
             stored_concentrators = desc.get("selected_concentrators", [])

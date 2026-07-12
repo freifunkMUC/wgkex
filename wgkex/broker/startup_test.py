@@ -46,6 +46,28 @@ class TestBrokerStartup(unittest.TestCase):
         self.assertFalse(config.get_config().parker.enabled)
         self.assertIsNone(broker_app.ipam)
 
+    def test_parker_startup_eagerly_rejects_invalid_signing_key(self):
+        config._parsed_config = config.Config.from_dict(
+            {
+                "parker": {
+                    "enabled": True,
+                    "464xlat": True,
+                    "ipam": "json",
+                    "prefixes": {
+                        "ipv4": {"clat_subnet": "10.80.96.0/22"},
+                        "ipv6": {"length": 63},
+                    },
+                },
+                "broker_signing_key": "YQ==",
+                "domains": [],
+                "domain_prefixes": [],
+                "mqtt": {"broker_url": "", "username": "", "password": ""},
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "Invalid private key length"):
+            importlib.import_module("wgkex.broker.signer")
+
 
 if __name__ == "__main__":
     unittest.main()
