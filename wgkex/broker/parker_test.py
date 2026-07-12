@@ -323,7 +323,12 @@ class TestParker(unittest.TestCase):
         msg.payload = b"1"
         broker_app.handle_mqtt_message_broker_status(None, None, msg)
         self.assertIn("broker1", broker_app.active_brokers)
-        self.assertIn("broker1", broker_app.parker_active_brokers)
+        # A legacy announce must not count the broker as Parker-capable.
+        self.assertNotIn("broker1", broker_app.parker_active_brokers)
+
+        # An offline legacy announce (the canonical liveness source) clears
+        # the Parker alias membership too.
+        broker_app.parker_active_brokers.add("broker1")
         msg.payload = b"0"
         broker_app.handle_mqtt_message_broker_status(None, None, msg)
         self.assertNotIn("broker1", broker_app.active_brokers)
