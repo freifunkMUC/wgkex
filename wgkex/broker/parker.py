@@ -88,19 +88,23 @@ class ParkerResponse:
     # this module is also imported by brokers running with Parker disabled, where
     # the parker config section is empty.
     range4: str = dataclasses.field(
-        default_factory=lambda: config.get_config().parker.prefixes.ipv4.clat_subnet
-    )
-    address4: str = dataclasses.field(
-        default_factory=lambda: str(
-            ipaddress.IPv4Network(
-                config.get_config().parker.prefixes.ipv4.clat_subnet
-            ).network_address
-            + 1
+        default_factory=lambda: (
+            config.get_config().parker.prefixes.ipv4.clat_subnet
+            or _missing_clat_subnet()
         )
     )
+    address4: str = ""
     wg_keepalive: int = dataclasses.field(
         default_factory=lambda: config.get_config().parker.wg_keepalive
     )
     retry: int = dataclasses.field(
         default_factory=lambda: config.get_config().parker.retry_interval
     )
+
+    def __post_init__(self) -> None:
+        if not self.address4:
+            self.address4 = str(ipaddress.IPv4Network(self.range4).network_address + 1)
+
+
+def _missing_clat_subnet() -> str:
+    raise ValueError("Parker 464XLAT requires an IPv4 CLAT subnet")

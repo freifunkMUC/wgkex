@@ -296,6 +296,11 @@ class Parker:
             raise ValueError(
                 "Parker prefixes config must contain 'length' key for 'ipv6' when not using 464xlat"
             )
+        ipv6_prefix_length = int(pfx["ipv6"]["length"])
+        if not 0 <= ipv6_prefix_length <= 63:
+            raise ValueError(
+                "Parker IPv6 allocation prefix length must be between 0 and 63"
+            )
         if ipam == cls.IPAM.NETBOX and (
             "netbox_filter" not in pfx["ipv6"]
             or not isinstance(pfx["ipv6"]["netbox_filter"], dict)
@@ -328,7 +333,7 @@ class Parker:
                     netbox_additional_data=pfx["ipv6"].get(
                         "netbox_additional_data", None
                     ),
-                    length=pfx["ipv6"]["length"],
+                    length=ipv6_prefix_length,
                 ),
             ),
             ipam=ipam,

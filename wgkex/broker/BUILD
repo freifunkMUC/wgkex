@@ -1,4 +1,4 @@
-load("@rules_python//python:defs.bzl", "py_binary", "py_test")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 load("@pip//:requirements.bzl", "requirement")
 
 py_library(
@@ -10,6 +10,29 @@ py_library(
        "//wgkex/config:config",
        requirement("pynetbox"),
     ],
+)
+
+py_test(
+    name="app_test",
+    srcs=["app_test.py"],
+    deps = [
+       "//wgkex/broker:app",
+       "//wgkex/broker:parker",
+       "//wgkex/config:config",
+       requirement("flask-mqtt"),
+       requirement("mock"),
+       requirement("paho-mqtt"),
+    ],
+    size="small",
+)
+
+py_test(
+    name="ipam_json_test",
+    srcs=["ipam_json_test.py"],
+    deps = [
+       "//wgkex/broker:ipam",
+    ],
+    size="small",
 )
 
 py_test(
@@ -59,9 +82,33 @@ py_test(
     deps = [
        "//wgkex/broker:app",
        "//wgkex/broker:parker",
+       "//wgkex/broker:signer",
        "//wgkex/config:config",
        requirement("mock"),
        requirement("paho-mqtt"),
+    ],
+    size="small",
+)
+
+py_test(
+    name="signer_test",
+    srcs=["signer_test.py"],
+    deps = [
+       "//wgkex/broker:signer",
+       "//wgkex/config:config",
+    ],
+    size="small",
+)
+
+py_test(
+    name="startup_test",
+    srcs=["startup_test.py"],
+    deps = [
+       "//wgkex/broker:app",
+       "//wgkex/broker:parker",
+       "//wgkex/config:config",
+       requirement("flask-mqtt"),
+       requirement("mock"),
     ],
     size="small",
 )

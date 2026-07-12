@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import mock
 import sys
@@ -64,6 +65,31 @@ class TestParkerQuery(unittest.TestCase):
         with self.assertRaises(ValueError):
             ParkerQuery.from_dict(data)
 
+    def test_parker_response_requires_clat_subnet_at_construction(self):
+        from wgkex.broker.parker import ParkerResponse
+
+        disabled_config = config.Config.from_dict(
+            {
+                "domains": [],
+                "domain_prefixes": [],
+                "mqtt": {"broker_url": "", "username": "", "password": ""},
+            }
+        )
+        with (
+            mock.patch.object(config, "get_config", return_value=disabled_config),
+            self.assertRaisesRegex(ValueError, "requires an IPv4 CLAT subnet"),
+        ):
+            ParkerResponse(
+                nonce="nonce",
+                time=0,
+                id="pubkey",
+                mtu=1280,
+                concentrators=[],
+                range6="2001:db8::/64",
+                address6="2001:db8::1",
+                xlat_range6="2001:db8:1::/64",
+            )
+
 
 class TestParker(unittest.TestCase):
     @classmethod
@@ -124,7 +150,121 @@ class TestParker(unittest.TestCase):
 
         # Test join_host_port
         self.assertEqual(broker_app.join_host_port("1.2.3.4", "51820"), "1.2.3.4:51820")
+        self.assertEqual(
+            broker_app.join_host_port("worker.example", "51820"),
+            "worker.example:51820",
+        )
         self.assertEqual(broker_app.join_host_port("::1", "51820"), "[::1]:51820")
+
+    def test_config_route_formats_ipv6_endpoint(self):
+        from wgkex.broker import app as broker_app
+        from wgkex.broker.metrics import WorkerResult
+
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/63"),
+            ["worker1"],
+        )
+        worker = WorkerResult(name="worker1", id=1, diff=0, peers=0, target=0)
+        broker_app.parker_worker_data["worker1"] = {
+            "LinkAddress": "fe80::1",
+            "ExternalAddress": "2001:db8::1",
+            "Port": 51820,
+            "PublicKey": "worker-key",
+        }
+
+        query = {
+            "pubkey": "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=",
+            "nonce": "nonce",
+        }
+        for route in ("/config", "/api/v3/config", "/api/v3/wg/key/exchange"):
+            with (
+                self.subTest(route=route),
+                mock.patch.object(broker_app, "ipam", ipam),
+                mock.patch.object(
+                    broker_app.parker_worker_metrics,
+                    "get_best_workers",
+                    return_value=[worker],
+                ),
+                mock.patch.object(
+                    broker_app, "sign_response", return_value=b"signature"
+                ),
+            ):
+                response = broker_app.app.test_client().get(route, query_string=query)
+
+            self.assertEqual(response.status_code, 200)
+            payload = json.loads(response.data.split(b"\n", 1)[0])
+            self.assertEqual(
+                payload["concentrators"][0]["endpoint"], "[2001:db8::1]:51820"
+            )
+        routes = {rule.rule for rule in broker_app.app.url_map.iter_rules()}
+        self.assertIn("/api/v3/config", routes)
+        self.assertIn(
+            "/api/v3/wg/key/exchange",
+            routes,
+        )
+
+    def test_config_route_rejects_prefix_without_two_64s(self):
+        from wgkex.broker import app as broker_app
+
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/64"),
+            [],
+        )
+        query = {
+            "pubkey": "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=",
+            "nonce": "nonce",
+        }
+        with mock.patch.object(broker_app, "ipam", ipam):
+            response = broker_app.app.test_client().get("/config", query_string=query)
+
+        self.assertEqual(response.status_code, 500)
+
+    def test_parker_mqtt_connect_keeps_legacy_discovery(self):
+        from wgkex.broker import app as broker_app
+        from wgkex.common.mqtt import MQTTTopics
+
+        mqtt = mock.MagicMock()
+        client = mock.MagicMock(host="mqtt", port=1883)
+        with mock.patch.object(broker_app, "mqtt", mqtt):
+            broker_app.handle_mqtt_connect(
+                client,
+                b"",
+                {},
+                paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED,
+            )
+
+        expected_subscriptions = {
+            MQTTTopics.TOPIC_CONNECTED_PEERS.format(worker="+", domain="+"),
+            MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"),
+            MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"),
+            MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker="+"),
+            MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"),
+            MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"),
+            MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"),
+            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker="+"),
+        }
+        self.assertEqual(
+            {call.args[0] for call in mqtt.subscribe.call_args_list},
+            expected_subscriptions,
+        )
+        legacy_topic = MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(
+            broker=broker_app._HOSTNAME
+        )
+        parker_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
+            broker=broker_app._HOSTNAME
+        )
+        mqtt.publish.assert_has_calls(
+            [
+                mock.call(legacy_topic, 1, qos=1, retain=True),
+                mock.call(parker_topic, b"", qos=1, retain=True),
+                mock.call(parker_topic, 1, qos=1, retain=False),
+            ]
+        )
+        self.assertEqual(broker_app.app.config["MQTT_LAST_WILL_TOPIC"], legacy_topic)
 
     def test_parker_mqtt_handlers(self):
         # Import app after config is set
@@ -156,6 +296,45 @@ class TestParker(unittest.TestCase):
         msg.payload = b"0"
         broker_app.handle_mqtt_message_parker_broker_status(None, None, msg)
         self.assertNotIn("broker1", broker_app.parker_active_brokers)
+
+        broker_app.active_brokers.clear()
+        broker_app.parker_active_brokers.clear()
+        msg.topic = "wireguard-broker/broker1/status".encode("utf-8")
+        msg.payload = b"1"
+        broker_app.handle_mqtt_message_broker_status(None, None, msg)
+        self.assertIn("broker1", broker_app.active_brokers)
+        self.assertIn("broker1", broker_app.parker_active_brokers)
+        msg.payload = b"0"
+        broker_app.handle_mqtt_message_broker_status(None, None, msg)
+        self.assertNotIn("broker1", broker_app.active_brokers)
+        self.assertNotIn("broker1", broker_app.parker_active_brokers)
+
+    def test_parker_shutdown_clears_legacy_and_alias_status(self):
+        from wgkex.broker import app as broker_app
+        from wgkex.common.mqtt import MQTTTopics
+
+        legacy_topic = MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(
+            broker=broker_app._HOSTNAME
+        )
+        parker_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
+            broker=broker_app._HOSTNAME
+        )
+        with (
+            mock.patch.object(broker_app, "mqtt") as mqtt,
+            mock.patch.object(broker_app.time, "sleep") as sleep,
+            mock.patch.object(broker_app.sys, "exit") as exit_process,
+        ):
+            broker_app._publish_offline_and_exit(None, None)
+
+        mqtt.publish.assert_has_calls(
+            [
+                mock.call(legacy_topic, 0, qos=1, retain=True),
+                mock.call(parker_topic, b"", qos=1, retain=True),
+                mock.call(parker_topic, 0, qos=1, retain=False),
+            ]
+        )
+        sleep.assert_called_once_with(2)
+        exit_process.assert_called_once_with(0)
 
     def test_get_active_brokers_count(self):
         from wgkex.broker import app as broker_app
