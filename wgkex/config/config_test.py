@@ -130,6 +130,16 @@ class TestConfig(unittest.TestCase):
                         config.get_config()
                 config._parsed_config = None
 
+    def test_worker_with_explicit_null_weight_defaults_to_one(self):
+        """An explicit but empty 'weight:'/'pop:' key parses to None in YAML
+        and must fall back to the defaults like a missing key."""
+        workers = config.Workers.from_dict(
+            {"gw04": {"weight": None, "pop": None}}, 10
+        )
+        worker = workers.get("gw04")
+        self.assertEqual(worker.weight, 1)
+        self.assertEqual(worker.pop, "")
+
     def test_worker_tolerance_bounds_are_validated(self):
         for tolerance in (-1, 101):
             with self.subTest(tolerance=tolerance):

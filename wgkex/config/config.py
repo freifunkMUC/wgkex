@@ -42,9 +42,11 @@ class Worker:
 
     @classmethod
     def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
+        # An explicit but empty key (e.g. "weight:") parses to None in YAML
+        # and must fall back to the default like a missing key.
         return cls(
-            weight=int(worker_cfg.get("weight", 1)),
-            pop=worker_cfg.get("pop", ""),
+            weight=int(worker_cfg.get("weight") or 1),
+            pop=worker_cfg.get("pop") or "",
             id=int(worker_cfg["id"]),
         )
 
