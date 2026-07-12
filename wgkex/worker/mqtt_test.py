@@ -285,6 +285,119 @@ class MQTTTest(unittest.TestCase):
         item = mqtt.q.get_nowait()
         self.assertEqual(item, ("domain1", "PUB_KEY"))
 
+    @mock.patch.object(mqtt.threading, "Thread")
+    @mock.patch.object(mqtt.mqtt, "Client")
+    @mock.patch.object(mqtt, "get_config")
+    def test_connect_parker_registers_callbacks_and_background_tasks(
+        self, config_mock, mqtt_client, thread
+    ):
+        cfg = _get_config_mock(
+            mqtt=mock.MagicMock(
+                broker_url="mqtt",
+                broker_port=1883,
+                username="user",
+                password="password",
+                keepalive=5,
+            ),
+            parker=mock.MagicMock(enabled=True),
+        )
+        config_mock.return_value = cfg
+        client = mqtt_client.return_value
+
+        mqtt.connect(threading.Event())
+
+        client.will_set.assert_called_once_with(
+            MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker=socket.gethostname()),
+            0,
+            qos=1,
+            retain=True,
+        )
+        client.message_callback_add.assert_called_once_with(
+            "parker/wireguard/#", mqtt.on_message_parker
+        )
+        self.assertEqual(thread.call_count, 2)
+        client.loop_forever.assert_called_once()
+
+    @mock.patch.object(mqtt, "get_config")
+    def test_on_connect_failure_and_legacy_missing_interface(self, config_mock):
+        cfg = _get_config_mock()
+        cfg.external_name = "worker.example"
+        config_mock.return_value = cfg
+        client = mock.MagicMock(host="mqtt", port=1883)
+
+        mqtt.on_connect(client, None, None, 1)
+        client.subscribe.assert_not_called()
+
+        with mock.patch.object(mqtt, "wg_interface_name", return_value=None):
+            mqtt.on_connect(
+                client,
+                None,
+                None,
+                paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED,
+            )
+        client.publish.assert_called_with(
+            MQTTTopics.TOPIC_WORKER_STATUS.format(worker=socket.gethostname()),
+            1,
+            qos=1,
+            retain=True,
+        )
+
+    @mock.patch.object(mqtt, "get_config")
+    def test_message_parsers_reject_unknown_domain_and_queue_parker(self, config_mock):
+        config_mock.return_value = _get_config_mock()
+        message = paho.mqtt.client.MQTTMessage()
+        message.topic = "wireguard/no-match/all".encode()
+        message.payload = b"key"
+        with self.assertRaisesRegex(ValueError, "Could not find a match"):
+            mqtt.on_message_wireguard(None, None, message)
+
+        message.topic = "parker/wireguard/all".encode()
+        message.payload = b'{"PublicKey":"key"}'
+        mqtt.on_message_parker(None, None, message)
+        self.assertEqual(mqtt.q.get_nowait(), '{"PublicKey":"key"}')
+        mqtt.on_message(None, None, message)
+
+    def test_metrics_loop_validation_exception_and_offline_publish(self):
+        with self.assertRaisesRegex(ValueError, "Domain must be passed"):
+            mqtt.publish_metrics_loop(threading.Event(), mock.MagicMock(), None, False)
+
+        exit_event = mock.MagicMock()
+        exit_event.is_set.side_effect = [False, True]
+        client = mock.MagicMock()
+        with mock.patch.object(
+            mqtt, "publish_metrics_parker", side_effect=RuntimeError("failed")
+        ):
+            mqtt.publish_metrics_loop(exit_event, client, None, True)
+        client.publish.assert_called_once_with(
+            MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker=socket.gethostname()),
+            -1,
+            qos=1,
+            retain=True,
+        )
+
+    @mock.patch.object(mqtt, "wg_interface_name", return_value=None)
+    def test_publish_metrics_skips_missing_interface(self, _):
+        client = mock.MagicMock()
+        mqtt.publish_metrics(client, "topic", "_test_domain")
+        client.publish.assert_not_called()
+
+    @mock.patch.object(
+        mqtt,
+        "get_connected_peers_count",
+        side_effect=pyroute2.netlink.exceptions.NetlinkDumpInterrupted(),
+    )
+    def test_publish_parker_metrics_handles_interrupted_dump(self, _):
+        client = mock.MagicMock()
+        mqtt.publish_metrics_parker(client, "topic")
+        client.publish.assert_not_called()
+
+    @mock.patch.object(mqtt, "get_config")
+    def test_wireguard_interface_name_validation(self, config_mock):
+        config_mock.return_value = _get_config_mock()
+        self.assertEqual(mqtt.wg_interface_name("_TEST_PREFIX2_domain"), "wg-domain")
+        with self.assertRaisesRegex(ValueError, "Could not find a match"):
+            mqtt.wg_interface_name("unknown")
+
 
 """ @mock.patch.object(msg_queue, "link_handler")
     @mock.patch.object(mqtt, "get_config")
