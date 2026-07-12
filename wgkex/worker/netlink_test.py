@@ -2,6 +2,7 @@
 
 # pyroute2 decides imports based on platform. WireGuard is specific to Linux only. Mock pyroute2.WireGuard so that
 # any testing platform can execute tests.
+import importlib
 import sys
 import unittest
 from datetime import datetime, timedelta
@@ -15,7 +16,11 @@ sys.modules["pyroute2"] = pyroute2_module_mock
 sys.modules["pyroute2.netlink"] = mock.MagicMock()
 from pyroute2 import IPRoute, WireGuard  # noqa: E402
 
-from wgkex.worker import netlink  # noqa: E402
+# Import netlink freshly so it binds to the pyroute2 mock above, even when an
+# earlier test module (e.g. msg_queue_test) already imported it against the
+# real pyroute2.
+sys.modules.pop("wgkex.worker.netlink", None)
+netlink = importlib.import_module("wgkex.worker.netlink")
 
 _WG_CLIENT_ADD = netlink.WireGuardClient(
     public_key="public_key", domain="add", remove=False

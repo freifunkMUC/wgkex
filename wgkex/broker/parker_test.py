@@ -1,3 +1,4 @@
+import importlib
 import ipaddress
 import json
 import mock
@@ -99,6 +100,10 @@ class TestParker(unittest.TestCase):
         config._parsed_config = test_config
 
         # Stub out signer module before importing broker.app which imports it at module level
+        cls._original_modules = {
+            name: sys.modules.get(name)
+            for name in ("wgkex.broker.signer", "flask_mqtt")
+        }
         sys.modules["wgkex.broker.signer"] = mock.MagicMock()
 
         # Stub out flask_mqtt.Mqtt to avoid network connections during import
@@ -141,9 +146,24 @@ class TestParker(unittest.TestCase):
         flask_mqtt_stub.Mqtt = MqttStub
         sys.modules["flask_mqtt"] = flask_mqtt_stub
 
+        # Import broker.app freshly under this class's config and stubs. A plain
+        # `from wgkex.broker import app` would return a stale module left on the
+        # package attribute by an earlier test module (e.g. app_test), which was
+        # imported with Parker disabled.
+        sys.modules.pop("wgkex.broker.app", None)
+        importlib.import_module("wgkex.broker.app")
+
     @classmethod
     def tearDownClass(cls) -> None:
         config._parsed_config = None
+        # Restore the stubbed modules and drop broker.app (imported with the
+        # stubs baked in), so later test modules import the real thing
+        for name, module in cls._original_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+        sys.modules.pop("wgkex.broker.app", None)
 
     def test_join_host_port(self):
         from wgkex.broker import app as broker_app
