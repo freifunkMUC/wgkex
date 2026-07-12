@@ -59,7 +59,10 @@ def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
         raise ValueError("Response signing is not available in non-parker mode.")
 
     privkey_encoded = config.get_config().broker_signing_key
-    assert privkey_encoded is not None, "Private key must be set in the configuration."
+    if privkey_encoded is None:
+        raise ValueError(
+            "Parker is enabled, but no broker_signing_key is set in the config file"
+        )
 
     try:
         # ecdsautil-style format

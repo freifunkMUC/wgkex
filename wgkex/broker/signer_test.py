@@ -100,6 +100,15 @@ class TestSigner(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "checksum"):
             self.signer.get_private_key()
 
+    def test_missing_signing_key_raises_clear_error(self):
+        previous_config = config._parsed_config
+        self.addCleanup(setattr, config, "_parsed_config", previous_config)
+        config._parsed_config = _parker_config(None)
+        self.signer.get_private_key.cache_clear()
+
+        with self.assertRaisesRegex(ValueError, "broker_signing_key"):
+            self.signer.get_private_key()
+
     def test_signing_is_unavailable_when_parker_is_disabled(self):
         config._parsed_config = config.Config.from_dict(
             {
