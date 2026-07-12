@@ -195,10 +195,11 @@ class WorkerMetricsCollection:
                     if len(all_matched) > 0:
                         matched = all_matched[0]
 
-                        if (
-                            matched.diff > 0
-                            and matched.diff
-                            > workers_cfg.sticky_worker_tolerance * matched.target
+                        # Allow at least one peer of slack: with small targets
+                        # a relative tolerance alone evicts on any overshoot,
+                        # making nodes ping-pong between workers.
+                        if matched.diff > max(
+                            1, workers_cfg.sticky_worker_tolerance * matched.target
                         ):
                             continue
 
