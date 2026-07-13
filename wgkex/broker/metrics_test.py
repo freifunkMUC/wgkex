@@ -70,7 +70,7 @@ class TestMetrics(unittest.TestCase):
     def test_get_best_worker_returns_best(self, config_mock):
         """Verify get_best_worker returns the worker with least connected clients for equally weighted workers."""
         test_config = mock.MagicMock(spec=config.Config)
-        test_config.workers = config.Workers.from_dict({})
+        test_config.workers = config.Workers.from_dict({}, 25)
         config_mock.return_value = test_config
 
         worker_metrics = WorkerMetricsCollection()
@@ -85,10 +85,29 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(connected, 19)
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_parker_selection_skips_unconfigured_workers(self, config_mock):
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict({"1": {"id": 5}}, 25)
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 20)
+        worker_metrics.update("2", "d", "connected_peers", 0)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+
+        results = worker_metrics.get_best_workers("d", [], require_configured=True)
+        self.assertEqual([result.name for result in results], ["1"])
+        self.assertEqual(results[0].id, 5)
+
+        results = worker_metrics.get_best_workers("d", [])
+        self.assertIn("2", [result.name for result in results])
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
     def test_get_best_worker_returns_best_imbalanced_domains(self, config_mock):
         """Verify get_best_worker returns the worker with overall least connected clients even if it has more clients on this domain."""
         test_config = mock.MagicMock(spec=config.Config)
-        test_config.workers = config.Workers.from_dict({})
+        test_config.workers = config.Workers.from_dict({}, 25)
         config_mock.return_value = test_config
 
         worker_metrics = WorkerMetricsCollection()
@@ -109,7 +128,7 @@ class TestMetrics(unittest.TestCase):
         """Verify get_best_worker returns the worker with least client differential for weighted workers."""
         test_config = mock.MagicMock(spec=config.Config)
         test_config.workers = config.Workers.from_dict(
-            {"1": {"weight": 84}, "2": {"weight": 42}}
+            {"1": {"weight": 84}, "2": {"weight": 42}}, 25
         )
         config_mock.return_value = test_config
 
@@ -140,6 +159,86 @@ class TestMetrics(unittest.TestCase):
 
         worker, _, _ = worker_metrics.get_best_worker("d")
         self.assertIsNone(worker)
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_worker_stickyness(self, config_mock):
+        """Verify get_best_worker returns the current worker if it is an equally good choice.
+        Verify that a slightly worse worker is still chosen if within tolerance."""
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(
+            {"1": {"id": 1, "weight": 50}, "2": {"id": 2, "weight": 50}}, 25
+        )
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 20)
+        worker_metrics.update("2", "d", "connected_peers", 20)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+
+        results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "2")
+
+        worker_metrics.update("2", "d", "connected_peers", 24)
+
+        results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].name, "2")
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_overloaded_sticky_worker_is_replaced(self, config_mock):
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(
+            {
+                "overloaded": {"id": 1, "weight": 50, "pop": "a"},
+                "available": {"id": 2, "weight": 50, "pop": "a"},
+                "other-pop": {"id": 3, "weight": 50, "pop": "b"},
+                "offline": {"id": 4, "weight": 50, "pop": "a"},
+            },
+            25,
+        )
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("overloaded", "d", "connected_peers", 100)
+        worker_metrics.update("available", "d", "connected_peers", 0)
+        worker_metrics.update("other-pop", "d", "connected_peers", 0)
+        worker_metrics.update("offline", "d", "connected_peers", 0)
+        worker_metrics.set_online("overloaded")
+        worker_metrics.set_online("available")
+        worker_metrics.set_online("other-pop")
+
+        results = worker_metrics.get_best_workers(
+            "d", current_selected_workers=["overloaded"]
+        )
+        self.assertCountEqual(
+            [result.name for result in results], ["available", "other-pop"]
+        )
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_small_target_keeps_sticky_worker_with_one_peer_slack(self, config_mock):
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(
+            {"1": {"id": 1, "weight": 50}, "2": {"id": 2, "weight": 50}}, 10
+        )
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 1)
+        worker_metrics.update("2", "d", "connected_peers", 3)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+
+        results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
+        self.assertEqual([result.name for result in results], ["2"])
+
+    def test_collection_set_and_total_skip_missing_record(self):
+        worker_metrics = WorkerMetricsCollection()
+        metrics = worker_metrics.get("worker")
+        worker_metrics.set("worker", metrics)
+        worker_metrics.data["missing"] = None
+        self.assertEqual(worker_metrics.get_total_peer_count(), 0)
 
 
 if __name__ == "__main__":

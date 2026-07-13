@@ -11,6 +11,7 @@
     - [Backend worker](#backend-worker)
   - [Installation](#installation)
   - [Configuration](#configuration)
+    - [Worker peer cleanup](#worker-peer-cleanup)
   - [Development](#development)
     - [Build using Bazel](#build-using-bazel)
     - [Updating PIP dependencies for Bazel](#updating-pip-dependencies-for-bazel)
@@ -48,6 +49,7 @@ The frontend broker exposes the following API endpoints for use:
 ```
 /api/v1/wg/key/exchange
 /api/v2/wg/key/exchange
+/api/v3/config
 ```
 
 The listen address and port for the Flask server can be configured in `wgkex.yaml` under the `broker_listen` key:
@@ -102,6 +104,31 @@ The response is JSON data containing the connection details for the chosen gatew
 }
 ```
 
+
+#### GET /api/v3/config | GET /api/v3/wg/key/exchange
+
+This is the endpoint for Parker nodes. See [PARKER.md](./PARKER.md) for more information.
+
+It requires the following URL request arguments to be sent by the client:
+
+```
+v6mtu (int): The maximum transmission unit (MTU) size the client can handle.
+pubkey (str): The client's WireGuard public key, base64 encoded. (Remember to url-encode)
+nonce (str): A unique nonce value to prevent replay attacks.
+```
+
+The broker will validate the public key, and if valid, will push the key onto the MQTT bus.
+Additionally it chooses a worker (aka concentrator, gateway, endpoint) that the client should connect to.
+The response is a concatenation of JSON data containing the connection details for the chosen gateway, and a signature of the JSON string appended as separate line at the end.
+
+```json
+{"nonce": "e08e20da001fd06a523f7fe8e7dfe455", "time": 1753997082, "id": "OmaOePJh+hrEZETlPEdNWj7qZn7GTbCno678kH0uLHs=", "mtu": 1375, "address6": "2001:db8:ed0:2::1", "concentrators": [{"address4": "10.0.0.1", "address6": "fe80::28f:a7ff:fec6:7530", "endpoint": "pgw01.ext.ffmuc.net:40000", "pubkey": "4WAyZBpHcyRE5+L4ApV+jjWgj4q1o3CrCQ3NjclXfV4=", "id": 1}], "range6": "2001:db8:ed0:2::/64", "xlat_range6": "2001:db8:ed0:3::/64", "range4": "10.80.96.0/22", "address4": "10.80.96.1", "wg_keepalive": 25, "retry": 120}
+RWSx0zTq9Vfdo8d8qG439G1Zl5B/7E62eok2hlGIpRyijGQOMphb8XP4jFWt9/EG4UeY77OSht+r2eezw9Rrrn7/jl9Co5lgAQ0=
+```
+(invalid signature in example)
+
+The client must validate the signature as well as the `nonce`, and may use `time` to send the system clock
+
 ### Backend worker
 
 The backend (worker) waits for new keys to appear on the MQTT message bus. Once a new key appears, the worker performs
@@ -125,6 +152,29 @@ For further information, please see this [presentation on the architecture](http
 
 The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
 can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
+
+### Worker peer cleanup
+
+Workers periodically remove offline WireGuard peers. A peer with a non-zero
+last-handshake timestamp is stale when its age is greater than or equal to the
+mode-specific timeout. A peer that has never handshaked is retained for
+`cleanup.initial_handshake_grace` after its most recent accepted queue update.
+After a worker restart, the kernel does not expose peer creation time, so all
+untracked never-handshaked peers receive one grace period starting at worker
+startup; abandoned peers are removed by the first later sweep.
+
+Cleanup scans do not block MQTT ingestion. Queue updates and cleanup serialize
+mutations for the same public key or Parker prefix. Parker deletion removes the
+assigned prefix route before the WireGuard peer, unless another current peer
+owns that prefix. Legacy deletion removes the FDB entry, then route, then peer.
+Already-absent dependencies are idempotent; other partial failures are reported
+and retried while the peer remains discoverable. Parker prefix reassignment
+locks both old and new prefixes and removes the old route after installing the
+new peer state and route; failed old-route deletion is retained and retried on
+later cleanup sweeps after an ownership check.
+
+See `wgkex.yaml.example` for the cleanup interval, Parker and legacy stale
+timeouts, and initial-handshake grace defaults.
 
 ## Development
 
@@ -244,6 +294,15 @@ and it should output something similar to:
     "PublicKey": "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g="
   }
 }
+```
+
+Or for /api/v3 (Parker):
+```sh
+curl --get \
+  --data-urlencode "v6mtu=1500" \
+  --data-urlencode "pubkey=TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=" \
+  --data-urlencode "nonce=123456" \
+  "http://127.0.0.1:5000/api/v3/wg/key/exchange"
 ```
 
 Or use Python instead of wget:

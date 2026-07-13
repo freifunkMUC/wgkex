@@ -1,0 +1,21 @@
+services:
+  netbox:
+    restart: always
+    ports:
+      - "8000:8080"
+    healthcheck:
+      # Time for which the health check can fail after the container is started.
+      # This depends mostly on the performance of your database. On the first start,
+      # when all tables need to be created the start_period should be higher than on
+      # subsequent starts. For the first start after major version upgrades of NetBox
+      # the start_period might also need to be set higher.
+      # Default value in our docker-compose.yml is 60s
+      start_period: 90s
+    environment:
+      SKIP_SUPERUSER: '${SKIP_SUPERUSER:-true}'
+      # Pre-defined credentials to enable quick local development setups.
+      # We are running in a devcontainer, so we are assuming sufficient safeguarding from outside access.
+      SUPERUSER_API_TOKEN: '17e17bab6ab592f0634def04c4e64d66af03ed75'
+      SUPERUSER_EMAIL: 'wgkex@example.com'
+      SUPERUSER_NAME: 'wgkex'
+      SUPERUSER_PASSWORD: 'wgkex_195886w0'

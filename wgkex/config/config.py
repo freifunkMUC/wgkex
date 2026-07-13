@@ -2,9 +2,11 @@
 
 import dataclasses
 import logging
+import math
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional, Set
 
 import yaml
 
@@ -17,6 +19,19 @@ class ConfigFileNotFoundError(Error):
     """File could not be found on disk."""
 
 
+def _positive_duration(value: Any, name: str) -> float:
+    """Parse a finite, positive duration in seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a positive duration in seconds") from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    return duration
+
+
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
 WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
 
@@ -26,15 +41,27 @@ class Worker:
     """A representation of the values of the 'workers' dict in the configuration file.
 
     Attributes:
+        id: A unique, static ID for this worker. In Parker mode this is the
+            concentrator ID sent to nodes, identifying the tunnel on the node, so it
+            must never change for a given worker. If not set explicitly in the config,
+            it defaults to the worker's position in the workers map.
         weight: The relative weight of a worker, defaults to 1.
+        pop: The PoP (Point of Presence) this worker is located in
     """
 
+    id: int
     weight: int
+    pop: str
 
     @classmethod
     def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
+        worker_id = int(worker_cfg["id"])
+        if not 0 <= worker_id <= 2**32 - 1:
+            raise ValueError("Worker ID must be an unsigned 32-bit integer")
         return cls(
-            weight=int(worker_cfg["weight"]) if worker_cfg["weight"] else 1,
+            weight=int(1 if worker_cfg.get("weight") is None else worker_cfg["weight"]),
+            pop=worker_cfg.get("pop") or "",
+            id=worker_id,
         )
 
 
@@ -44,21 +71,51 @@ class Workers:
 
     Attributes:
         total_weight: Calculated on init, the total weight of all configured workers.
+        all_pops
+        sticky_worker_tolerance: percentage between 0 and 1 as float
     """
 
     total_weight: int
+    all_pops: Set[str]
+    sticky_worker_tolerance: float
     _workers: Dict[str, Worker]
 
     @classmethod
-    def from_dict(cls, workers_cfg: Dict[str, Dict[str, Any]]) -> "Workers":
-        d = {key: Worker.from_dict(value) for (key, value) in workers_cfg.items()}
+    def from_dict(
+        cls, workers_cfg: Dict[str, Dict[str, Any]], sticky_worker_tolerance: int
+    ) -> "Workers":
+        d = {
+            key: Worker.from_dict({"id": id, **value})
+            for (id, (key, value)) in enumerate(workers_cfg.items(), start=1)
+        }
+
+        ids = [worker.id for worker in d.values()]
+        if len(set(ids)) != len(ids):
+            raise ValueError(
+                "Worker IDs must be unique. Set explicit unique 'id' values in the workers config."
+            )
 
         total = 0
+        # add "empty" PoP to set to support dynamically added workers
+        pops = {
+            "",
+        }
         for worker in d.values():
             total += worker.weight
+            pops.add(worker.pop)
         total = max(total, 1)
 
-        return cls(total_weight=total, _workers=d)
+        if not 0 <= sticky_worker_tolerance <= 100:
+            raise ValueError(
+                "sticky_worker_tolerance must be a percentage between 0 and 100"
+            )
+
+        return cls(
+            total_weight=total,
+            all_pops=pops,
+            _workers=d,
+            sticky_worker_tolerance=sticky_worker_tolerance / 100,
+        )
 
     def get(self, worker: str) -> Optional[Worker]:
         return self._workers.get(worker)
@@ -114,7 +171,7 @@ class MQTT:
     def from_dict(cls, mqtt_cfg: Dict[str, str]) -> "MQTT":
         """seems to generate a mqtt config object from dictionary
 
-        Args:
+        Arguments:
             mqtt_cfg ():
 
         Returns:
@@ -130,6 +187,241 @@ class MQTT:
         )
 
 
+@dataclasses.dataclass(frozen=True)
+class Cleanup:
+    """Worker peer cleanup timing in seconds."""
+
+    interval: float = 3600
+    parker_stale_timeout: float = 300
+    legacy_stale_timeout: float = 10800
+    initial_handshake_grace: float = 600
+
+    @classmethod
+    def from_dict(cls, cleanup_cfg: Dict[str, Any]) -> "Cleanup":
+        if not isinstance(cleanup_cfg, dict):
+            raise ValueError("cleanup must be a mapping")
+        return cls(
+            interval=_positive_duration(
+                cleanup_cfg.get("interval", cls.interval), "cleanup.interval"
+            ),
+            parker_stale_timeout=_positive_duration(
+                cleanup_cfg.get("parker_stale_timeout", cls.parker_stale_timeout),
+                "cleanup.parker_stale_timeout",
+            ),
+            legacy_stale_timeout=_positive_duration(
+                cleanup_cfg.get("legacy_stale_timeout", cls.legacy_stale_timeout),
+                "cleanup.legacy_stale_timeout",
+            ),
+            initial_handshake_grace=_positive_duration(
+                cleanup_cfg.get("initial_handshake_grace", cls.initial_handshake_grace),
+                "cleanup.initial_handshake_grace",
+            ),
+        )
+
+    def stale_timeout(self, parker: bool) -> float:
+        """Return the stale timeout for the selected worker mode."""
+        return self.parker_stale_timeout if parker else self.legacy_stale_timeout
+
+
+@dataclasses.dataclass
+class Parker:
+    """A representation of the 'parker' key in Configuration file.
+
+    Attributes:
+        enabled: Whether Parker is enabled or not.
+        xlat: Whether 464XLAT is used or not.
+        prefixes: The prefixes configuration for Parker.
+        ipam: The IPAM backend to use for the node prefixes (json or netbox).
+        retry_interval: The retry interval in seconds for nodes to recontact the broker to check for new configuration.
+        wg_keepalive: The keepalive interval in seconds the nodes should set for the WireGuard tunnel.
+    """
+
+    @dataclasses.dataclass
+    class Prefixes:
+        """A representation of the 'prefixes' key in the 'parker' configuration.
+
+        Attributes:
+            ipv4: The IPv4 prefix configuration.
+            ipv6: The IPv6 prefix configuration.
+        """
+
+        @dataclasses.dataclass
+        class IPv4:
+            """A representation of the 'ipv4' key in the 'prefixes' configuration.
+
+            Attributes:
+                clat_subnet: The CLAT subnet to use for 464XLAT, i.e. the client subnet behind the nodes.
+                length: The subnet size to use for the IPv4 subnet when not using 464XLAT.
+                netbox_filter: The filter to use when querying NetBox for an IPv4 prefix when not using 464XLAT.
+                netbox_additional_data: Additional data to send to NetBox when reserving an IPv4 prefix when not using 464XLAT.
+            """
+
+            clat_subnet: Optional[str] = None
+            length: Optional[int] = None
+            netbox_filter: Optional[Dict[str, Any]] = None
+            netbox_additional_data: Optional[Dict[str, Any]] = None
+
+        @dataclasses.dataclass
+        class IPv6:
+            """A representation of the 'ipv6' key in the 'prefixes' configuration.
+
+            Attributes:
+                length: The prefix size to use for the IPv6 prefix.
+                netbox_filter: The filter to use when querying NetBox for an IPv6 prefix.
+                netbox_additional_data: Additional data to send to NetBox when reserving an IPv6 prefix.
+            """
+
+            length: int
+            netbox_filter: Optional[Dict[str, Any]] = None
+            netbox_additional_data: Optional[Dict[str, Any]] = None
+
+        ipv4: IPv4
+        ipv6: IPv6
+
+    class IPAM(Enum):
+        JSON = "json"
+        NETBOX = "netbox"
+
+    enabled: bool
+    xlat: bool
+    prefixes: Prefixes
+    ipam: IPAM
+    retry_interval: int = 120
+    wg_keepalive: int = 25
+
+    @classmethod
+    def from_dict(cls, parker_cfg: Dict[str, Any]) -> "Parker":
+        """Generates a parker config object from a dictionary.
+
+        Arguments:
+            parker_cfg: dictionary with parker config
+
+        Returns:
+            parker config object
+        """
+
+        enabled = bool(parker_cfg.get("enabled", False))
+
+        if not enabled:
+            return cls(
+                enabled=enabled,
+                xlat=False,
+                prefixes=cls.Prefixes(
+                    ipv4=cls.Prefixes.IPv4(),
+                    ipv6=cls.Prefixes.IPv6(length=0, netbox_filter={}),
+                ),
+                ipam=cls.IPAM.JSON,
+            )
+
+        xlat = bool(parker_cfg.get("464xlat", False))
+        ipam = cls.IPAM(parker_cfg.get("ipam"))
+
+        pfx = parker_cfg.get("prefixes", None)
+        if pfx is None or not isinstance(pfx, dict):
+            raise ValueError(
+                "Parker is enabled, but no prefixes config is set in the config file"
+            )
+        if "ipv6" not in pfx or "ipv4" not in pfx:
+            raise ValueError(
+                "Parker prefixes config must contain both 'ipv4' and 'ipv6' keys"
+            )
+
+        if xlat:
+            if "clat_subnet" not in pfx["ipv4"]:
+                raise ValueError(
+                    "Parker prefixes config must contain 'clat_subnet' key for 'ipv4' when using 464xlat"
+                )
+        else:
+            if "length" not in pfx["ipv4"]:
+                raise ValueError(
+                    "Parker prefixes config must contain 'length' key for 'ipv4' when not using 464xlat"
+                )
+            if ipam == cls.IPAM.NETBOX and (
+                "netbox_filter" not in pfx["ipv4"]
+                or not isinstance(pfx["ipv4"]["netbox_filter"], dict)
+            ):
+                raise ValueError(
+                    "Parker prefixes config must contain 'netbox_filter' key for 'ipv4' when using NetBox as IPAM and not using 464xlat"
+                )
+
+        if "length" not in pfx["ipv6"]:
+            raise ValueError(
+                "Parker prefixes config must contain 'length' key for 'ipv6' when not using 464xlat"
+            )
+        ipv6_prefix_length = int(pfx["ipv6"]["length"])
+        if not 0 <= ipv6_prefix_length <= 63:
+            raise ValueError(
+                "Parker IPv6 allocation prefix length must be between 0 and 63"
+            )
+        if ipam == cls.IPAM.NETBOX and (
+            "netbox_filter" not in pfx["ipv6"]
+            or not isinstance(pfx["ipv6"]["netbox_filter"], dict)
+        ):
+            raise ValueError(
+                "Parker prefixes config must contain 'netbox_filter' key for 'ipv6' when using NetBox as IPAM and not using 464xlat"
+            )
+
+        # TODO remove this block when non-464XLAT mode is fully supported
+        if not xlat:
+            raise NotImplementedError("Non-464XLAT mode is not supported yet")
+
+        retry_interval = int(parker_cfg.get("retry_interval", cls.retry_interval))
+        wg_keepalive = int(parker_cfg.get("wg_keepalive", cls.wg_keepalive))
+
+        return cls(
+            enabled=enabled,
+            xlat=xlat,
+            prefixes=cls.Prefixes(
+                ipv4=cls.Prefixes.IPv4(
+                    clat_subnet=pfx["ipv4"].get("clat_subnet", None),
+                    netbox_filter=pfx["ipv4"].get("netbox_filter", None),
+                    netbox_additional_data=pfx["ipv4"].get(
+                        "netbox_additional_data", None
+                    ),
+                    length=pfx["ipv4"].get("length", None),
+                ),
+                ipv6=cls.Prefixes.IPv6(
+                    netbox_filter=pfx["ipv6"].get("netbox_filter", None),
+                    netbox_additional_data=pfx["ipv6"].get(
+                        "netbox_additional_data", None
+                    ),
+                    length=ipv6_prefix_length,
+                ),
+            ),
+            ipam=ipam,
+            retry_interval=retry_interval,
+            wg_keepalive=wg_keepalive,
+        )
+
+
+@dataclasses.dataclass
+class Netbox:
+    """A representation of the 'netbox' key in configuration file.
+
+    Attributes:
+        url: The NetBox URL to connect to.
+        api_key: The API key to use for authentication.
+    """
+
+    url: str
+    api_key: str
+
+    @classmethod
+    def from_dict(cls, netbox_cfg: Dict[str, str]) -> "Netbox":
+        """Generates a netbox config object from a dictionary.
+
+        Arguments:
+            netbox_cfg: dictionary with netbox config
+
+        Returns:
+            netbox config object
+        """
+        return cls(
+            url=netbox_cfg["url"],
+            api_key=netbox_cfg["api_key"],
+        )
+
+
 @dataclasses.dataclass
 class Config:
     """A representation of the configuration file.
@@ -139,20 +431,25 @@ class Config:
         domain_prefixes: The list of prefixes to pre-pend to a given domain.
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
-        externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        external_name: The publicly resolvable domain name or public IP address of this worker (worker-only).
     """
 
     raw: Dict[str, Any]
     domains: List[str]
     domain_prefixes: List[str]
-    broker_listen: BrokerListen
-    mqtt: MQTT
     workers: Workers
+    parker: Parker
+    cleanup: Cleanup
     external_name: Optional[str]
+    mqtt: MQTT
+    broker_listen: BrokerListen
+    netbox: Optional[Netbox] = None
+    broker_signing_key: Optional[str] = None
 
     @classmethod
     def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
         """Creates a Config object from a configuration file.
+
         Arguments:
             cfg: The configuration file as a dict.
         Returns:
@@ -160,7 +457,20 @@ class Config:
         """
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
-        workers_cfg = Workers.from_dict(cfg.get("workers", {}))
+        workers_cfg = Workers.from_dict(
+            cfg.get("workers", {}), cfg.get("sticky_worker_tolerance", 10)
+        )
+        parker = Parker.from_dict(cfg.get("parker", {}))
+        cleanup = Cleanup.from_dict(cfg.get("cleanup", {}))
+        broker_signing_key = cfg.get("broker_signing_key", None)
+
+        netbox_cfg = None
+        if isinstance(cfg.get("netbox"), dict) and {
+            "url",
+            "api_key",
+        }.issubset(cfg["netbox"]):
+            netbox_cfg = Netbox.from_dict(cfg["netbox"])
+
         return cls(
             raw=cfg,
             domains=cfg["domains"],
@@ -169,6 +479,10 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            parker=parker,
+            cleanup=cleanup,
+            netbox=netbox_cfg,
+            broker_signing_key=broker_signing_key,
         )
 
     def get(self, key: str) -> Any:
