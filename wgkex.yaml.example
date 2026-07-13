@@ -42,6 +42,18 @@ workers:
 sticky_worker_tolerance: 15
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
+# [worker] Offline peer cleanup timing, in seconds. All values must be positive.
+cleanup:
+  # How often each WireGuard interface is scanned.
+  interval: 3600
+  # A Parker peer with an earlier last handshake is stale. The default allows
+  # multiple 120s config retries and the 180s WireGuard tunnel timeout.
+  parker_stale_timeout: 300
+  # Preserve the historical three-hour timeout for legacy peers.
+  legacy_stale_timeout: 10800
+  # Never-handshaked peers are retained this long after provisioning or worker
+  # startup, then treated as abandoned.
+  initial_handshake_grace: 600
 # [broker, worker]
 parker:
   # Enable Parker support. The broker will still handle non-Parker in the same instance, the worker however will disable non-Parker support in this case.

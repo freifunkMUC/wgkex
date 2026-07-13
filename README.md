@@ -11,6 +11,7 @@
     - [Backend worker](#backend-worker)
   - [Installation](#installation)
   - [Configuration](#configuration)
+    - [Worker peer cleanup](#worker-peer-cleanup)
   - [Development](#development)
     - [Build using Bazel](#build-using-bazel)
     - [Updating PIP dependencies for Bazel](#updating-pip-dependencies-for-bazel)
@@ -151,6 +152,29 @@ For further information, please see this [presentation on the architecture](http
 
 The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
 can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
+
+### Worker peer cleanup
+
+Workers periodically remove offline WireGuard peers. A peer with a non-zero
+last-handshake timestamp is stale when its age is greater than or equal to the
+mode-specific timeout. A peer that has never handshaked is retained for
+`cleanup.initial_handshake_grace` after its most recent accepted queue update.
+After a worker restart, the kernel does not expose peer creation time, so all
+untracked never-handshaked peers receive one grace period starting at worker
+startup; abandoned peers are removed by the first later sweep.
+
+Cleanup scans do not block MQTT ingestion. Queue updates and cleanup serialize
+mutations for the same public key or Parker prefix. Parker deletion removes the
+assigned prefix route before the WireGuard peer, unless another current peer
+owns that prefix. Legacy deletion removes the FDB entry, then route, then peer.
+Already-absent dependencies are idempotent; other partial failures are reported
+and retried while the peer remains discoverable. Parker prefix reassignment
+locks both old and new prefixes and removes the old route after installing the
+new peer state and route; failed old-route deletion is retained and retried on
+later cleanup sweeps after an ownership check.
+
+See `wgkex.yaml.example` for the cleanup interval, Parker and legacy stale
+timeouts, and initial-handshake grace defaults.
 
 ## Development
 

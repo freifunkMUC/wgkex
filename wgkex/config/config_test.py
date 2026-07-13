@@ -182,6 +182,43 @@ class TestConfig(unittest.TestCase):
         workers = config.Workers.from_dict({"worker": {"weight": 0}}, 10)
         self.assertEqual(workers.get("worker").weight, 0)
 
+    def test_cleanup_defaults_and_mode_timeouts(self):
+        cleanup = config.Cleanup.from_dict({})
+        self.assertEqual(cleanup.interval, 3600)
+        self.assertEqual(cleanup.stale_timeout(True), 300)
+        self.assertEqual(cleanup.stale_timeout(False), 10800)
+        self.assertEqual(cleanup.initial_handshake_grace, 600)
+
+        cfg = _config_dict()
+        cfg["cleanup"] = {
+            "interval": 30,
+            "parker_stale_timeout": 600,
+            "legacy_stale_timeout": 7200,
+            "initial_handshake_grace": 900,
+        }
+        parsed = config.Config.from_dict(cfg)
+        self.assertEqual(parsed.cleanup.interval, 30)
+        self.assertEqual(parsed.cleanup.stale_timeout(True), 600)
+        self.assertEqual(parsed.cleanup.stale_timeout(False), 7200)
+        self.assertEqual(parsed.cleanup.initial_handshake_grace, 900)
+
+    def test_cleanup_durations_are_positive_and_finite(self):
+        fields = (
+            "interval",
+            "parker_stale_timeout",
+            "legacy_stale_timeout",
+            "initial_handshake_grace",
+        )
+        for field in fields:
+            for value in (0, -1, True, "invalid", float("inf"), None):
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(ValueError, field),
+                ):
+                    config.Cleanup.from_dict({field: value})
+        with self.assertRaisesRegex(ValueError, "mapping"):
+            config.Cleanup.from_dict([])  # type: ignore
+
     def test_parker_prefix_structure_validation(self):
         invalid_configs = [
             {"enabled": True, "464xlat": True, "ipam": "json"},

@@ -3,6 +3,20 @@ load("@pip//:requirements.bzl", "requirement")
 
 
 py_library(
+    name = "peer_state",
+    srcs = ["peer_state.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "peer_state_test",
+    srcs = ["peer_state_test.py"],
+    deps = [":peer_state"],
+    size = "small",
+)
+
+
+py_library(
     name = "netlink",
     srcs = ["netlink.py"],
     visibility = ["//visibility:public"],
@@ -13,6 +27,7 @@ py_library(
        "//wgkex/common:utils",
        "//wgkex/common:logger",
        "//wgkex/config:config",
+       ":peer_state",
     ],
 )
 
@@ -42,6 +57,7 @@ py_library(
        "//wgkex/config:config",
        ":msg_queue",
        ":netlink",
+       ":peer_state",
     ],
 )
 
@@ -62,6 +78,7 @@ py_binary(
     deps = [
        ":mqtt",
        ":msg_queue",
+       ":peer_state",
        "//wgkex/config:config",
        "//wgkex/common:logger",
     ],
@@ -85,6 +102,7 @@ py_library(
     deps = [
        "//wgkex/common:logger",
        ":netlink",
+       ":peer_state",
     ],
 )
 
@@ -93,6 +111,8 @@ py_test(
     srcs = ["msg_queue_test.py"],
     deps = [
        ":msg_queue",
+       ":netlink",
+       ":peer_state",
        requirement("mock"),
     ],
     size="small",
