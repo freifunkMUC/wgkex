@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+import math
 import os
 import sys
 from enum import Enum
@@ -16,6 +17,19 @@ class Error(Exception):
 
 class ConfigFileNotFoundError(Error):
     """File could not be found on disk."""
+
+
+def _positive_duration(value: Any, name: str) -> float:
+    """Parse a finite, positive duration in seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a positive duration in seconds") from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    return duration
 
 
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
@@ -171,6 +185,42 @@ class MQTT:
             broker_port=int(mqtt_cfg.get("broker_port", cls.broker_port)),
             keepalive=int(mqtt_cfg.get("keepalive", cls.keepalive)),
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class Cleanup:
+    """Worker peer cleanup timing in seconds."""
+
+    interval: float = 3600
+    parker_stale_timeout: float = 300
+    legacy_stale_timeout: float = 10800
+    initial_handshake_grace: float = 600
+
+    @classmethod
+    def from_dict(cls, cleanup_cfg: Dict[str, Any]) -> "Cleanup":
+        if not isinstance(cleanup_cfg, dict):
+            raise ValueError("cleanup must be a mapping")
+        return cls(
+            interval=_positive_duration(
+                cleanup_cfg.get("interval", cls.interval), "cleanup.interval"
+            ),
+            parker_stale_timeout=_positive_duration(
+                cleanup_cfg.get("parker_stale_timeout", cls.parker_stale_timeout),
+                "cleanup.parker_stale_timeout",
+            ),
+            legacy_stale_timeout=_positive_duration(
+                cleanup_cfg.get("legacy_stale_timeout", cls.legacy_stale_timeout),
+                "cleanup.legacy_stale_timeout",
+            ),
+            initial_handshake_grace=_positive_duration(
+                cleanup_cfg.get("initial_handshake_grace", cls.initial_handshake_grace),
+                "cleanup.initial_handshake_grace",
+            ),
+        )
+
+    def stale_timeout(self, parker: bool) -> float:
+        """Return the stale timeout for the selected worker mode."""
+        return self.parker_stale_timeout if parker else self.legacy_stale_timeout
 
 
 @dataclasses.dataclass
@@ -389,6 +439,7 @@ class Config:
     domain_prefixes: List[str]
     workers: Workers
     parker: Parker
+    cleanup: Cleanup
     external_name: Optional[str]
     mqtt: MQTT
     broker_listen: BrokerListen
@@ -410,6 +461,7 @@ class Config:
             cfg.get("workers", {}), cfg.get("sticky_worker_tolerance", 10)
         )
         parker = Parker.from_dict(cfg.get("parker", {}))
+        cleanup = Cleanup.from_dict(cfg.get("cleanup", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
 
         netbox_cfg = None
@@ -428,6 +480,7 @@ class Config:
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
             parker=parker,
+            cleanup=cleanup,
             netbox=netbox_cfg,
             broker_signing_key=broker_signing_key,
         )
