@@ -3,6 +3,7 @@
 import dataclasses
 import ipaddress
 import logging
+import math
 import os
 import sys
 from enum import Enum
@@ -17,6 +18,19 @@ class Error(Exception):
 
 class ConfigFileNotFoundError(Error):
     """File could not be found on disk."""
+
+
+def _positive_duration(value: Any, name: str) -> float:
+    """Parse a finite, positive duration in seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a positive duration in seconds") from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    return duration
 
 
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
@@ -423,20 +437,57 @@ class KeyLists:
 class PeerCleanup:
     """A representation of the 'peer_cleanup' key in the configuration file (worker-only).
 
+    For compatibility with early Parker deployments, the keys of a 'cleanup' section are
+    accepted as well ('legacy_stale_timeout' maps to stale_timeout), 'peer_cleanup' wins.
+
     Attributes:
-        stale_timeout: Seconds without a handshake after which a peer is removed.
+        stale_timeout: Seconds without a handshake after which a (legacy) peer is removed.
         interval: Seconds between two cleanup runs.
+        parker_stale_timeout: Seconds without a handshake after which a Parker peer is removed.
+        initial_handshake_grace: Seconds a never-handshaked Parker peer is kept after it was
+            provisioned or after the worker started.
     """
 
     stale_timeout: int = 1800
     interval: int = 300
+    parker_stale_timeout: float = 300
+    initial_handshake_grace: float = 600
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "PeerCleanup":
+    def from_dict(
+        cls, cfg: dict[str, Any], parker_cleanup: dict[str, Any] | None = None
+    ) -> "PeerCleanup":
+        if parker_cleanup:
+            if not isinstance(parker_cleanup, dict):
+                raise ValueError("cleanup must be a mapping")
+            aliased = {
+                "interval": parker_cleanup.get("interval"),
+                "stale_timeout": parker_cleanup.get("legacy_stale_timeout"),
+                "parker_stale_timeout": parker_cleanup.get("parker_stale_timeout"),
+                "initial_handshake_grace": parker_cleanup.get(
+                    "initial_handshake_grace"
+                ),
+            }
+            cfg = {
+                **{k: v for k, v in aliased.items() if v is not None},
+                **cfg,
+            }
         return cls(
             stale_timeout=int(cfg.get("stale_timeout", cls.stale_timeout)),
             interval=int(cfg.get("interval", cls.interval)),
+            parker_stale_timeout=_positive_duration(
+                cfg.get("parker_stale_timeout", cls.parker_stale_timeout),
+                "peer_cleanup.parker_stale_timeout",
+            ),
+            initial_handshake_grace=_positive_duration(
+                cfg.get("initial_handshake_grace", cls.initial_handshake_grace),
+                "peer_cleanup.initial_handshake_grace",
+            ),
         )
+
+    def timeout_for(self, parker: bool) -> float:
+        """Returns the stale timeout for the given worker mode."""
+        return self.parker_stale_timeout if parker else self.stale_timeout
 
 
 @dataclasses.dataclass
@@ -768,7 +819,9 @@ class Config:
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
             load_balancing=LoadBalancing.from_dict(cfg.get("load_balancing") or {}),
-            peer_cleanup=PeerCleanup.from_dict(cfg.get("peer_cleanup") or {}),
+            peer_cleanup=PeerCleanup.from_dict(
+                cfg.get("peer_cleanup") or {}, cfg.get("cleanup")
+            ),
             drain=Drain.from_dict(cfg.get("drain") or {}),
             metrics=Metrics.from_dict(cfg.get("metrics") or {}),
             rate_limit=RateLimit.from_dict(cfg.get("rate_limit") or {}),

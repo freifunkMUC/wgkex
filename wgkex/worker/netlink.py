@@ -3,6 +3,7 @@
 # See https://docs.pyroute2.org/iproute.html for a documentation of the layout of netlink responses
 import errno
 import hashlib
+import ipaddress
 import re
 import threading
 import time
@@ -19,9 +20,15 @@ import pyroute2.netlink.exceptions
 from wgkex.common import logger
 from wgkex.common.utils import mac2eui64
 from wgkex.worker.observability import NETLINK_OP_SECONDS, NETLINK_RECONNECTS
+from wgkex.worker.peer_state import PeerMutationCoordinator, peer_mutations
 
 _DEFAULT_PEER_TIMEOUT = 1800
 _PARKER_PEER_TIMEOUT = 300
+_INITIAL_HANDSHAKE_GRACE = 600
+_PARKER_PREFIX_LENGTH = 63
+_PARKER_INTERFACE = "wg-nodes"  # TODO make interface name configurable
+_NETLINK_DUMP_RETRIES = 1
+_ABSENT_ERRNOS = {errno.ENOENT, errno.ENODEV, errno.ESRCH}
 
 
 class _Handles:
@@ -173,59 +180,221 @@ class ParkerWireGuardClient:
     range6: str
     remove: bool
     keepalive: int | None = None
+    previous_ranges6: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class StaleWireGuardPeer:
+    """A validated Parker peer selected for cleanup."""
+
+    public_key: str
+    parker_prefix: str | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class OperationOutcome:
+    """The explicit outcome of one netlink mutation."""
+
+    status: str
+    result: Any = None
+
+
+@dataclass(frozen=True)
+class PeerCleanupResult:
+    """The explicit result of one stale Parker peer cleanup attempt."""
+
+    public_key: str
+    status: str
+    operations: dict[str, OperationOutcome]
+    failed_operation: str | None = None
+    error: str | None = None
+
+
+class PeerMutationError(RuntimeError):
+    """A peer mutation failed after zero or more successful operations."""
+
+    def __init__(
+        self,
+        operation: str,
+        client: "WireGuardClient | ParkerWireGuardClient",
+        operations: dict[str, OperationOutcome],
+        cause: Exception,
+    ) -> None:
+        super().__init__(f"{operation} failed for peer {client.public_key}: {cause}")
+        self.operation = operation
+        self.client = client
+        self.operations = operations
+        self.cause = cause
 
 
 def wg_flush_stale_peers(
     parker: bool = False,
     domain: str = "",
-    timeout: int = _DEFAULT_PEER_TIMEOUT,
+    timeout: float | None = None,
     keep: Callable[[str], bool] | None = None,
-) -> list[dict]:
+    *,
+    initial_handshake_grace: float = _INITIAL_HANDSHAKE_GRACE,
+    parker_prefix_length: int = _PARKER_PREFIX_LENGTH,
+    coordinator: PeerMutationCoordinator = peer_mutations,
+) -> list:
     """Removes stale peers.
 
     Arguments:
-        domain: The domain to detect peers on.
+        parker: Whether to clean up the Parker interface instead of a legacy domain.
+        domain: The domain to detect peers on (legacy only).
         timeout: Seconds without handshake after which a peer is stale.
         keep: Optional predicate for public keys which must not be removed (e.g. recently added).
+        initial_handshake_grace: Parker only, see flush_stale_parker_peers.
+        parker_prefix_length: Parker only, the prefix length of the assigned node prefixes.
+        coordinator: Parker only, serializes cleanup with queue updates of the same peer.
 
     Returns:
-        The peers which we can remove.
+        The handled peers: link_handler results (legacy) or PeerCleanupResults (Parker).
     """
     if parker:
-        logger.info("Searching for stale clients")
-        stale_clients = [
-            (stale_client, range6)
-            for (stale_client, range6) in find_stale_wireguard_clients(
-                True, "wg-nodes", _PARKER_PEER_TIMEOUT
-            )
-            if keep is None or not keep(stale_client)
-        ]
-        logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
-        stale_wireguard_clients: list[WireGuardClient | ParkerWireGuardClient] = [
-            ParkerWireGuardClient(public_key=stale_client, range6=range6, remove=True)
-            for (stale_client, range6) in stale_clients
-        ]
-    else:
-        logger.info("Searching for stale clients for %s", domain)
-        stale_clients = [
-            (stale_client, range6)
-            for (stale_client, range6) in find_stale_wireguard_clients(
-                False, "wg-" + domain, timeout
-            )
-            if keep is None or not keep(stale_client)
-        ]
-        logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
-        stale_wireguard_clients = [
-            WireGuardClient(public_key=stale_client, domain=domain, remove=True)
-            for (stale_client, _) in stale_clients
-        ]
-    logger.debug("Found stale WireGuard clients: %s", stale_wireguard_clients)
+        return flush_stale_parker_peers(
+            stale_timeout=_PARKER_PEER_TIMEOUT if timeout is None else timeout,
+            keep=keep,
+            initial_handshake_grace=initial_handshake_grace,
+            parker_prefix_length=parker_prefix_length,
+            coordinator=coordinator,
+        )
+    if timeout is None:
+        timeout = _DEFAULT_PEER_TIMEOUT
+    logger.info("Searching for stale clients for %s", domain)
+    stale_clients = [
+        stale_client
+        for (stale_client, _) in find_stale_wireguard_clients(
+            False, "wg-" + domain, timeout
+        )
+        if keep is None or not keep(stale_client)
+    ]
+    logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
+    stale_wireguard_clients = [
+        WireGuardClient(public_key=stale_client, domain=domain, remove=True)
+        for stale_client in stale_clients
+    ]
     logger.info("Processing stale WireGuard clients.")
     link_handled = [
         link_handler(stale_client) for stale_client in stale_wireguard_clients
     ]
     logger.debug("Handled the following stale clients: %s", link_handled)
     return link_handled
+
+
+def flush_stale_parker_peers(
+    stale_timeout: float = _PARKER_PEER_TIMEOUT,
+    keep: Callable[[str], bool] | None = None,
+    *,
+    initial_handshake_grace: float = _INITIAL_HANDSHAKE_GRACE,
+    parker_prefix_length: int = _PARKER_PREFIX_LENGTH,
+    coordinator: PeerMutationCoordinator = peer_mutations,
+    clock: Callable[[], float] = time.time,
+) -> list[PeerCleanupResult]:
+    """Removes stale Parker peers and their prefix routes.
+
+    Never-handshaked peers are kept for initial_handshake_grace after their last queue update
+    (or after worker start). Each candidate is re-checked while holding the per-peer lock shared
+    with the queue processor, so a concurrent update is never undone. The prefix route is kept if
+    another current peer owns the prefix.
+
+    Returns:
+        The outcome for every peer selected for cleanup.
+    """
+    retry_pending_parker_routes(
+        coordinator=coordinator, prefix_length=parker_prefix_length
+    )
+    wg_interface = _PARKER_INTERFACE
+    logger.info("Searching for stale clients interface=%s", wg_interface)
+
+    def find() -> list[StaleWireGuardPeer]:
+        return [
+            peer
+            for peer in find_stale_parker_peers(
+                wg_interface,
+                stale_timeout=stale_timeout,
+                initial_handshake_grace=initial_handshake_grace,
+                parker_prefix_length=parker_prefix_length,
+                coordinator=coordinator,
+                clock=clock,
+            )
+            if keep is None or not keep(peer.public_key)
+        ]
+
+    stale_peers = find()
+    logger.debug("Found %s stale clients: %s", len(stale_peers), stale_peers)
+
+    results = []
+    for stale_peer in stale_peers:
+        client = ParkerWireGuardClient(
+            public_key=stale_peer.public_key,
+            range6=stale_peer.parker_prefix or "",
+            remove=True,
+        )
+        with coordinator.peer_lock(client.public_key, client.range6):
+            still_stale = not coordinator.recently_provisioned(
+                client.public_key, initial_handshake_grace
+            ) and any(
+                peer.public_key == client.public_key
+                and peer.parker_prefix == client.range6
+                for peer in find()
+            )
+            if not still_stale:
+                logger.info(
+                    "Deferring cleanup after peer state changed interface=%s public_key=%s",
+                    wg_interface,
+                    client.public_key,
+                )
+                results.append(
+                    PeerCleanupResult(
+                        public_key=client.public_key, status="deferred", operations={}
+                    )
+                )
+                continue
+            try:
+                preserve_route = parker_prefix_owned_by_other_peer(
+                    wg_interface,
+                    client.range6,
+                    client.public_key,
+                    parker_prefix_length,
+                )
+                operations = parker_link_handler(
+                    client, preserve_parker_route=preserve_route
+                )
+            except PeerMutationError as error:
+                logger.error(
+                    "Peer cleanup failed interface=%s public_key=%s "
+                    "operation=%s completed_operations=%s error=%s",
+                    wg_interface,
+                    client.public_key,
+                    error.operation,
+                    list(error.operations),
+                    error.cause,
+                )
+                results.append(
+                    PeerCleanupResult(
+                        public_key=client.public_key,
+                        status="failed",
+                        operations=error.operations,
+                        failed_operation=error.operation,
+                        error=str(error.cause),
+                    )
+                )
+                continue
+            coordinator.forget(client.public_key)
+            logger.info(
+                "Peer cleanup completed interface=%s public_key=%s operations=%s",
+                wg_interface,
+                client.public_key,
+                {name: outcome.status for name, outcome in operations.items()},
+            )
+            results.append(
+                PeerCleanupResult(
+                    public_key=client.public_key, status="deleted", operations=operations
+                )
+            )
+    return results
 
 
 # pyroute2 stuff
@@ -242,6 +411,8 @@ def link_handler(client: WireGuardClient | ParkerWireGuardClient) -> dict:
     Returns:
         The outcome of each operation.
     """
+    if isinstance(client, ParkerWireGuardClient):
+        return parker_link_handler(client)
     results = {}
     # Updates WireGuard peers.
     results.update({"Wireguard": update_wireguard_peer(client)})
@@ -259,6 +430,87 @@ def link_handler(client: WireGuardClient | ParkerWireGuardClient) -> dict:
         results.update({"Bridge FDB": bridge_fdb_handler(client)})
         logger.debug("Updated Bridge FDB for %s", client)
     return results
+
+
+def _is_absent_error(error: Exception) -> bool:
+    code = getattr(error, "code", None)
+    return isinstance(code, int) and abs(code) in _ABSENT_ERRNOS
+
+
+def _run_operation(
+    operation: str,
+    client: WireGuardClient | ParkerWireGuardClient,
+    handler: Callable[[Any], Any],
+    operations: dict[str, OperationOutcome],
+) -> None:
+    """Runs one netlink mutation and records its outcome in operations.
+
+    Raises:
+        PeerMutationError: If the operation failed, unless the object to remove is already gone.
+    """
+    try:
+        result = handler(client)
+    except pyroute2.netlink.exceptions.NetlinkError as error:
+        if client.remove and _is_absent_error(error):
+            logger.info(
+                "Peer dependency already absent public_key=%s operation=%s errno=%s",
+                client.public_key,
+                operation,
+                error.code,
+            )
+            operations[operation] = OperationOutcome(status="already_absent")
+            return
+        raise PeerMutationError(operation, client, operations.copy(), error) from error
+    except Exception as error:  # noqa: BLE001
+        raise PeerMutationError(operation, client, operations.copy(), error) from error
+    operations[operation] = OperationOutcome(
+        status="deleted" if client.remove else "updated", result=result
+    )
+
+
+def parker_link_handler(
+    client: ParkerWireGuardClient, *, preserve_parker_route: bool = False
+) -> dict[str, OperationOutcome]:
+    """Updates the WireGuard peer and prefix route of a Parker peer.
+
+    On removal, the route is removed before the peer (so the peer stays discoverable for a retry),
+    unless preserve_parker_route is set because another peer owns the prefix. On update, routes
+    of previous prefixes of the peer are removed after the new state is installed.
+
+    Returns:
+        The outcome of each operation.
+
+    Raises:
+        PeerMutationError: If an operation failed.
+    """
+    operations: dict[str, OperationOutcome] = {}
+    logger.debug("Handling links for %s", client)
+    if client.remove:
+        if preserve_parker_route:
+            logger.info(
+                "Preserving Parker route owned by another peer public_key=%s prefix=%s",
+                client.public_key,
+                client.range6,
+            )
+            operations["route"] = OperationOutcome(status="preserved_shared")
+        elif client.range6:
+            _run_operation("route", client, route_handler, operations)
+        _run_operation("wireguard", client, update_wireguard_peer, operations)
+        return operations
+    _run_operation("wireguard", client, update_wireguard_peer, operations)
+    _run_operation("route", client, route_handler, operations)
+    for previous_range6 in client.previous_ranges6:
+        if previous_range6 == client.range6:
+            continue
+        _run_operation(
+            f"old_route:{previous_range6}",
+            ParkerWireGuardClient(
+                public_key=client.public_key, range6=previous_range6, remove=True
+            ),
+            route_handler,
+            operations,
+        )
+    return operations
 
 
 def bridge_fdb_handler(client: WireGuardClient) -> dict:
@@ -350,6 +602,219 @@ def route_handler(client: WireGuardClient | ParkerWireGuardClient) -> dict:
     if isinstance(client, ParkerWireGuardClient):
         return dict(result) if isinstance(result, dict) else {"result": result}
     return result
+
+
+def _wireguard_info(wg_interface: str, retries: int = _NETLINK_DUMP_RETRIES) -> list:
+    for attempt in range(retries + 1):
+        try:
+            return _netlink_call(lambda h: h.wireguard().info(wg_interface), "wg_info")
+        except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
+            if attempt == retries:
+                raise
+            logger.warning(
+                "WireGuard netlink dump interrupted; retrying interface=%s attempt=%s",
+                wg_interface,
+                attempt + 1,
+            )
+    raise AssertionError("unreachable")
+
+
+def _all_peers(wg_interface: str) -> list:
+    peers = []
+    for msg in _wireguard_info(wg_interface):
+        msg_peers = msg.get_attr("WGDEVICE_A_PEERS")
+        if msg_peers is not None and not isinstance(msg_peers, (list, tuple)):
+            logger.warning(
+                "Skipping malformed WireGuard peer list interface=%s", wg_interface
+            )
+            continue
+        if msg_peers:
+            peers.extend(msg_peers)
+    return peers
+
+
+def _peer_public_key(peer: Any) -> str:
+    public_key = peer.get_attr("WGPEER_A_PUBLIC_KEY")
+    if isinstance(public_key, bytes):
+        public_key = public_key.decode("ascii")
+    if not isinstance(public_key, str) or not public_key:
+        raise ValueError("missing or invalid public key")
+    return public_key
+
+
+def _last_handshake_seconds(peer: Any) -> int | None:
+    handshake = peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")
+    if handshake is None:
+        return None
+    if not isinstance(handshake, dict):
+        raise ValueError("invalid last handshake attribute")
+    seconds = handshake.get("tv_sec")
+    if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 0:
+        raise ValueError("invalid last handshake seconds")
+    return seconds
+
+
+def _peer_prefixes(peer: Any, prefix_length: int) -> set[str]:
+    allowed_ips = peer.get_attr("WGPEER_A_ALLOWEDIPS")
+    if not isinstance(allowed_ips, (list, tuple)):
+        return set()
+    prefixes = set()
+    for allowed_ip in allowed_ips:
+        address = allowed_ip.get("addr") if isinstance(allowed_ip, dict) else None
+        if not isinstance(address, str):
+            continue
+        try:
+            network = ipaddress.ip_network(address, strict=False)
+        except ValueError:
+            continue
+        if network.version == 6 and network.prefixlen == prefix_length:
+            prefixes.add(str(network))
+    return prefixes
+
+
+def _parker_prefix(peer: Any, prefix_length: int) -> str:
+    matches = _peer_prefixes(peer, prefix_length)
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected one IPv6 /{prefix_length} Parker prefix, found {len(matches)}"
+        )
+    return matches.pop()
+
+
+def parker_prefix_owned_by_other_peer(
+    wg_interface: str, parker_prefix: str, public_key: str, prefix_length: int
+) -> bool:
+    """Returns whether a current peer other than public_key owns a Parker prefix."""
+    for peer in _all_peers(wg_interface):
+        try:
+            if parker_prefix not in _peer_prefixes(peer, prefix_length):
+                continue
+        except AttributeError:
+            continue
+        try:
+            peer_public_key = _peer_public_key(peer)
+        except (UnicodeDecodeError, ValueError, AttributeError):
+            logger.warning(
+                "Preserving Parker route with ambiguous owner interface=%s prefix=%s",
+                wg_interface,
+                parker_prefix,
+            )
+            return True
+        if peer_public_key != public_key:
+            return True
+    return False
+
+
+def get_parker_prefixes_for_peer(
+    wg_interface: str, public_key: str, prefix_length: int
+) -> list[str]:
+    """Returns all Parker prefixes currently assigned to a peer."""
+    prefixes: set[str] = set()
+    for peer in _all_peers(wg_interface):
+        try:
+            if _peer_public_key(peer) != public_key:
+                continue
+            prefixes |= _peer_prefixes(peer, prefix_length)
+        except (UnicodeDecodeError, ValueError, AttributeError):
+            continue
+    return sorted(prefixes)
+
+
+def retry_pending_parker_routes(
+    *,
+    coordinator: PeerMutationCoordinator = peer_mutations,
+    prefix_length: int = _PARKER_PREFIX_LENGTH,
+    wg_interface: str = _PARKER_INTERFACE,
+) -> None:
+    """Retries old Parker route deletions left behind by partially failed queue updates."""
+    for prefix in coordinator.pending_parker_routes():
+        with coordinator.peer_lock("", prefix):
+            try:
+                has_owner = parker_prefix_owned_by_other_peer(
+                    wg_interface, prefix, "", prefix_length
+                )
+            except pyroute2.netlink.exceptions.NetlinkDumpInterrupted as error:
+                logger.warning(
+                    "Pending Parker route ownership check failed prefix=%s error=%s",
+                    prefix,
+                    error,
+                )
+                continue
+            if has_owner:
+                logger.info("Pending Parker route is owned again prefix=%s", prefix)
+                coordinator.forget_pending_parker_route(prefix)
+                continue
+            operations: dict[str, OperationOutcome] = {}
+            client = ParkerWireGuardClient(
+                public_key="pending-route-cleanup", range6=prefix, remove=True
+            )
+            try:
+                _run_operation("route", client, route_handler, operations)
+            except PeerMutationError as error:
+                logger.error(
+                    "Pending Parker route cleanup failed prefix=%s error=%s",
+                    prefix,
+                    error.cause,
+                )
+                continue
+            coordinator.forget_pending_parker_route(prefix)
+            logger.info(
+                "Pending Parker route cleanup completed prefix=%s status=%s",
+                prefix,
+                operations["route"].status,
+            )
+
+
+def find_stale_parker_peers(
+    wg_interface: str = _PARKER_INTERFACE,
+    *,
+    stale_timeout: float = _PARKER_PEER_TIMEOUT,
+    initial_handshake_grace: float = _INITIAL_HANDSHAKE_GRACE,
+    parker_prefix_length: int = _PARKER_PREFIX_LENGTH,
+    coordinator: PeerMutationCoordinator = peer_mutations,
+    clock: Callable[[], float] = time.time,
+) -> list[StaleWireGuardPeer]:
+    """Returns the validated Parker peers which have not had a recent handshake.
+
+    Peers which never had a handshake are only returned after the initial handshake grace,
+    malformed peers are skipped.
+    """
+    stale_before = clock() - stale_timeout
+    logger.info(
+        "Starting search for stale wireguard peers for interface %s.", wg_interface
+    )
+    stale_peers = []
+    for peer_index, peer in enumerate(_all_peers(wg_interface)):
+        try:
+            public_key = _peer_public_key(peer)
+            if coordinator.recently_provisioned(public_key, initial_handshake_grace):
+                continue
+            last_handshake = _last_handshake_seconds(peer)
+            if last_handshake in (None, 0):
+                if coordinator.defer_never_handshaked(
+                    public_key, initial_handshake_grace
+                ):
+                    continue
+                reason = "never_handshaked"
+            elif last_handshake <= stale_before:
+                reason = "stale_handshake"
+            else:
+                continue
+            parker_prefix = _parker_prefix(peer, parker_prefix_length)
+        except (UnicodeDecodeError, ValueError, AttributeError) as error:
+            logger.warning(
+                "Skipping malformed WireGuard peer interface=%s peer_index=%s reason=%s",
+                wg_interface,
+                peer_index,
+                error,
+            )
+            continue
+        stale_peers.append(
+            StaleWireGuardPeer(
+                public_key=public_key, parker_prefix=parker_prefix, reason=reason
+            )
+        )
+    return stale_peers
 
 
 def find_stale_wireguard_clients(

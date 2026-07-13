@@ -19,10 +19,40 @@ For Parker the following configuration items are relevant in addition to the def
 - `sticky_worker_tolerance`
 - `broker_signing_key`
 - `parker` section
+- `cleanup` section
 - `netbox` section
 
 
 ## Design considerations
+
+### Offline peer cleanup
+
+The Parker worker defaults to a 300-second stale-handshake timeout and a
+600-second initial-handshake grace. The stale timeout accommodates the default
+120-second config retry and 180-second WireGuard tunnel timeout. Zero or missing
+handshake timestamps mean that a peer has never handshaked; they do not cause
+immediate deletion. Accepted queue updates refresh an in-memory, bounded
+provisioning tracker, and cleanup serializes only with updates for the same
+public key or assigned prefix.
+
+WireGuard does not expose peer creation time. After a worker restart, every
+untracked never-handshaked peer therefore receives one grace period from worker
+startup. Truly abandoned peers are removed on a later sweep rather than retained
+forever. The tracker retains at most 65,536 peer timestamps; if that bound is
+reached before entries age out, new provisioning fails explicitly rather than
+dropping grace state and risking premature cleanup.
+
+For a stale Parker peer, cleanup removes the selected assigned-prefix route
+before removing the WireGuard peer. If another current peer owns the prefix, its
+route is preserved. A real route or peer failure is reported and retried on the
+next sweep; already-absent state is treated as idempotent.
+
+When an accepted queue update reassigns a peer, the worker locks both the old
+and new prefixes, installs the new peer state and route, then removes the old
+route. `Range6` must match the configured Parker IPv6 allocation prefix length.
+If old-route deletion fails after reassignment, the bounded worker-side tracker
+retries it on cleanup sweeps after checking that no current peer owns it. This
+prevents cleanup from preserving a route that the peer immediately abandons.
 
 ### Concentrator selection
 

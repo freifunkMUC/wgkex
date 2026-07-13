@@ -35,6 +35,10 @@ class InvalidDomain(Error):
     """If the domains is invalid and is not listed in the configuration file."""
 
 
+def _parker_prefix_length() -> int:
+    return config.get_config().parker.prefixes.ipv6.length
+
+
 def flush_workers(parker: bool, domain: str) -> None:
     """Removes stale peers every peer_cleanup.interval seconds."""
     cleanup_cfg = config.get_config().peer_cleanup
@@ -47,15 +51,26 @@ def flush_workers(parker: bool, domain: str) -> None:
         added_at = peer_add_tracker.added_at(wg_interface, public_key)
         return (
             added_at is not None
-            and peer_add_tracker.now() - added_at < cleanup_cfg.stale_timeout
+            and peer_add_tracker.now() - added_at < cleanup_cfg.timeout_for(parker)
         )
+
+    parker_kwargs = {}
+    if parker:
+        parker_kwargs = {
+            "initial_handshake_grace": cleanup_cfg.initial_handshake_grace,
+            "parker_prefix_length": _parker_prefix_length(),
+        }
 
     while True:
         try:
             time.sleep(cleanup_cfg.interval)
             logger.info(f"Running cleanup task for {domain}")
             removed = wg_flush_stale_peers(
-                parker, domain, cleanup_cfg.stale_timeout, keep=keep
+                parker,
+                domain,
+                cleanup_cfg.timeout_for(parker),
+                keep=keep,
+                **parker_kwargs,
             )
             logger.info("Removed %d stale peers from %s", len(removed), domain)
             logger.debug("Cleanup results: %s", removed)
@@ -182,7 +197,14 @@ def main():
 
     start_metrics_server()
     clean_up_worker(parker_enabled)
-    watch_queue(parker_enabled)
+    if parker_enabled:
+        watch_queue(
+            parker_enabled,
+            parker_prefix_length=_parker_prefix_length(),
+            initial_handshake_grace=config.get_config().peer_cleanup.initial_handshake_grace,
+        )
+    else:
+        watch_queue(parker_enabled)
     mqtt.connect(exit_event)
 
 
