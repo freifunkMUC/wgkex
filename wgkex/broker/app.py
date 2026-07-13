@@ -74,12 +74,9 @@ def _fetch_app_config() -> Flask_app:
     app.config["MQTT_PASSWORD"] = mqtt_cfg.password
     app.config["MQTT_KEEPALIVE"] = mqtt_cfg.keepalive
     app.config["MQTT_TLS_ENABLED"] = mqtt_cfg.tls
-    # Configure a Last Will so other instances learn this broker went away
-    last_will_topic = (
-        MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE
-        if config.get_config().parker.enabled
-        else MQTTTopics.TOPIC_BROKER_ANNOUNCE
-    ).format(broker=_HOSTNAME)
+    # The retained legacy status is canonical in every mode so the single MQTT
+    # last will can reliably clear both legacy and Parker broker state.
+    last_will_topic = MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker=_HOSTNAME)
     app.config["MQTT_LAST_WILL_TOPIC"] = last_will_topic
     app.config["MQTT_LAST_WILL_MESSAGE"] = 0
     app.config["MQTT_LAST_WILL_QOS"] = 1
@@ -246,6 +243,7 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
 
 @app.route("/api/v3/wg/key/exchange", methods=["GET"])
 @app.route("/api/v3/config", methods=["GET"])
+@app.route("/config", methods=["GET"])
 def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     if not config.get_config().parker.enabled or ipam is None:
         return {
@@ -291,6 +289,16 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         return {
             "error": {
                 "message": "No IPv6 range available for this public key. Please try again later."
+            }
+        }, 500
+    if full_range6.prefixlen > 63:
+        logger.error(
+            "Allocated IPv6 range %s is too small for Parker's two /64 networks",
+            full_range6,
+        )
+        return {
+            "error": {
+                "message": "Allocated IPv6 range is invalid. Please try again later."
             }
         }, 500
     ranges = full_range6.subnets(new_prefix=64)
@@ -366,7 +374,9 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             {
                 "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
                 "address6": w_data.get("LinkAddress"),
-                "endpoint": f"{w_data.get('ExternalAddress')}:{str(w_data.get('Port'))}",
+                "endpoint": join_host_port(
+                    str(w_data.get("ExternalAddress")), str(w_data.get("Port"))
+                ),
                 "pubkey": w_data.get("PublicKey"),  # type: ignore
                 "id": worker.id,
             }
@@ -430,30 +440,39 @@ def handle_mqtt_connect(
             )
             return
 
+    mqtt.subscribe(MQTTTopics.TOPIC_CONNECTED_PEERS.format(worker="+", domain="+"))
+    mqtt.subscribe(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
+    mqtt.subscribe(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+    mqtt.subscribe(MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker="+"))
+    mqtt.publish(
+        MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
+        1,  # pyright: ignore[reportArgumentType]
+        qos=1,
+        retain=True,
+    )
+
     if config.get_config().parker.enabled:
         logger.debug("Parker mode is enabled, subscribing to parker topics")
         mqtt.subscribe(MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"))
         mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
         mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"))
         mqtt.subscribe(MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker="+"))
-        # Announce this broker as online
+        parker_announce_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
+            broker=_HOSTNAME
+        )
+        # Clear retained Parker announcements from older versions. The retained
+        # legacy status and its last will are the canonical liveness source.
         mqtt.publish(
-            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
-            1,  # pyright: ignore[reportArgumentType]
+            parker_announce_topic,
+            b"",
             qos=1,
             retain=True,
         )
-    else:
-        mqtt.subscribe(MQTTTopics.TOPIC_CONNECTED_PEERS.format(worker="+", domain="+"))
-        mqtt.subscribe(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
-        mqtt.subscribe(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
-        mqtt.subscribe(MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker="+"))
-        # Announce this broker as online
         mqtt.publish(
-            MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
+            parker_announce_topic,
             1,  # pyright: ignore[reportArgumentType]
             qos=1,
-            retain=True,
+            retain=False,
         )
 
 
@@ -599,23 +618,23 @@ def handle_mqtt_message_broker_status(
                 f"Broker marked online: {broker}, {len(active_brokers) + 1} brokers online"
             )
         active_brokers.add(broker)
+        if config.get_config().parker.enabled:
+            parker_active_brokers.add(broker)
     else:
         if broker in active_brokers:
             logger.info(
                 f"Broker marked offline: {broker}, {len(active_brokers) - 1} brokers online"
             )
             active_brokers.discard(broker)
+        if config.get_config().parker.enabled:
+            parker_active_brokers.discard(broker)
 
 
 @mqtt.on_topic(MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker="+"))
 def handle_mqtt_message_parker_broker_status(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
-    """Track online/offline brokers announced via MQTT.
-
-    Brokers should publish retained 1 when online and 0 when offline. LWT
-    causes retained 0 to be published on unexpected disconnect.
-    """
+    """Track Parker broker status aliases announced by compatible brokers."""
     logger.debug(
         f"Broker announce received on {message.topic}: {message.payload.decode()}"
     )
@@ -670,14 +689,23 @@ def _publish_offline_and_exit(signum, frame) -> None:
     """Publish retained offline announce and exit the process."""
     try:
         logger.info("Broker shutting down, announcing offline status")
-        announce_topic = (
-            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker=_HOSTNAME)
-            if config.get_config().parker.enabled
-            else MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker=_HOSTNAME)
-        )
         mqtt.publish(
-            announce_topic, 0, qos=1, retain=True
-        )  # pyright: ignore[reportArgumentType]
+            MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
+            0,  # pyright: ignore[reportArgumentType]
+            qos=1,
+            retain=True,
+        )
+        if config.get_config().parker.enabled:
+            parker_announce_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
+                broker=_HOSTNAME
+            )
+            mqtt.publish(parker_announce_topic, b"", qos=1, retain=True)
+            mqtt.publish(
+                parker_announce_topic,
+                0,  # pyright: ignore[reportArgumentType]
+                qos=1,
+                retain=False,
+            )
         # Give the client loop a moment to send the message
         time.sleep(2)
     except Exception:

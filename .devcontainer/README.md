@@ -7,7 +7,12 @@
 - `/root/.cache/pip` and `/var/lib/docker` are volumes, for caching between restarts
 - NetBox instance auto-starts on port 8000 (forwarded)
 - MQTT service started automatically
-- `wg-welt` and `wg-nodes` interfaces created on startup (TODO: generate LL IPv6 address based on pubkey)
+- Kernel `wg-welt` and `wg-nodes` interfaces created on startup
+
+The worker manages WireGuard through generic netlink, so the devcontainer requires
+host kernel WireGuard support and the `NET_ADMIN` capability. Container startup fails
+with a clear error when kernel interfaces cannot be created; userspace `wireguard-go`
+interfaces are intentionally not used because the worker cannot manage them.
 
 ## NetBox (for Parker)
 

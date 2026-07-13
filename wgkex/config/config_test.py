@@ -18,6 +18,26 @@ _INVALID_LINT = (
 _INVALID_CFG = "asdasdasdasd"
 
 
+def _config_dict() -> dict:
+    return {
+        "domains": ["_test_domain"],
+        "domain_prefixes": ["_test_"],
+        "mqtt": {"broker_url": "", "username": "", "password": ""},
+    }
+
+
+def _parker_dict() -> dict:
+    return {
+        "enabled": True,
+        "464xlat": True,
+        "ipam": "json",
+        "prefixes": {
+            "ipv4": {"clat_subnet": "10.80.96.0/22"},
+            "ipv6": {"length": 63},
+        },
+    }
+
+
 class TestConfig(unittest.TestCase):
     def tearDown(self) -> None:
         config._parsed_config = None
@@ -88,6 +108,120 @@ class TestConfig(unittest.TestCase):
         with mock.patch("builtins.open", mock_open):
             with self.assertRaises(ValueError):
                 config.get_config()
+
+    def test_parker_ipv6_prefix_length_must_contain_two_64s(self):
+        for prefix_length in (-1, 64, 128, "invalid"):
+            with self.subTest(prefix_length=prefix_length):
+                mock_open = mock.mock_open(
+                    read_data=_VALID_CFG
+                    + "\nparker:\n"
+                    + "  enabled: true\n"
+                    + "  ipam: json\n"
+                    + "  464xlat: true\n"
+                    + "  prefixes:\n"
+                    + "    ipv4:\n"
+                    + "      clat_subnet: 10.80.96.0/22\n"
+                    + "    ipv6:\n"
+                    + f"      length: {prefix_length}\n"
+                    + "broker_signing_key: asdfasdfasdf"
+                )
+                with mock.patch("builtins.open", mock_open):
+                    with self.assertRaises(ValueError):
+                        config.get_config()
+                config._parsed_config = None
+
+    def test_worker_tolerance_bounds_are_validated(self):
+        for tolerance in (-1, 101):
+            with self.subTest(tolerance=tolerance):
+                with self.assertRaisesRegex(ValueError, "between 0 and 100"):
+                    config.Workers.from_dict({}, tolerance)
+
+    def test_parker_prefix_structure_validation(self):
+        invalid_configs = [
+            {"enabled": True, "464xlat": True, "ipam": "json"},
+            {
+                "enabled": True,
+                "464xlat": True,
+                "ipam": "json",
+                "prefixes": [],
+            },
+            {
+                "enabled": True,
+                "464xlat": True,
+                "ipam": "json",
+                "prefixes": {"ipv4": {}},
+            },
+            {
+                "enabled": True,
+                "464xlat": True,
+                "ipam": "json",
+                "prefixes": {"ipv4": {}, "ipv6": {"length": 63}},
+            },
+            {
+                "enabled": True,
+                "464xlat": True,
+                "ipam": "json",
+                "prefixes": {
+                    "ipv4": {"clat_subnet": "10.80.96.0/22"},
+                    "ipv6": {},
+                },
+            },
+        ]
+        for parker in invalid_configs:
+            with self.subTest(parker=parker), self.assertRaises(ValueError):
+                config.Parker.from_dict(parker)
+
+    def test_netbox_and_non_xlat_validation(self):
+        parker = _parker_dict()
+        parker["ipam"] = "netbox"
+        with self.assertRaisesRegex(ValueError, "ipv6"):
+            config.Parker.from_dict(parker)
+
+        parker["prefixes"]["ipv6"]["netbox_filter"] = {"role": "wgkex"}
+        parsed = config.Parker.from_dict(parker)
+        self.assertEqual(parsed.ipam, config.Parker.IPAM.NETBOX)
+
+        parker["464xlat"] = False
+        parker["prefixes"]["ipv4"] = {}
+        with self.assertRaisesRegex(ValueError, "length"):
+            config.Parker.from_dict(parker)
+
+        parker["prefixes"]["ipv4"]["length"] = 24
+        with self.assertRaisesRegex(ValueError, "netbox_filter"):
+            config.Parker.from_dict(parker)
+
+        parker["prefixes"]["ipv4"]["netbox_filter"] = {"role": "wgkex-v4"}
+        with self.assertRaises(NotImplementedError):
+            config.Parker.from_dict(parker)
+
+    def test_parker_config_requires_signing_and_netbox_credentials(self):
+        cfg = _config_dict()
+        cfg["parker"] = _parker_dict()
+        with self.assertRaisesRegex(ValueError, "broker_signing_key"):
+            config.Config.from_dict(cfg)
+
+        cfg["broker_signing_key"] = "key"
+        cfg["parker"]["ipam"] = "netbox"
+        cfg["parker"]["prefixes"]["ipv6"]["netbox_filter"] = {"role": "wgkex"}
+        with self.assertRaisesRegex(ValueError, "no netbox config"):
+            config.Config.from_dict(cfg)
+
+        cfg["netbox"] = {"url": "https://netbox", "api_key": "token"}
+        parsed = config.Config.from_dict(cfg)
+        self.assertEqual(parsed.netbox.url, "https://netbox")
+        self.assertEqual(parsed.netbox.api_key, "token")
+
+    def test_yaml_parser_error_exits(self):
+        with (
+            mock.patch.object(
+                config.yaml, "safe_load", side_effect=yaml.YAMLError("invalid")
+            ),
+            mock.patch.object(config.sys, "exit", side_effect=SystemExit(1)) as exit,
+            mock.patch("builtins.open", mock.mock_open(read_data="invalid")),
+            self.assertRaises(SystemExit),
+        ):
+            config.get_config()
+        exit.assert_called_once_with(1)
 
 
 if __name__ == "__main__":
