@@ -59,7 +59,9 @@ class NetboxIPAM(ParkerIPAM):
             if self.parent_prefix_v4 is None:
                 raise ValueError("No parent IPv4 prefix loaded (464XLAT mode enabled?)")
             return self.parent_prefix_v4
-        return self.parent_prefix_v6
+        if addr_family == 6:
+            return self.parent_prefix_v6
+        raise ValueError(f"Unsupported address family: {addr_family}")
 
     def _get_prefixes(
         self,

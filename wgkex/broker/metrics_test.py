@@ -85,10 +85,7 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(connected, 19)
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
-    def test_get_best_workers_require_configured_skips_unknown_workers(
-        self, config_mock
-    ):
-        """Verify require_configured only selects workers with a config entry."""
+    def test_parker_selection_skips_unconfigured_workers(self, config_mock):
         test_config = mock.MagicMock(spec=config.Config)
         test_config.workers = config.Workers.from_dict({"1": {"id": 5}}, 25)
         config_mock.return_value = test_config
@@ -100,12 +97,11 @@ class TestMetrics(unittest.TestCase):
         worker_metrics.set_online("2")
 
         results = worker_metrics.get_best_workers("d", [], require_configured=True)
-        self.assertEqual([r.name for r in results], ["1"])
+        self.assertEqual([result.name for result in results], ["1"])
         self.assertEqual(results[0].id, 5)
 
-        # Without the flag, unconfigured workers stay selectable (legacy mode).
         results = worker_metrics.get_best_workers("d", [])
-        self.assertIn("2", [r.name for r in results])
+        self.assertIn("2", [result.name for result in results])
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
     def test_get_best_worker_returns_best_imbalanced_domains(self, config_mock):
@@ -191,30 +187,6 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(results[0].name, "2")
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
-    def test_get_best_worker_stickyness_small_target(self, config_mock):
-        """Verify a sticky worker one peer over a small target is kept.
-
-        With small targets the relative tolerance alone is below one peer, so
-        any overshoot would evict the sticky worker and make nodes ping-pong
-        between workers."""
-        test_config = mock.MagicMock(spec=config.Config)
-        test_config.workers = config.Workers.from_dict(
-            {"1": {"id": 1, "weight": 50}, "2": {"id": 2, "weight": 50}}, 10
-        )
-        config_mock.return_value = test_config
-
-        worker_metrics = WorkerMetricsCollection()
-        # Total 4 peers, target 2 per worker; tolerance 10% of 2 = 0.2 peers.
-        worker_metrics.update("1", "d", "connected_peers", 1)
-        worker_metrics.update("2", "d", "connected_peers", 3)
-        worker_metrics.set_online("1")
-        worker_metrics.set_online("2")
-
-        results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0].name, "2")
-
-    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
     def test_overloaded_sticky_worker_is_replaced(self, config_mock):
         test_config = mock.MagicMock(spec=config.Config)
         test_config.workers = config.Workers.from_dict(
@@ -243,6 +215,23 @@ class TestMetrics(unittest.TestCase):
         self.assertCountEqual(
             [result.name for result in results], ["available", "other-pop"]
         )
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_small_target_keeps_sticky_worker_with_one_peer_slack(self, config_mock):
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(
+            {"1": {"id": 1, "weight": 50}, "2": {"id": 2, "weight": 50}}, 10
+        )
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 1)
+        worker_metrics.update("2", "d", "connected_peers", 3)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+
+        results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
+        self.assertEqual([result.name for result in results], ["2"])
 
     def test_collection_set_and_total_skip_missing_record(self):
         worker_metrics = WorkerMetricsCollection()

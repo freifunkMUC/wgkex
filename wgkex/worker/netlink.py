@@ -260,7 +260,6 @@ def find_stale_wireguard_clients(parker: bool, wg_interface: str) -> List:
                 peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8"),
                 (
                     allowed_ips[0].get("addr")  # addr contains the prefix as string
-                    # get_attr returns None when the peer has no allowed IPs.
                     if parker and (allowed_ips := peer.get_attr("WGPEER_A_ALLOWEDIPS"))
                     else None
                 ),

@@ -30,8 +30,7 @@ class Worker:
         id: A unique, static ID for this worker. In Parker mode this is the
             concentrator ID sent to nodes, identifying the tunnel on the node, so it
             must never change for a given worker. If not set explicitly in the config,
-            it defaults to the worker's position in the workers map - which shifts
-            when workers are added or removed, so set it explicitly in production.
+            it defaults to the worker's position in the workers map.
         weight: The relative weight of a worker, defaults to 1.
         pop: The PoP (Point of Presence) this worker is located in
     """
@@ -42,12 +41,13 @@ class Worker:
 
     @classmethod
     def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
-        # An explicit but empty key (e.g. "weight:") parses to None in YAML
-        # and must fall back to the default like a missing key.
+        worker_id = int(worker_cfg["id"])
+        if not 0 <= worker_id <= 2**32 - 1:
+            raise ValueError("Worker ID must be an unsigned 32-bit integer")
         return cls(
-            weight=int(worker_cfg.get("weight") or 1),
+            weight=int(1 if worker_cfg.get("weight") is None else worker_cfg["weight"]),
             pop=worker_cfg.get("pop") or "",
-            id=int(worker_cfg["id"]),
+            id=worker_id,
         )
 
 
@@ -412,11 +412,11 @@ class Config:
         parker = Parker.from_dict(cfg.get("parker", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
 
-        # broker_signing_key and netbox are broker-only settings, but the
-        # parker section is shared with workers, so their presence is
-        # enforced by the broker (signer.py / _load_parker_ipam), not here.
         netbox_cfg = None
-        if isinstance(cfg.get("netbox"), dict):
+        if isinstance(cfg.get("netbox"), dict) and {
+            "url",
+            "api_key",
+        }.issubset(cfg["netbox"]):
             netbox_cfg = Netbox.from_dict(cfg["netbox"])
 
         return cls(

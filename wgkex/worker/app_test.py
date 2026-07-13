@@ -128,18 +128,26 @@ class AppTest(unittest.TestCase):
         thread.return_value.start.assert_called_once()
 
         thread.reset_mock()
-        with mock.patch.object(
-            app.config,
-            "get_config",
-            return_value=_get_config_mock(
-                domains=["_TEST_PREFIX_domain.one", "unmatched"]
+        with (
+            mock.patch.object(
+                app.config,
+                "get_config",
+                return_value=_get_config_mock(
+                    domains=["_TEST_PREFIX_domain.one", "unmatched"]
+                ),
             ),
+            mock.patch.object(app.logger, "error") as error,
         ):
             app.clean_up_worker(False)
         thread.assert_called_once_with(
             target=app.flush_workers, args=(False, "domain.one"), daemon=True
         )
         thread.return_value.start.assert_called_once()
+        error.assert_called_once_with(
+            "Not every domain got cleaned. Check domains %s for missing prefixes %s",
+            repr(["_TEST_PREFIX_domain.one", "unmatched"]),
+            repr(["_TEST_PREFIX_", "_TEST_PREFIX2_"]),
+        )
 
     @mock.patch.object(app.config, "get_config")
     def test_main_parker_registers_shutdown_and_starts_components(self, config_mock):

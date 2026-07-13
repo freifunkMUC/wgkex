@@ -201,6 +201,7 @@ class TestBrokerApp(unittest.TestCase):
             self.assertEqual(self.broker_app._load_parker_ipam(), "json-ipam")
 
         cfg.parker.ipam = config.Parker.IPAM.NETBOX
+        cfg.parker.xlat = False
         cfg.netbox = config.Netbox(url="https://netbox", api_key="token")
         with (
             mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
@@ -210,7 +211,7 @@ class TestBrokerApp(unittest.TestCase):
         ):
             self.assertEqual(self.broker_app._load_parker_ipam(), "netbox-ipam")
         netbox.assert_called_once_with(
-            api_url="https://netbox", token="token", xlat=True
+            api_url="https://netbox", token="token", xlat=False
         )
 
         cfg.netbox = None
@@ -235,7 +236,18 @@ class TestBrokerApp(unittest.TestCase):
                 client, b"", {}, paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED
             )
         self.assertEqual(mqtt.subscribe.call_count, 4)
-        mqtt.publish.assert_called_once_with(mock.ANY, 1, qos=1, retain=True)
+        legacy_topic = self.broker_app.MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(
+            broker=self.broker_app._HOSTNAME
+        )
+        parker_topic = self.broker_app.MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
+            broker=self.broker_app._HOSTNAME
+        )
+        mqtt.publish.assert_has_calls(
+            [
+                mock.call(legacy_topic, 1, qos=1, retain=True),
+                mock.call(parker_topic, b"", qos=1, retain=True),
+            ]
+        )
 
         mqtt.reset_mock()
         with mock.patch.object(self.broker_app, "mqtt", mqtt):
@@ -319,6 +331,20 @@ class TestBrokerApp(unittest.TestCase):
         self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
         self.assertNotIn("broker", self.broker_app.active_brokers)
 
+        parker_cfg = _parker_config()
+        with mock.patch.object(
+            self.broker_app.config, "get_config", return_value=parker_cfg
+        ):
+            message.payload = b"1"
+            self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
+            self.assertIn("broker", self.broker_app.active_brokers)
+            self.assertNotIn("broker", self.broker_app.parker_active_brokers)
+
+            self.broker_app.parker_active_brokers.add("broker")
+            message.payload = b"0"
+            self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
+            self.assertNotIn("broker", self.broker_app.parker_active_brokers)
+
         message.payload = b"1"
         self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
         self.assertIn("broker", self.broker_app.active_brokers)
@@ -395,6 +421,7 @@ class TestBrokerApp(unittest.TestCase):
                 "/config", query_string=query
             )
             self.assertEqual(response.status_code, 400)
+            ipam.update_prefix.assert_not_called()
 
             self.broker_app.parker_worker_data["worker"] = {
                 "LinkAddress": "fe80::1",
@@ -402,15 +429,20 @@ class TestBrokerApp(unittest.TestCase):
                 "Port": 51820,
                 "PublicKey": "gateway-key",
             }
-            # An unconfigured worker must not be used as emergency fallback:
-            # its concentrator ID would not be unique or stable.
             response = self.broker_app.app.test_client().get(
                 "/config", query_string=query
             )
             self.assertEqual(response.status_code, 400)
+            ipam.update_prefix.assert_not_called()
 
-            # A configured worker is used as fallback with its configured ID.
             cfg.workers = config.Workers.from_dict({"worker": {"id": 7}}, 10)
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+            self.assertEqual(response.status_code, 400)
+            ipam.update_prefix.assert_not_called()
+
+            self.broker_app.parker_worker_metrics.set_online("worker")
             with mock.patch.object(
                 self.broker_app, "sign_response", return_value=b"signature"
             ):
@@ -420,8 +452,12 @@ class TestBrokerApp(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             payload = json.loads(response.data.split(b"\n", 1)[0])
             self.assertEqual(payload["concentrators"][0]["id"], 7)
+            ipam.update_prefix.assert_called_once_with(
+                _PUBLIC_KEY, False, True, ["worker"]
+            )
 
             self.broker_app.parker_worker_data.clear()
+            ipam.update_prefix.reset_mock()
             with mock.patch.object(
                 self.broker_app.parker_worker_metrics,
                 "get_best_workers",
@@ -431,6 +467,7 @@ class TestBrokerApp(unittest.TestCase):
                     "/config", query_string=query
                 )
             self.assertEqual(response.status_code, 500)
+            ipam.update_prefix.assert_not_called()
 
             self.broker_app.parker_worker_data["worker"] = {
                 "LinkAddress": "fe80::1",

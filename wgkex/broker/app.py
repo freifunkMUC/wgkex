@@ -131,7 +131,7 @@ def get_active_brokers_count(parker: bool) -> int:
     zero and to be conservative when no announcements are available.
     """
     if parker:
-        c = len(parker_active_brokers)
+        c = len(active_brokers.intersection(parker_active_brokers))
     else:
         c = len(active_brokers)
     return max(c, 1)
@@ -333,14 +333,11 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     if len(selected_workers) == 0:
         logger.error("No worker online for Parker network")
-        # Emergency mode - try to randomly select one for which we still have
-        # connection data cached. Only workers with a config entry qualify:
-        # the ID identifies the tunnel on the node, so it must be unique and
-        # stable, which requires an explicitly configured worker ID.
         fallback_candidates = [
             name
             for name in parker_worker_data
             if config.get_config().workers.get(name) is not None
+            and parker_worker_metrics.get(name).online
         ]
         if fallback_candidates:
             fallback_name = random.choice(fallback_candidates)
@@ -394,9 +391,6 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             }
         )
 
-    # Persist the selection (and refresh last_allocated_on) only after a full
-    # concentrator list has been built, so a failed request doesn't overwrite
-    # the stored selection and break stickyness.
     ipam.update_prefix(
         req_data.pubkey,
         not config.get_config().parker.xlat,
@@ -482,19 +476,20 @@ def handle_mqtt_connect(
         parker_announce_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
             broker=_HOSTNAME
         )
-        # Clear retained Parker announcements from older versions. The retained
-        # legacy status and its last will are the canonical liveness source.
-        mqtt.publish(
-            parker_announce_topic,
-            b"",
-            qos=1,
-            retain=True,
-        )
         mqtt.publish(
             parker_announce_topic,
             1,  # pyright: ignore[reportArgumentType]
             qos=1,
-            retain=False,
+            retain=True,
+        )
+    else:
+        # Clear capability left by an earlier Parker-enabled incarnation of
+        # this broker before advertising only its legacy liveness.
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
+            b"",
+            qos=1,
+            retain=True,
         )
 
 
@@ -517,7 +512,7 @@ def handle_mqtt_message_metrics(
 
     try:
         data = int(message.payload)
-    except Exception:
+    except (TypeError, ValueError):
         logger.error(
             "Invalid metrics payload for %s/%s/%s: %s",
             worker,
@@ -547,7 +542,7 @@ def handle_mqtt_message_parker_metrics(
 
     try:
         data = int(message.payload)
-    except Exception:
+    except (TypeError, ValueError):
         logger.error(
             "Invalid metrics payload for %s/%s: %s", worker, metric, message.payload
         )
@@ -566,7 +561,7 @@ def handle_mqtt_message_status(
 
     try:
         status = int(message.payload)
-    except Exception:
+    except (TypeError, ValueError):
         logger.error(
             "Invalid worker status payload for %s: %s", worker, message.payload
         )
@@ -588,7 +583,7 @@ def handle_mqtt_message_parker_status(
 
     try:
         status = int(message.payload)
-    except Exception:
+    except (TypeError, ValueError):
         logger.error(
             "Invalid worker status payload for %s: %s", worker, message.payload
         )
@@ -668,18 +663,12 @@ def handle_mqtt_message_broker_status(
                 f"Broker marked online: {broker}, {len(active_brokers) + 1} brokers online"
             )
         active_brokers.add(broker)
-        # Parker membership is only added via the Parker alias announce:
-        # a broker announcing on the legacy topic is not necessarily
-        # Parker-capable (e.g. during a staged rollout).
     else:
         if broker in active_brokers:
             logger.info(
                 f"Broker marked offline: {broker}, {len(active_brokers) - 1} brokers online"
             )
             active_brokers.discard(broker)
-        # The retained legacy status and its last will are the canonical
-        # liveness source, so an offline announcement also clears the
-        # broker's Parker alias membership.
         if config.get_config().parker.enabled:
             parker_active_brokers.discard(broker)
 

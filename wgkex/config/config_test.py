@@ -130,21 +130,57 @@ class TestConfig(unittest.TestCase):
                         config.get_config()
                 config._parsed_config = None
 
-    def test_worker_with_explicit_null_weight_defaults_to_one(self):
-        """An explicit but empty 'weight:'/'pop:' key parses to None in YAML
-        and must fall back to the defaults like a missing key."""
-        workers = config.Workers.from_dict(
-            {"gw04": {"weight": None, "pop": None}}, 10
-        )
-        worker = workers.get("gw04")
-        self.assertEqual(worker.weight, 1)
-        self.assertEqual(worker.pop, "")
-
     def test_worker_tolerance_bounds_are_validated(self):
         for tolerance in (-1, 101):
             with self.subTest(tolerance=tolerance):
                 with self.assertRaisesRegex(ValueError, "between 0 and 100"):
                     config.Workers.from_dict({}, tolerance)
+
+    def test_worker_ids_are_stable_unique_integers(self):
+        workers = config.Workers.from_dict(
+            {
+                "first": {"id": "42"},
+                "second": {},
+            },
+            10,
+        )
+        self.assertEqual(workers.get("first").id, 42)
+        self.assertEqual(workers.get("second").id, 2)
+
+        with self.assertRaisesRegex(ValueError, "Worker IDs must be unique"):
+            config.Workers.from_dict(
+                {
+                    "first": {"id": 2},
+                    "second": {},
+                },
+                10,
+            )
+
+        self.assertEqual(
+            config.Workers.from_dict(
+                {"worker": {"id": 2**32 - 1}},
+                10,
+            )
+            .get("worker")
+            .id,
+            2**32 - 1,
+        )
+        for worker_id in (-1, 2**32):
+            with (
+                self.subTest(worker_id=worker_id),
+                self.assertRaisesRegex(ValueError, "unsigned 32-bit"),
+            ):
+                config.Workers.from_dict({"worker": {"id": worker_id}}, 10)
+
+    def test_worker_explicit_null_values_use_defaults(self):
+        workers = config.Workers.from_dict(
+            {"worker": {"weight": None, "pop": None}}, 10
+        )
+        self.assertEqual(workers.get("worker").weight, 1)
+        self.assertEqual(workers.get("worker").pop, "")
+
+        workers = config.Workers.from_dict({"worker": {"weight": 0}}, 10)
+        self.assertEqual(workers.get("worker").weight, 0)
 
     def test_parker_prefix_structure_validation(self):
         invalid_configs = [
@@ -204,10 +240,7 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             config.Parker.from_dict(parker)
 
-    def test_parker_config_without_broker_credentials_parses(self):
-        """broker_signing_key and netbox are broker-only settings; a worker
-        sharing the parker section must be able to load its config without
-        them."""
+    def test_worker_parker_config_does_not_require_broker_credentials(self):
         cfg = _config_dict()
         cfg["parker"] = _parker_dict()
         parsed = config.Config.from_dict(cfg)
@@ -215,9 +248,16 @@ class TestConfig(unittest.TestCase):
         self.assertIsNone(parsed.broker_signing_key)
         self.assertIsNone(parsed.netbox)
 
+        cfg["netbox"] = {}
+        parsed = config.Config.from_dict(cfg)
+        self.assertIsNone(parsed.netbox)
+
         cfg["broker_signing_key"] = "key"
         cfg["parker"]["ipam"] = "netbox"
         cfg["parker"]["prefixes"]["ipv6"]["netbox_filter"] = {"role": "wgkex"}
+        parsed = config.Config.from_dict(cfg)
+        self.assertIsNone(parsed.netbox)
+
         cfg["netbox"] = {"url": "https://netbox", "api_key": "token"}
         parsed = config.Config.from_dict(cfg)
         self.assertEqual(parsed.netbox.url, "https://netbox")

@@ -128,12 +128,6 @@ class WorkerMetricsCollection:
     ) -> List[WorkerResult]:
         """Analyzes the metrics and determines the best worker for each PoP that a node should connect to.
 
-        With require_configured, workers that are missing from the workers
-        config are skipped instead of getting a synthetic default config.
-        Parker mode requires this: the worker's id is the concentrator ID
-        identifying the tunnel on the node, so it must be unique and stable,
-        which a synthetic default (id=0 for every unconfigured worker) is not.
-
         If no current_selected_workers is passed (None or empty):
             The best worker is defined as the one with the most number of clients missing
             to its should-be target value according to its weight.
@@ -164,7 +158,8 @@ class WorkerMetricsCollection:
                 if worker_cfg is None:
                     if require_configured:
                         logger.warning(
-                            f"Worker {wm.worker} is not in the workers config, skipping"
+                            "Worker %s is not in the workers config, skipping",
+                            wm.worker,
                         )
                         continue
                     worker_cfg = config.Worker(id=0, weight=1, pop="")
@@ -195,9 +190,6 @@ class WorkerMetricsCollection:
                     if len(all_matched) > 0:
                         matched = all_matched[0]
 
-                        # Allow at least one peer of slack: with small targets
-                        # a relative tolerance alone evicts on any overshoot,
-                        # making nodes ping-pong between workers.
                         if matched.diff > max(
                             1, workers_cfg.sticky_worker_tolerance * matched.target
                         ):
