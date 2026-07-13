@@ -531,14 +531,11 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     if len(selected_workers) == 0:
         logger.error("No worker online for Parker network")
-        # Emergency mode - try to randomly select one for which we still have
-        # connection data cached. Only workers with a config entry qualify:
-        # the ID identifies the tunnel on the node, so it must be unique and
-        # stable, which requires an explicitly configured worker ID.
         fallback_candidates = [
             name
             for name in parker_worker_data
             if config.get_config().workers.get(name) is not None
+            and parker_worker_metrics.get(name).online
         ]
         if fallback_candidates:
             fallback_name = random.choice(fallback_candidates)
@@ -588,9 +585,6 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             }
         )
 
-    # Persist the selection (and refresh last_allocated_on) only after a full
-    # concentrator list has been built, so a failed request doesn't overwrite
-    # the stored selection and break stickyness.
     ipam.update_prefix(
         req_data.pubkey,
         not config.get_config().parker.xlat,
@@ -694,7 +688,7 @@ def handle_mqtt_message_metrics(
 
     try:
         data = int(message.payload)
-    except ValueError:
+    except (TypeError, ValueError):
         logger.error(
             f"Ignored invalid metric on {message.topic}: {_decode_payload(message.payload)}"
         )
@@ -721,7 +715,7 @@ def handle_mqtt_message_parker_metrics(
 
     try:
         data = int(message.payload)
-    except Exception:
+    except (TypeError, ValueError):
         logger.error(
             "Invalid metrics payload for %s/%s: %s", worker, metric, message.payload
         )
@@ -740,7 +734,7 @@ def handle_mqtt_message_status(
 
     try:
         status = int(message.payload)
-    except ValueError:
+    except (TypeError, ValueError):
         logger.error(
             f"Ignored invalid status on {message.topic}: {_decode_payload(message.payload)}"
         )
@@ -772,7 +766,7 @@ def handle_mqtt_message_parker_status(
 
     try:
         status = int(message.payload)
-    except Exception:
+    except (TypeError, ValueError):
         logger.error(
             "Invalid worker status payload for %s: %s", worker, message.payload
         )

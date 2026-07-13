@@ -450,6 +450,52 @@ class TestNetboxIPAM(unittest.TestCase):
         _, _, workers = ipam.get_or_allocate_prefix("pubkey", ipv4=True, ipv6=True)
         self.assertEqual(workers, ["worker-v4"])
 
+    def test_ipv4_lookups_and_allocations_use_ipv4_parent(self):
+        ipam = object.__new__(NetboxIPAM)
+        ipam.nb = mock.MagicMock()
+        ipam.parent_prefix_v4 = mock.MagicMock(prefix="10.0.0.0/8")
+        ipam.parent_prefix_v6 = mock.MagicMock(prefix="2001:db8::/32")
+        ipam.nb.ipam.prefixes.filter.return_value = []
+
+        self.assertEqual(ipam._get_prefixes("pubkey", 4), [])
+        ipam.nb.ipam.prefixes.filter.assert_called_once_with(
+            family=4,
+            within="10.0.0.0/8",
+            description__ic="pubkey",
+        )
+
+        class FakePrefix:
+            id = 1
+            prefix = "10.0.0.0/24"
+            description = '{"pubkey":"pubkey"}'
+
+        allocated = FakePrefix()
+        ipam.parent_prefix_v4.available_prefixes.create.return_value = allocated
+        with (
+            mock.patch.object(
+                ipam, "_deduplicate_prefixes", side_effect=[None, allocated]
+            ),
+            mock.patch(
+                "wgkex.broker.ipam_netbox.pynetbox.models.ipam.Prefixes",
+                FakePrefix,
+            ),
+        ):
+            prefix, _ = ipam._get_or_allocate_prefix("pubkey", 4, 24, None)
+
+        self.assertIs(prefix, allocated)
+        ipam.parent_prefix_v4.available_prefixes.create.assert_called_once()
+        ipam.parent_prefix_v6.available_prefixes.create.assert_not_called()
+
+    def test_parent_prefix_rejects_unavailable_or_invalid_family(self):
+        ipam = object.__new__(NetboxIPAM)
+        ipam.parent_prefix_v4 = None
+        ipam.parent_prefix_v6 = mock.MagicMock()
+
+        with self.assertRaisesRegex(ValueError, "No parent IPv4"):
+            ipam._parent_prefix(4)
+        with self.assertRaisesRegex(ValueError, "Unsupported address family"):
+            ipam._parent_prefix(5)
+
     def test_update_prefix_handles_save_failure_and_both_families(self):
         prefix = mock.MagicMock(
             prefix="2001:db8::/63",

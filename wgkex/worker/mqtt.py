@@ -194,6 +194,29 @@ def on_disconnect(client: mqtt.Client, userdata: Any, rc):
         _published_status = None
 
 
+def _publish_parker_worker_data(client: mqtt.Client, own_external_name: str) -> bool:
+    try:
+        port, public_key, link_address = get_device_data("wg-nodes")
+    except Exception as ex:
+        # Don't let the exception escape into paho's network loop.
+        logger.warning("WireGuard interface wg-nodes is not ready yet: %s", ex)
+        return False
+
+    data = {
+        "ExternalAddress": own_external_name,
+        "Port": port,
+        "PublicKey": public_key,
+        "LinkAddress": link_address,
+    }
+    client.publish(
+        TOPIC_PARKER_WORKER_WG_DATA.format(worker=_HOSTNAME),
+        json.dumps(data),
+        qos=1,
+        retain=True,
+    )
+    return True
+
+
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     """Handles MQTT connect and subscribes to topics on connect
@@ -262,27 +285,10 @@ def publish_worker_data_and_status(client: mqtt.Client) -> bool:
         if get_config().external_name is not None
         else _HOSTNAME
     )
-
     ready = True
     if get_config().parker.enabled:
-        # Publish worker data (WG pubkeys, ports, local addresses)
-        try:
-            port, public_key, link_address = get_device_data("wg-nodes")
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"WireGuard interface wg-nodes is not ready yet: {e}")
+        if not _publish_parker_worker_data(client, own_external_name):
             return False
-        data = {
-            "ExternalAddress": own_external_name,
-            "Port": port,
-            "PublicKey": public_key,
-            "LinkAddress": link_address,
-        }
-        client.publish(
-            TOPIC_PARKER_WORKER_WG_DATA.format(worker=_HOSTNAME),
-            json.dumps(data),
-            qos=1,
-            retain=True,
-        )
         domains: List[str] = []
     else:
         domains = get_config().domains

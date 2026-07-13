@@ -31,8 +31,7 @@ class Worker:
         id: A unique, static ID for this worker. In Parker mode this is the
             concentrator ID sent to nodes, identifying the tunnel on the node, so it
             must never change for a given worker. If not set explicitly in the config,
-            it defaults to the worker's position in the workers map - which shifts
-            when workers are added or removed, so set it explicitly in production.
+            it defaults to the worker's position in the workers map.
         weight: The relative weight of a worker, defaults to 1.
         location: Optional location of the worker, preferred by clients requesting it.
         pop: The PoP (Point of Presence) this worker is located in (Parker multi-tunnel support).
@@ -46,11 +45,14 @@ class Worker:
     @classmethod
     def from_dict(cls, worker_cfg: dict[str, Any]) -> "Worker":
         location = worker_cfg.get("location")
+        worker_id = int(worker_cfg.get("id", 0))
+        if not 0 <= worker_id <= 2**32 - 1:
+            raise ValueError("Worker ID must be an unsigned 32-bit integer")
         return cls(
             weight=int(worker_cfg["weight"]) if worker_cfg.get("weight") else 1,
             location=str(location) if location else None,
             pop=str(worker_cfg.get("pop") or ""),
-            id=int(worker_cfg.get("id", 0)),
+            id=worker_id,
         )
 
 
@@ -750,11 +752,11 @@ class Config:
         parker = Parker.from_dict(cfg.get("parker", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
 
-        # broker_signing_key and netbox are broker-only settings, but the
-        # parker section is shared with workers, so their presence is
-        # enforced by the broker (signer.py / _load_parker_ipam), not here.
         netbox_cfg = None
-        if isinstance(cfg.get("netbox"), dict):
+        if isinstance(cfg.get("netbox"), dict) and {
+            "url",
+            "api_key",
+        }.issubset(cfg["netbox"]):
             netbox_cfg = Netbox.from_dict(cfg["netbox"])
 
         return cls(

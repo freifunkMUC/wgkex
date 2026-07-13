@@ -3,11 +3,12 @@ import hashlib
 import importlib
 import sys
 import unittest
+from typing import Optional
 
 from wgkex.config import config
 
 
-def _parker_config(signing_key: str) -> config.Config:
+def _parker_config(signing_key: Optional[str]) -> config.Config:
     return config.Config.from_dict(
         {
             "parker": {
@@ -37,6 +38,10 @@ class TestSigner(unittest.TestCase):
     def tearDownClass(cls) -> None:
         config._parsed_config = None
         sys.modules.pop("wgkex.broker.signer", None)
+
+    def setUp(self) -> None:
+        config._parsed_config = _parker_config(bytes(range(32)).hex())
+        self.signer.get_private_key.cache_clear()
 
     def tearDown(self) -> None:
         self.signer.get_private_key.cache_clear()
@@ -81,9 +86,8 @@ class TestSigner(unittest.TestCase):
         self.assertTrue(private_key.verifying_key.verify(signature[10:], data))
 
     def test_signify_key_rejects_passphrase_protected_key(self):
-        serialized_key = self._signify_key(kdfrounds=42)
         config._parsed_config = _parker_config(
-            base64.b64encode(serialized_key).decode()
+            base64.b64encode(self._signify_key(kdfrounds=42)).decode()
         )
         self.signer.get_private_key.cache_clear()
 
@@ -91,9 +95,8 @@ class TestSigner(unittest.TestCase):
             self.signer.get_private_key()
 
     def test_signify_key_rejects_invalid_checksum(self):
-        serialized_key = self._signify_key(valid_checksum=False)
         config._parsed_config = _parker_config(
-            base64.b64encode(serialized_key).decode()
+            base64.b64encode(self._signify_key(valid_checksum=False)).decode()
         )
         self.signer.get_private_key.cache_clear()
 
@@ -101,8 +104,6 @@ class TestSigner(unittest.TestCase):
             self.signer.get_private_key()
 
     def test_missing_signing_key_raises_clear_error(self):
-        previous_config = config._parsed_config
-        self.addCleanup(setattr, config, "_parsed_config", previous_config)
         config._parsed_config = _parker_config(None)
         self.signer.get_private_key.cache_clear()
 
