@@ -97,15 +97,14 @@ def _load_parker_ipam() -> Optional[ParkerIPAM]:
         case config.Parker.IPAM.NETBOX:
             netbox_cfg = config.get_config().netbox
             if netbox_cfg is None:
-                # This should not happen due to earlier config validation
-                raise Exception(
-                    "Missing config for NetBox IPAM. This is also a config parser bug, please report."
+                raise ValueError(
+                    "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
                 )
 
             ipam = NetboxIPAM(
                 api_url=netbox_cfg.url,
                 token=netbox_cfg.api_key,
-                xlat=True,
+                xlat=config.get_config().parker.xlat,
             )
         case _:
             raise NotImplementedError(f"Invalid IPAM type {ipam_type}")
@@ -132,7 +131,7 @@ def get_active_brokers_count(parker: bool) -> int:
     zero and to be conservative when no announcements are available.
     """
     if parker:
-        c = len(parker_active_brokers)
+        c = len(active_brokers.intersection(parker_active_brokers))
     else:
         c = len(active_brokers)
     return max(c, 1)
@@ -301,6 +300,16 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
                 "message": "Allocated IPv6 range is invalid. Please try again later."
             }
         }, 500
+    expected_length = config.get_config().parker.prefixes.ipv6.length
+    if full_range6.prefixlen != expected_length:
+        logger.warning(
+            "IPv6 prefix %s for public key %s has length /%s, but /%s is configured. "
+            "Fix or delete the prefix in the IPAM.",
+            full_range6,
+            req_data.pubkey,
+            full_range6.prefixlen,
+            expected_length,
+        )
     ranges = full_range6.subnets(new_prefix=64)
     range6 = next(ranges)
     xlat_range6 = next(ranges)
@@ -319,24 +328,24 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     domain = "parker"
 
     selected_workers = parker_worker_metrics.get_best_workers(
-        domain, old_selected_concentrators
-    )
-
-    ipam.update_prefix(
-        req_data.pubkey,
-        not config.get_config().parker.xlat,
-        True,
-        [w.name for w in selected_workers],
+        domain, old_selected_concentrators, require_configured=True
     )
 
     if len(selected_workers) == 0:
         logger.error("No worker online for Parker network")
-        if len(parker_worker_data) > 0:
-            # Emergency mode - try to randomly select one for which we still have connection data cached
+        fallback_candidates = [
+            name
+            for name in parker_worker_data
+            if config.get_config().workers.get(name) is not None
+            and parker_worker_metrics.get(name).online
+        ]
+        if fallback_candidates:
+            fallback_name = random.choice(fallback_candidates)
+            fallback_cfg = config.get_config().workers.get(fallback_name)
             selected_workers.append(
                 WorkerResult(
-                    name=random.choice(list(parker_worker_data.keys())),
-                    id=0,
+                    name=fallback_name,
+                    id=fallback_cfg.id,
                     diff=0,
                     peers=0,
                     target=0,
@@ -381,6 +390,13 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
                 "id": worker.id,
             }
         )
+
+    ipam.update_prefix(
+        req_data.pubkey,
+        not config.get_config().parker.xlat,
+        True,
+        [w.name for w in selected_workers],
+    )
 
     response = ParkerResponse(
         nonce=req_data.nonce,
@@ -460,19 +476,20 @@ def handle_mqtt_connect(
         parker_announce_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
             broker=_HOSTNAME
         )
-        # Clear retained Parker announcements from older versions. The retained
-        # legacy status and its last will are the canonical liveness source.
-        mqtt.publish(
-            parker_announce_topic,
-            b"",
-            qos=1,
-            retain=True,
-        )
         mqtt.publish(
             parker_announce_topic,
             1,  # pyright: ignore[reportArgumentType]
             qos=1,
-            retain=False,
+            retain=True,
+        )
+    else:
+        # Clear capability left by an earlier Parker-enabled incarnation of
+        # this broker before advertising only its legacy liveness.
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker=_HOSTNAME),
+            b"",
+            qos=1,
+            retain=True,
         )
 
 
@@ -493,7 +510,17 @@ def handle_mqtt_message_metrics(
         logger.error("Ignored MQTT message with empty worker or metrics label")
         return
 
-    data = int(message.payload)
+    try:
+        data = int(message.payload)
+    except (TypeError, ValueError):
+        logger.error(
+            "Invalid metrics payload for %s/%s/%s: %s",
+            worker,
+            domain,
+            metric,
+            message.payload,
+        )
+        return
 
     logger.info(f"Update worker metrics: {metric} on {worker}/{domain} = {data}")
     worker_metrics.update(worker, domain, metric, data)
@@ -513,7 +540,13 @@ def handle_mqtt_message_parker_metrics(
         logger.error("Ignored MQTT message with empty worker or metrics label")
         return
 
-    data = int(message.payload)
+    try:
+        data = int(message.payload)
+    except (TypeError, ValueError):
+        logger.error(
+            "Invalid metrics payload for %s/%s: %s", worker, metric, message.payload
+        )
+        return
 
     logger.info(f"Update Parker worker metrics: {metric} on {worker} = {data}")
     parker_worker_metrics.update(worker, "parker", metric, data)
@@ -526,7 +559,13 @@ def handle_mqtt_message_status(
     """Processes status messages from workers."""
     _, worker, _ = message.topic.split("/", 2)
 
-    status = int(message.payload)
+    try:
+        status = int(message.payload)
+    except (TypeError, ValueError):
+        logger.error(
+            "Invalid worker status payload for %s: %s", worker, message.payload
+        )
+        return
     if status < 1 and worker_metrics.get(worker).is_online():
         logger.warning(f"Marking worker as offline: {worker}")
         worker_metrics.set_offline(worker)
@@ -542,7 +581,13 @@ def handle_mqtt_message_parker_status(
     """Processes status messages from workers."""
     _, _, worker, _ = message.topic.split("/", 3)
 
-    status = int(message.payload)
+    try:
+        status = int(message.payload)
+    except (TypeError, ValueError):
+        logger.error(
+            "Invalid worker status payload for %s: %s", worker, message.payload
+        )
+        return
     if status < 1 and parker_worker_metrics.get(worker).is_online():
         logger.warning(f"Marking Parker worker as offline: {worker}")
         parker_worker_metrics.set_offline(worker)
@@ -618,8 +663,6 @@ def handle_mqtt_message_broker_status(
                 f"Broker marked online: {broker}, {len(active_brokers) + 1} brokers online"
             )
         active_brokers.add(broker)
-        if config.get_config().parker.enabled:
-            parker_active_brokers.add(broker)
     else:
         if broker in active_brokers:
             logger.info(

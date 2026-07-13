@@ -31,6 +31,9 @@ def _get_config_mock(domains=None, mqtt=None, parker=None):
 
 
 class MQTTTest(unittest.TestCase):
+    def setUp(self) -> None:
+        mqtt._parker_worker_ready = True
+
     @mock.patch.object(mqtt.mqtt, "Client")
     @mock.patch.object(mqtt.socket, "gethostname")
     @mock.patch.object(mqtt, "get_config")
@@ -141,6 +144,46 @@ class MQTTTest(unittest.TestCase):
                 mock.call().publish(
                     f"parker/wireguard-worker/{hostname}/status", 1, qos=1, retain=True
                 ),
+            ]
+        )
+
+        mqtt_client_mock.reset_mock()
+        get_device_data_mock.side_effect = ValueError("no such device")
+
+        mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+
+        mqtt_client_mock.assert_has_calls(
+            [
+                mock.call().subscribe("parker/wireguard/+"),
+                mock.call().publish(
+                    f"parker/wireguard-worker/{hostname}/status", 0, qos=1, retain=True
+                ),
+            ]
+        )
+        published_topics = [
+            call.args[0] for call in mqtt_client_mock.return_value.publish.mock_calls
+        ]
+        self.assertNotIn(f"parker/wireguard-worker/{hostname}/data", published_topics)
+
+        mqtt_client_mock.reset_mock()
+        get_device_data_mock.side_effect = None
+        get_device_data_mock.return_value = (51820, "456asdf=", "fe80::1")
+        with mock.patch.object(mqtt, "get_connected_peers_count", return_value=0):
+            mqtt.publish_metrics_parker(mqtt.mqtt.Client(), "parker/metrics")
+
+        mqtt_client_mock.assert_has_calls(
+            [
+                mock.call().publish(
+                    f"parker/wireguard-worker/{hostname}/data",
+                    '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
+                    % hostname,
+                    qos=1,
+                    retain=True,
+                ),
+                mock.call().publish(
+                    f"parker/wireguard-worker/{hostname}/status", 1, qos=1, retain=True
+                ),
+                mock.call().publish("parker/metrics", 0, retain=True),
             ]
         )
 

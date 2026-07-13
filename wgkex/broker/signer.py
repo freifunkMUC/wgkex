@@ -59,7 +59,10 @@ def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
         raise ValueError("Response signing is not available in non-parker mode.")
 
     privkey_encoded = config.get_config().broker_signing_key
-    assert privkey_encoded is not None, "Private key must be set in the configuration."
+    if privkey_encoded is None:
+        raise ValueError(
+            "Parker is enabled, but no broker_signing_key is set in the config file"
+        )
 
     try:
         # ecdsautil-style format
@@ -72,8 +75,22 @@ def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
     fingerprint_bytes: Optional[bytes] = None
     if len(privkey_bytes) == 104:
         # signify-style format
+        kdfrounds = int.from_bytes(privkey_bytes[4:8], "big")
+        if kdfrounds != 0:
+            raise ValueError(
+                "The configured signify signing key is passphrase-protected "
+                "(kdfrounds > 0), which is not supported. Generate the key "
+                "without a passphrase using 'signify -G -n'."
+            )
+        checksum = privkey_bytes[24:32]
+        seckey = privkey_bytes[-64:]
+        if hashlib.sha512(seckey).digest()[:8] != checksum:
+            raise ValueError(
+                "The configured signify signing key has an invalid checksum. "
+                "The key is corrupt or truncated."
+            )
         fingerprint_bytes = privkey_bytes[32:40]
-        privkey_bytes = privkey_bytes[-64:-32]
+        privkey_bytes = seckey[:32]
         keytype = KeyType.SIGNIFY
     elif len(privkey_bytes) == 32:
         # raw format

@@ -1,3 +1,4 @@
+import importlib
 import ipaddress
 import json
 import mock
@@ -65,6 +66,18 @@ class TestParkerQuery(unittest.TestCase):
         with self.assertRaises(ValueError):
             ParkerQuery.from_dict(data)
 
+    def test_parker_query_generated_init_validates_direct_construction(self):
+        from wgkex.broker.parker import ParkerQuery
+
+        query = ParkerQuery(
+            v6mtu=1280,
+            pubkey="TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=",
+            nonce="nonce",
+        )
+        self.assertEqual(query.v6mtu, 1280)
+        with self.assertRaises(ValueError):
+            ParkerQuery(v6mtu=1280, pubkey="invalid", nonce="nonce")
+
     def test_parker_response_requires_clat_subnet_at_construction(self):
         from wgkex.broker.parker import ParkerResponse
 
@@ -99,6 +112,10 @@ class TestParker(unittest.TestCase):
         config._parsed_config = test_config
 
         # Stub out signer module before importing broker.app which imports it at module level
+        cls._original_modules = {
+            name: sys.modules.get(name)
+            for name in ("wgkex.broker.signer", "flask_mqtt")
+        }
         sys.modules["wgkex.broker.signer"] = mock.MagicMock()
 
         # Stub out flask_mqtt.Mqtt to avoid network connections during import
@@ -140,10 +157,18 @@ class TestParker(unittest.TestCase):
 
         flask_mqtt_stub.Mqtt = MqttStub
         sys.modules["flask_mqtt"] = flask_mqtt_stub
+        sys.modules.pop("wgkex.broker.app", None)
+        importlib.import_module("wgkex.broker.app")
 
     @classmethod
     def tearDownClass(cls) -> None:
         config._parsed_config = None
+        for name, module in cls._original_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+        sys.modules.pop("wgkex.broker.app", None)
 
     def test_join_host_port(self):
         from wgkex.broker import app as broker_app
@@ -223,6 +248,35 @@ class TestParker(unittest.TestCase):
 
         self.assertEqual(response.status_code, 500)
 
+    def test_config_route_warns_for_safe_prefix_length_mismatch(self):
+        from wgkex.broker import app as broker_app
+
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/62"),
+            [],
+        )
+        query = {
+            "pubkey": "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=",
+            "nonce": "nonce",
+        }
+        with (
+            mock.patch.object(broker_app, "ipam", ipam),
+            mock.patch.object(broker_app.logger, "warning") as warning,
+        ):
+            response = broker_app.app.test_client().get("/config", query_string=query)
+
+        self.assertEqual(response.status_code, 400)
+        warning.assert_any_call(
+            "IPv6 prefix %s for public key %s has length /%s, but /%s is configured. "
+            "Fix or delete the prefix in the IPAM.",
+            ipaddress.IPv6Network("2001:db8:42::/62"),
+            query["pubkey"],
+            62,
+            63,
+        )
+
     def test_parker_mqtt_connect_keeps_legacy_discovery(self):
         from wgkex.broker import app as broker_app
         from wgkex.common.mqtt import MQTTTopics
@@ -260,8 +314,7 @@ class TestParker(unittest.TestCase):
         mqtt.publish.assert_has_calls(
             [
                 mock.call(legacy_topic, 1, qos=1, retain=True),
-                mock.call(parker_topic, b"", qos=1, retain=True),
-                mock.call(parker_topic, 1, qos=1, retain=False),
+                mock.call(parker_topic, 1, qos=1, retain=True),
             ]
         )
         self.assertEqual(broker_app.app.config["MQTT_LAST_WILL_TOPIC"], legacy_topic)
@@ -303,7 +356,8 @@ class TestParker(unittest.TestCase):
         msg.payload = b"1"
         broker_app.handle_mqtt_message_broker_status(None, None, msg)
         self.assertIn("broker1", broker_app.active_brokers)
-        self.assertIn("broker1", broker_app.parker_active_brokers)
+        self.assertNotIn("broker1", broker_app.parker_active_brokers)
+        broker_app.parker_active_brokers.add("broker1")
         msg.payload = b"0"
         broker_app.handle_mqtt_message_broker_status(None, None, msg)
         self.assertNotIn("broker1", broker_app.active_brokers)
@@ -349,6 +403,10 @@ class TestParker(unittest.TestCase):
         self.assertEqual(broker_app.get_active_brokers_count(parker=False), 1)
         broker_app.active_brokers.add("b")
         self.assertEqual(broker_app.get_active_brokers_count(parker=False), 2)
+        broker_app.parker_active_brokers.update(("a", "not-active"))
+        self.assertEqual(broker_app.get_active_brokers_count(parker=True), 1)
+        broker_app.parker_active_brokers.add("b")
+        self.assertEqual(broker_app.get_active_brokers_count(parker=True), 2)
 
     def test_ipam_loaded(self):
         from wgkex.broker import app as broker_app

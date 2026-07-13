@@ -24,6 +24,7 @@ from wgkex.worker.netlink import (
 _HOSTNAME = socket.gethostname()
 _METRICS_SEND_INTERVAL = 60
 _METRICS_SEND_INTERVAL_PARKER = 10
+_parker_worker_ready = False
 
 
 def connect(exit_event: threading.Event) -> None:
@@ -126,6 +127,32 @@ def on_disconnect(client: mqtt.Client, userdata: Any, rc):
     logger.debug("Disconnected with result code " + str(rc))
 
 
+def _publish_parker_worker_data(client: mqtt.Client, own_external_name: str) -> bool:
+    try:
+        port, public_key, link_address = get_device_data("wg-nodes")
+    except Exception as ex:
+        logger.error(
+            "Could not get device data for interface wg-nodes: %s. "
+            "Skipping worker data publication",
+            ex,
+        )
+        return False
+
+    data = {
+        "ExternalAddress": own_external_name,
+        "Port": port,
+        "PublicKey": public_key,
+        "LinkAddress": link_address,
+    }
+    client.publish(
+        MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker=_HOSTNAME),
+        json.dumps(data),
+        qos=1,
+        retain=True,
+    )
+    return True
+
+
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     """Handles MQTT connect and subscribes to topics on connect
@@ -160,26 +187,14 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         if get_config().external_name is not None
         else _HOSTNAME
     )
+    global _parker_worker_ready
 
     if parker_enabled:
         topic = "parker/wireguard/+"
         logger.info(f"Subscribing to topic {topic}")
         client.subscribe(topic)
 
-        # Publish worker data (WG pubkeys, ports, local addresses)
-        port, public_key, link_address = get_device_data("wg-nodes")
-        data = {
-            "ExternalAddress": own_external_name,
-            "Port": port,
-            "PublicKey": public_key,
-            "LinkAddress": link_address,
-        }
-        client.publish(
-            MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker=_HOSTNAME),
-            json.dumps(data),
-            qos=1,
-            retain=True,
-        )
+        _parker_worker_ready = _publish_parker_worker_data(client, own_external_name)
 
     else:
         domains = get_config().domains
@@ -220,7 +235,12 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         topic = MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker=_HOSTNAME)
     else:
         topic = MQTTTopics.TOPIC_WORKER_STATUS.format(worker=_HOSTNAME)
-    client.publish(topic, 1, qos=1, retain=True)
+    client.publish(
+        topic,
+        int(_parker_worker_ready if parker_enabled else True),
+        qos=1,
+        retain=True,
+    )
 
 
 def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
@@ -359,8 +379,22 @@ def publish_metrics_parker(client: mqtt.Client, topic: str) -> None:
 
     The metrics currently only consist of the number of connected peers.
     """
+    global _parker_worker_ready
+
     logger.debug("Publishing interface metrics")
     iface = "wg-nodes"
+
+    if not _parker_worker_ready:
+        own_external_name = get_config().external_name or _HOSTNAME
+        _parker_worker_ready = _publish_parker_worker_data(client, own_external_name)
+        if not _parker_worker_ready:
+            return
+        client.publish(
+            MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker=_HOSTNAME),
+            1,
+            qos=1,
+            retain=True,
+        )
 
     try:
         peer_count = get_connected_peers_count(iface)

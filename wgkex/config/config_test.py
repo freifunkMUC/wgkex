@@ -136,6 +136,89 @@ class TestConfig(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "between 0 and 100"):
                     config.Workers.from_dict({}, tolerance)
 
+    def test_worker_ids_are_stable_unique_integers(self):
+        workers = config.Workers.from_dict(
+            {
+                "first": {"id": "42"},
+                "second": {},
+            },
+            10,
+        )
+        self.assertEqual(workers.get("first").id, 42)
+        self.assertEqual(workers.get("second").id, 2)
+
+        with self.assertRaisesRegex(ValueError, "Worker IDs must be unique"):
+            config.Workers.from_dict(
+                {
+                    "first": {"id": 2},
+                    "second": {},
+                },
+                10,
+            )
+
+        self.assertEqual(
+            config.Workers.from_dict(
+                {"worker": {"id": 2**32 - 1}},
+                10,
+            )
+            .get("worker")
+            .id,
+            2**32 - 1,
+        )
+        for worker_id in (-1, 2**32):
+            with (
+                self.subTest(worker_id=worker_id),
+                self.assertRaisesRegex(ValueError, "unsigned 32-bit"),
+            ):
+                config.Workers.from_dict({"worker": {"id": worker_id}}, 10)
+
+    def test_worker_explicit_null_values_use_defaults(self):
+        workers = config.Workers.from_dict(
+            {"worker": {"weight": None, "pop": None}}, 10
+        )
+        self.assertEqual(workers.get("worker").weight, 1)
+        self.assertEqual(workers.get("worker").pop, "")
+
+        workers = config.Workers.from_dict({"worker": {"weight": 0}}, 10)
+        self.assertEqual(workers.get("worker").weight, 0)
+
+    def test_cleanup_defaults_and_mode_timeouts(self):
+        cleanup = config.Cleanup.from_dict({})
+        self.assertEqual(cleanup.interval, 3600)
+        self.assertEqual(cleanup.stale_timeout(True), 300)
+        self.assertEqual(cleanup.stale_timeout(False), 10800)
+        self.assertEqual(cleanup.initial_handshake_grace, 600)
+
+        cfg = _config_dict()
+        cfg["cleanup"] = {
+            "interval": 30,
+            "parker_stale_timeout": 600,
+            "legacy_stale_timeout": 7200,
+            "initial_handshake_grace": 900,
+        }
+        parsed = config.Config.from_dict(cfg)
+        self.assertEqual(parsed.cleanup.interval, 30)
+        self.assertEqual(parsed.cleanup.stale_timeout(True), 600)
+        self.assertEqual(parsed.cleanup.stale_timeout(False), 7200)
+        self.assertEqual(parsed.cleanup.initial_handshake_grace, 900)
+
+    def test_cleanup_durations_are_positive_and_finite(self):
+        fields = (
+            "interval",
+            "parker_stale_timeout",
+            "legacy_stale_timeout",
+            "initial_handshake_grace",
+        )
+        for field in fields:
+            for value in (0, -1, True, "invalid", float("inf"), None):
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaisesRegex(ValueError, field),
+                ):
+                    config.Cleanup.from_dict({field: value})
+        with self.assertRaisesRegex(ValueError, "mapping"):
+            config.Cleanup.from_dict([])  # type: ignore
+
     def test_parker_prefix_structure_validation(self):
         invalid_configs = [
             {"enabled": True, "464xlat": True, "ipam": "json"},
@@ -194,17 +277,23 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             config.Parker.from_dict(parker)
 
-    def test_parker_config_requires_signing_and_netbox_credentials(self):
+    def test_worker_parker_config_does_not_require_broker_credentials(self):
         cfg = _config_dict()
         cfg["parker"] = _parker_dict()
-        with self.assertRaisesRegex(ValueError, "broker_signing_key"):
-            config.Config.from_dict(cfg)
+        parsed = config.Config.from_dict(cfg)
+        self.assertTrue(parsed.parker.enabled)
+        self.assertIsNone(parsed.broker_signing_key)
+        self.assertIsNone(parsed.netbox)
+
+        cfg["netbox"] = {}
+        parsed = config.Config.from_dict(cfg)
+        self.assertIsNone(parsed.netbox)
 
         cfg["broker_signing_key"] = "key"
         cfg["parker"]["ipam"] = "netbox"
         cfg["parker"]["prefixes"]["ipv6"]["netbox_filter"] = {"role": "wgkex"}
-        with self.assertRaisesRegex(ValueError, "no netbox config"):
-            config.Config.from_dict(cfg)
+        parsed = config.Config.from_dict(cfg)
+        self.assertIsNone(parsed.netbox)
 
         cfg["netbox"] = {"url": "https://netbox", "api_key": "token"}
         parsed = config.Config.from_dict(cfg)

@@ -16,15 +16,22 @@ domain_prefixes:
 # [broker] The dict of workers mapping their hostname to their respective weight (for weighted peer distribution) and PoP (for multi-tunnel support, esp. in Parker)
 workers:
   gw04.in.ffmuc.net:
+    # A unique, static ID for this worker. In Parker mode it is the concentrator ID sent to
+    # nodes, identifying the tunnel on the node, so it must never change for a given worker.
+    # If omitted it defaults to the position in this map.
+    id: 1
     weight: 30
     pop: vie01
   gw05.in.ffmuc.net:
+    id: 2
     weight: 30
     pop: vie01
   gw06.in.ffmuc.net:
+    id: 3
     weight: 20
     pop: muc01
   gw07.in.ffmuc.net:
+    id: 4
     weight: 20
     pop: muc01
 # [broker] how much peers above the target value a worker may have (in percent rel. to the target value) to let clients stick to their current worker.
@@ -35,6 +42,18 @@ workers:
 sticky_worker_tolerance: 15
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
+# [worker] Offline peer cleanup timing, in seconds. All values must be positive.
+cleanup:
+  # How often each WireGuard interface is scanned.
+  interval: 3600
+  # A Parker peer with an earlier last handshake is stale. The default allows
+  # multiple 120s config retries and the 180s WireGuard tunnel timeout.
+  parker_stale_timeout: 300
+  # Preserve the historical three-hour timeout for legacy peers.
+  legacy_stale_timeout: 10800
+  # Never-handshaked peers are retained this long after provisioning or worker
+  # startup, then treated as abandoned.
+  initial_handshake_grace: 600
 # [broker, worker]
 parker:
   # Enable Parker support. The broker will still handle non-Parker in the same instance, the worker however will disable non-Parker support in this case.

@@ -87,7 +87,9 @@ class JSONFileIPAM(ParkerIPAM):
                     prefixes = parent_prefix.subnets(new_prefix=ipv6_prefix_length)
                     next(prefixes)  # Reserve the first prefix for infrastructure.
                     for candidate in prefixes:
-                        if candidate not in parsed_ranges:
+                        if not any(
+                            candidate.overlaps(stored) for stored in parsed_ranges
+                        ):
                             range6 = str(candidate)
                             break
                     if range6 is None:

@@ -2,6 +2,7 @@
 
 import dataclasses
 import logging
+import math
 import os
 import sys
 from enum import Enum
@@ -18,6 +19,19 @@ class ConfigFileNotFoundError(Error):
     """File could not be found on disk."""
 
 
+def _positive_duration(value: Any, name: str) -> float:
+    """Parse a finite, positive duration in seconds."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a positive duration in seconds") from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    return duration
+
+
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
 WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
 
@@ -27,7 +41,10 @@ class Worker:
     """A representation of the values of the 'workers' dict in the configuration file.
 
     Attributes:
-        id: A unique, as-static-as-possible ID for this worker.
+        id: A unique, static ID for this worker. In Parker mode this is the
+            concentrator ID sent to nodes, identifying the tunnel on the node, so it
+            must never change for a given worker. If not set explicitly in the config,
+            it defaults to the worker's position in the workers map.
         weight: The relative weight of a worker, defaults to 1.
         pop: The PoP (Point of Presence) this worker is located in
     """
@@ -38,10 +55,13 @@ class Worker:
 
     @classmethod
     def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
+        worker_id = int(worker_cfg["id"])
+        if not 0 <= worker_id <= 2**32 - 1:
+            raise ValueError("Worker ID must be an unsigned 32-bit integer")
         return cls(
-            weight=int(worker_cfg.get("weight", 1)),
-            pop=worker_cfg.get("pop", ""),
-            id=worker_cfg["id"],
+            weight=int(1 if worker_cfg.get("weight") is None else worker_cfg["weight"]),
+            pop=worker_cfg.get("pop") or "",
+            id=worker_id,
         )
 
 
@@ -68,6 +88,12 @@ class Workers:
             key: Worker.from_dict({"id": id, **value})
             for (id, (key, value)) in enumerate(workers_cfg.items(), start=1)
         }
+
+        ids = [worker.id for worker in d.values()]
+        if len(set(ids)) != len(ids):
+            raise ValueError(
+                "Worker IDs must be unique. Set explicit unique 'id' values in the workers config."
+            )
 
         total = 0
         # add "empty" PoP to set to support dynamically added workers
@@ -159,6 +185,42 @@ class MQTT:
             broker_port=int(mqtt_cfg.get("broker_port", cls.broker_port)),
             keepalive=int(mqtt_cfg.get("keepalive", cls.keepalive)),
         )
+
+
+@dataclasses.dataclass(frozen=True)
+class Cleanup:
+    """Worker peer cleanup timing in seconds."""
+
+    interval: float = 3600
+    parker_stale_timeout: float = 300
+    legacy_stale_timeout: float = 10800
+    initial_handshake_grace: float = 600
+
+    @classmethod
+    def from_dict(cls, cleanup_cfg: Dict[str, Any]) -> "Cleanup":
+        if not isinstance(cleanup_cfg, dict):
+            raise ValueError("cleanup must be a mapping")
+        return cls(
+            interval=_positive_duration(
+                cleanup_cfg.get("interval", cls.interval), "cleanup.interval"
+            ),
+            parker_stale_timeout=_positive_duration(
+                cleanup_cfg.get("parker_stale_timeout", cls.parker_stale_timeout),
+                "cleanup.parker_stale_timeout",
+            ),
+            legacy_stale_timeout=_positive_duration(
+                cleanup_cfg.get("legacy_stale_timeout", cls.legacy_stale_timeout),
+                "cleanup.legacy_stale_timeout",
+            ),
+            initial_handshake_grace=_positive_duration(
+                cleanup_cfg.get("initial_handshake_grace", cls.initial_handshake_grace),
+                "cleanup.initial_handshake_grace",
+            ),
+        )
+
+    def stale_timeout(self, parker: bool) -> float:
+        """Return the stale timeout for the selected worker mode."""
+        return self.parker_stale_timeout if parker else self.legacy_stale_timeout
 
 
 @dataclasses.dataclass
@@ -377,6 +439,7 @@ class Config:
     domain_prefixes: List[str]
     workers: Workers
     parker: Parker
+    cleanup: Cleanup
     external_name: Optional[str]
     mqtt: MQTT
     broker_listen: BrokerListen
@@ -398,19 +461,14 @@ class Config:
             cfg.get("workers", {}), cfg.get("sticky_worker_tolerance", 10)
         )
         parker = Parker.from_dict(cfg.get("parker", {}))
+        cleanup = Cleanup.from_dict(cfg.get("cleanup", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
 
-        if parker.enabled and broker_signing_key is None:
-            raise ValueError(
-                "Parker is enabled, but no broker_signing_key is set in the config file"
-            )
-
         netbox_cfg = None
-        if parker.enabled and parker.ipam == Parker.IPAM.NETBOX:
-            if "netbox" not in cfg or not isinstance(cfg["netbox"], dict):
-                raise ValueError(
-                    "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
-                )
+        if isinstance(cfg.get("netbox"), dict) and {
+            "url",
+            "api_key",
+        }.issubset(cfg["netbox"]):
             netbox_cfg = Netbox.from_dict(cfg["netbox"])
 
         return cls(
@@ -422,6 +480,7 @@ class Config:
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
             parker=parker,
+            cleanup=cleanup,
             netbox=netbox_cfg,
             broker_signing_key=broker_signing_key,
         )

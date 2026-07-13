@@ -121,7 +121,10 @@ class WorkerMetricsCollection:
         return (worker.name, worker.diff, worker.peers)
 
     def get_best_workers(
-        self, domain: str, current_selected_workers: Optional[List[str]]
+        self,
+        domain: str,
+        current_selected_workers: Optional[List[str]],
+        require_configured: bool = False,
     ) -> List[WorkerResult]:
         """Analyzes the metrics and determines the best worker for each PoP that a node should connect to.
 
@@ -151,11 +154,15 @@ class WorkerMetricsCollection:
 
             # Map metrics to a list of (target diff, peer count, worker) tuples for online workers
             for wm in self.data.values():
-                worker_cfg = workers_cfg.get(wm.worker) or config.Worker(
-                    id=0, weight=1, pop=""
-                )
-
-                print(worker_cfg)
+                worker_cfg = workers_cfg.get(wm.worker)
+                if worker_cfg is None:
+                    if require_configured:
+                        logger.warning(
+                            "Worker %s is not in the workers config, skipping",
+                            wm.worker,
+                        )
+                        continue
+                    worker_cfg = config.Worker(id=0, weight=1, pop="")
 
                 if worker_cfg.pop != pop:
                     continue
@@ -183,10 +190,8 @@ class WorkerMetricsCollection:
                     if len(all_matched) > 0:
                         matched = all_matched[0]
 
-                        if (
-                            matched.diff > 0
-                            and matched.diff
-                            > workers_cfg.sticky_worker_tolerance * matched.target
+                        if matched.diff > max(
+                            1, workers_cfg.sticky_worker_tolerance * matched.target
                         ):
                             continue
 
