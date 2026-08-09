@@ -47,21 +47,27 @@ class Worker:
             it defaults to the worker's position in the workers map.
         weight: The relative weight of a worker, defaults to 1.
         pop: The PoP (Point of Presence) this worker is located in
+        endpoint_name: An optional hostname to hand to Parker nodes instead of the
+            address the worker announces over MQTT. The port is unaffected. Set it
+            to have nodes resolve the concentrator endpoint via DNS.
     """
 
     id: int
     weight: int
     pop: str
+    endpoint_name: Optional[str] = None
 
     @classmethod
     def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
         worker_id = int(worker_cfg["id"])
         if not 0 <= worker_id <= 2**32 - 1:
             raise ValueError("Worker ID must be an unsigned 32-bit integer")
+        endpoint_name = worker_cfg.get("endpoint_name")
         return cls(
             weight=int(1 if worker_cfg.get("weight") is None else worker_cfg["weight"]),
             pop=worker_cfg.get("pop") or "",
             id=worker_id,
+            endpoint_name=str(endpoint_name) if endpoint_name else None,
         )
 
 

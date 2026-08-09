@@ -22,6 +22,10 @@ workers:
     id: 1
     weight: 30
     pop: vie01
+    # In Parker mode: the hostname handed to nodes as the concentrator endpoint,
+    # instead of the address this worker announces over MQTT. The port is kept.
+    # Omit it to hand out the announced address.
+    endpoint_name: gw04.ext.ffmuc.net
   gw05.in.ffmuc.net:
     id: 2
     weight: 30

@@ -174,13 +174,27 @@ class TestConfig(unittest.TestCase):
 
     def test_worker_explicit_null_values_use_defaults(self):
         workers = config.Workers.from_dict(
-            {"worker": {"weight": None, "pop": None}}, 10
+            {"worker": {"weight": None, "pop": None, "endpoint_name": None}}, 10
         )
         self.assertEqual(workers.get("worker").weight, 1)
         self.assertEqual(workers.get("worker").pop, "")
+        self.assertIsNone(workers.get("worker").endpoint_name)
 
         workers = config.Workers.from_dict({"worker": {"weight": 0}}, 10)
         self.assertEqual(workers.get("worker").weight, 0)
+
+    def test_worker_endpoint_name_is_optional_string(self):
+        workers = config.Workers.from_dict(
+            {
+                "named": {"endpoint_name": "gw1.lab"},
+                "empty": {"endpoint_name": ""},
+                "unset": {},
+            },
+            10,
+        )
+        self.assertEqual(workers.get("named").endpoint_name, "gw1.lab")
+        self.assertIsNone(workers.get("empty").endpoint_name)
+        self.assertIsNone(workers.get("unset").endpoint_name)
 
     def test_cleanup_defaults_and_mode_timeouts(self):
         cleanup = config.Cleanup.from_dict({})
