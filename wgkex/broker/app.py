@@ -573,13 +573,18 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             logger.error(f"Couldn't get worker endpoint data for {worker.name}")
             return {"error": {"message": "could not get gateway data"}}, 500
 
+        # An endpoint_name in the config replaces the address the worker announced,
+        # leaving it to the nodes to resolve the concentrator's name.
+        worker_cfg = config.get_config().workers.get(worker.name)
+        endpoint_host = str(w_data.get("ExternalAddress"))
+        if worker_cfg is not None and worker_cfg.endpoint_name:
+            endpoint_host = worker_cfg.endpoint_name
+
         concentrators.append(
             {
                 "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
                 "address6": w_data.get("LinkAddress"),
-                "endpoint": join_host_port(
-                    str(w_data.get("ExternalAddress")), str(w_data.get("Port"))
-                ),
+                "endpoint": join_host_port(endpoint_host, str(w_data.get("Port"))),
                 "pubkey": w_data.get("PublicKey"),  # type: ignore
                 "id": worker.id,
             }

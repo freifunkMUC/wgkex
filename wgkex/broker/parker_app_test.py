@@ -486,6 +486,48 @@ class TestBrokerApp(unittest.TestCase):
                 )
             self.assertEqual(response.status_code, 500)
 
+    def test_parker_exchange_endpoint_uses_configured_endpoint_name(self):
+        cfg = _parker_config()
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/63"),
+            [],
+        )
+        query = {"pubkey": _PUBLIC_KEY, "nonce": "nonce"}
+        self.broker_app.parker_worker_data["worker"] = {
+            "LinkAddress": "fe80::1",
+            "ExternalAddress": "198.51.100.1",
+            "Port": 10000,
+            "PublicKey": "gateway-key",
+        }
+        self.broker_app.parker_worker_metrics.set_online("worker")
+
+        def _endpoint() -> str:
+            with (
+                mock.patch.object(
+                    self.broker_app.config, "get_config", return_value=cfg
+                ),
+                mock.patch.object(self.broker_app, "ipam", ipam),
+                mock.patch.object(
+                    self.broker_app, "sign_response", return_value=b"signature"
+                ),
+            ):
+                response = self.broker_app.app.test_client().get(
+                    "/config", query_string=query
+                )
+            self.assertEqual(response.status_code, 200)
+            payload = json.loads(response.data.split(b"\n", 1)[0])
+            return payload["concentrators"][0]["endpoint"]
+
+        cfg.workers = config.Workers.from_dict({"worker": {"id": 7}}, 10)
+        self.assertEqual(_endpoint(), "198.51.100.1:10000")
+
+        cfg.workers = config.Workers.from_dict(
+            {"worker": {"id": 7, "endpoint_name": "gw1.lab"}}, 10
+        )
+        self.assertEqual(_endpoint(), "gw1.lab:10000")
+
     def test_parker_metric_status_and_invalid_data_handlers(self):
         self.broker_app.handle_mqtt_message_parker_metrics(
             None,
