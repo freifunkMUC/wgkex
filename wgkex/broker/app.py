@@ -512,16 +512,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
     range6 = next(ranges)
     xlat_range6 = next(ranges)
 
-    gateway: str = "all"
-
-    mqtt_data = {
-        "PublicKey": req_data.pubkey,
-        "Range6": str(full_range6),
-        "Keepalive": None,  # TODO make configurable
-    }
-
     logger.info(f"wg_api_v3_key_exchange: Key:{req_data.pubkey}")
-    mqtt.publish(f"parker/wireguard/{gateway}", json.dumps(mqtt_data).encode("utf-8"))
 
     domain = "parker"
 
@@ -588,6 +579,22 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
                 "pubkey": w_data.get("PublicKey"),  # type: ignore
                 "id": worker.id,
             }
+        )
+
+    # Provision the peer only on the workers this node was assigned to. A
+    # broadcast here would (re-)install the peer and its prefix routes on
+    # every worker, and any worker that then announces the prefix without
+    # holding a live session blackholes part of the ECMP flows.
+    mqtt_data = {
+        "PublicKey": req_data.pubkey,
+        "Range6": str(full_range6),
+        "Keepalive": None,  # TODO make configurable
+    }
+    for worker in selected_workers:
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=worker.name),
+            json.dumps(mqtt_data).encode("utf-8"),
+            qos=1,
         )
 
     ipam.update_prefix(
