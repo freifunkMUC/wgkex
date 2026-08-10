@@ -30,6 +30,8 @@ TOPIC_BROKER_ASSIGNMENT = "wireguard-broker/{broker}/assignment"
 TOPIC_PARKER_WORKER_WG_DATA = "parker/wireguard-worker/{worker}/data"
 TOPIC_PARKER_WORKER_STATUS = "parker/" + TOPIC_WORKER_STATUS
 TOPIC_PARKER_CONNECTED_PEERS = "parker/wireguard-metrics/{worker}/" + CONNECTED_PEERS_METRIC
+# Broker -> worker: Parker peer updates (JSON), addressed to a worker hostname or "all".
+TOPIC_PARKER_WG_PEER = "parker/wireguard/{worker}"
 
 
 class MQTTTopics:
@@ -43,3 +45,4 @@ class MQTTTopics:
     TOPIC_PARKER_WORKER_WG_DATA = TOPIC_PARKER_WORKER_WG_DATA
     TOPIC_PARKER_WORKER_STATUS = TOPIC_PARKER_WORKER_STATUS
     TOPIC_PARKER_CONNECTED_PEERS = TOPIC_PARKER_CONNECTED_PEERS
+    TOPIC_PARKER_WG_PEER = TOPIC_PARKER_WG_PEER

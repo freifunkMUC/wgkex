@@ -17,6 +17,7 @@ from wgkex.common.mqtt import (
     STATUS_DRAINING,
     TOPIC_CONNECTED_PEERS,
     TOPIC_PARKER_CONNECTED_PEERS,
+    TOPIC_PARKER_WG_PEER,
     TOPIC_PARKER_WORKER_STATUS,
     TOPIC_PARKER_WORKER_WG_DATA,
     TOPIC_WG_KEY,
@@ -91,7 +92,9 @@ def connect(exit_event: threading.Event) -> None:
     client.on_message = on_message
 
     if parker_enabled:
-        client.message_callback_add("parker/wireguard/#", on_message_parker)
+        client.message_callback_add(
+            TOPIC_PARKER_WG_PEER.format(worker="+"), on_message_parker
+        )
     else:
         client.message_callback_add("wireguard/#", on_message_wireguard)
         client.message_callback_add(
@@ -247,9 +250,13 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     parker_enabled = get_config().parker.enabled
 
     if parker_enabled:
-        topic = "parker/wireguard/+"
-        logger.info(f"Subscribing to topic {topic}")
-        client.subscribe(topic)
+        # Peer updates are addressed by worker name (the hostname, the same identity as the
+        # status/metrics topics and the broker's worker config). "all" stays subscribed so a
+        # broker that still broadcasts keeps working during a rollout.
+        for worker in (_HOSTNAME, WG_KEY_ALL_WORKERS):
+            topic = TOPIC_PARKER_WG_PEER.format(worker=worker)
+            logger.info(f"Subscribing to topic {topic}")
+            client.subscribe(topic, qos=1)
     else:
         domains = get_config().domains
         for domain in domains:
@@ -466,6 +473,17 @@ def on_message_parker(
         userdata: the private user data.
         message: The MQTT message.
     """
+    # The subscriptions are already narrowed to this worker's topic, but the
+    # peer provisioning below mutates wg + routing state, so re-check the
+    # addressee instead of trusting whatever ended up subscribed.
+    target = message.topic.rpartition("/")[2]
+    if target not in (_HOSTNAME, WG_KEY_ALL_WORKERS):
+        logger.debug(
+            "Ignoring Parker peer update addressed to %s (this worker is %s)",
+            target,
+            _HOSTNAME,
+        )
+        return
     # TODO: ensure payload is a dict mathing a TBD shared data class
     q.put(str(message.payload.decode("utf-8")))
 
