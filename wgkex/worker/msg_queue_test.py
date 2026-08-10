@@ -130,6 +130,30 @@ class TestMessageQueue(unittest.TestCase):
             "key", ["2001:db8:2::/63", "2001:db8:1::/63"]
         )
 
+    @mock.patch.object(
+        msg_queue, "parker_prefix_owned_by_other_peer", side_effect=[False, True]
+    )
+    @mock.patch.object(msg_queue, "link_handler")
+    def test_parker_remove_message_removes_peer_and_forgets(self, link_handler, owned):
+        coordinator = mock.MagicMock()
+        coordinator.peer_lock.return_value.__enter__.return_value = None
+        item = json.dumps(
+            {"PublicKey": "key", "Range6": "2001:db8::/63", "Remove": True}
+        )
+
+        msg_queue._process_queue_item(item, True, coordinator)
+
+        client = link_handler.call_args.args[0]
+        self.assertTrue(client.remove)
+        link_handler.assert_called_once_with(client, preserve_parker_route=False)
+        coordinator.record_provisioned.assert_not_called()
+        coordinator.forget.assert_called_once_with("key")
+
+        # A prefix that has moved to another peer must be preserved.
+        msg_queue._process_queue_item(item, True, coordinator)
+        self.assertEqual(link_handler.call_args.kwargs, {"preserve_parker_route": True})
+        owned.assert_called_with("wg-nodes", "2001:db8::/63", "key", 63)
+
     @mock.patch.object(msg_queue, "link_handler")
     def test_malformed_queue_items_are_rejected(self, link_handler):
         invalid_items = (

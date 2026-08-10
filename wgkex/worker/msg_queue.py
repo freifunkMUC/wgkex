@@ -7,6 +7,7 @@ from queue import Empty, Queue
 from wgkex.common import logger
 from wgkex.worker.netlink import (
     get_parker_prefixes_for_peer,
+    parker_prefix_owned_by_other_peer,
     ParkerWireGuardClient,
     PeerMutationError,
     WireGuardClient,
@@ -89,11 +90,12 @@ def _process_queue_item(
             public_key=public_key,
             range6=str(parsed_range6),
             keepalive=message.get("Keepalive"),
-            remove=False,
+            remove=bool(message.get("Remove")),
             previous_ranges6=previous_ranges6,
         )
         logger.info(
-            "Processing queue for key %s with range %s",
+            "Processing queue %s for key %s with range %s",
+            "removal" if client.remove else "update",
             client.public_key,
             client.range6,
         )
@@ -124,6 +126,17 @@ def _process_queue_item(
         else None
     )
     with coordinator.peer_lock(client.public_key, related_resources):
+        if isinstance(client, ParkerWireGuardClient) and client.remove:
+            # The broker de-selected this worker for the node. Like the stale
+            # sweep: keep the route if another peer owns the prefix by now,
+            # and forget the peer so a later re-add gets a fresh grace.
+            preserve = parker_prefix_owned_by_other_peer(
+                "wg-nodes", client.range6, client.public_key, parker_prefix_length
+            )
+            result = link_handler(client, preserve_parker_route=preserve)
+            coordinator.forget(client.public_key)
+            logger.debug(result)
+            return
         coordinator.record_provisioned(client.public_key, initial_handshake_grace)
         try:
             result = link_handler(client)
