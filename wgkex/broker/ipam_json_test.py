@@ -23,6 +23,13 @@ def _allocate_prefix(
     results.put(str(prefix))
 
 
+def _update_concentrators(storage_path: str, pubkey: str, start: Any) -> None:
+    start.wait()
+    ipam = JSONFileIPAM(storage_path)
+    ipam.get_or_allocate_prefix(pubkey, ipv4=False, ipv6=True, ipv6_prefix_length=63)
+    ipam.update_prefix(pubkey, ipv4=False, ipv6=True, selected_concentrators=[pubkey])
+
+
 class TestJSONFileIPAM(unittest.TestCase):
     def test_atomic_storage_persists_and_reuses_allocations(self):
         with tempfile.TemporaryDirectory() as temporary_dir:
@@ -130,6 +137,178 @@ class TestJSONFileIPAM(unittest.TestCase):
                     if name.startswith(".ipv6_ranges.")
                 ],
                 [],
+            )
+
+    def test_selected_concentrators_are_persisted_and_returned(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            ipam = JSONFileIPAM(storage_path)
+
+            _, _, initial = ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(initial, [])
+
+            ipam.update_prefix(
+                "pubkey-a",
+                ipv4=False,
+                ipv6=True,
+                selected_concentrators=["gw01", "gw03"],
+            )
+
+            # A fresh instance must see the same selection, i.e. it survives a
+            # broker restart and is not kept in memory only.
+            _, _, stored = JSONFileIPAM(storage_path).get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(stored, ["gw01", "gw03"])
+            with open(storage_path, "r", encoding="utf-8") as ranges_file:
+                self.assertEqual(
+                    json.load(ranges_file)["concentrators"],
+                    {"pubkey-a": ["gw01", "gw03"]},
+                )
+
+            # Other nodes keep their own selection.
+            ipam.update_prefix(
+                "pubkey-b", ipv4=False, ipv6=True, selected_concentrators=["gw02"]
+            )
+            _, _, stored = ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(stored, ["gw01", "gw03"])
+
+            # An empty selection drops the entry again.
+            ipam.update_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, selected_concentrators=[]
+            )
+            with open(storage_path, "r", encoding="utf-8") as ranges_file:
+                self.assertEqual(
+                    json.load(ranges_file)["concentrators"], {"pubkey-b": ["gw02"]}
+                )
+
+    def test_unchanged_selection_does_not_rewrite_storage(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            ipam = JSONFileIPAM(storage_path)
+            ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            ipam.update_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, selected_concentrators=["gw01"]
+            )
+
+            with mock.patch.object(ipam, "_atomic_write") as atomic_write:
+                ipam.update_prefix(
+                    "pubkey-a", ipv4=False, ipv6=True, selected_concentrators=["gw01"]
+                )
+                atomic_write.assert_not_called()
+
+                ipam.update_prefix(
+                    "pubkey-a", ipv4=False, ipv6=True, selected_concentrators=["gw02"]
+                )
+                atomic_write.assert_called_once()
+
+    def test_legacy_and_invalid_stored_concentrators_are_tolerated(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            with open(storage_path, "w", encoding="utf-8") as ranges_file:
+                json.dump(
+                    {
+                        "parent_prefix": "2001:db8:ed0::/56",
+                        "ranges": {"pubkey-a": "2001:db8:ed0:2::/63"},
+                    },
+                    ranges_file,
+                )
+
+            ipam = JSONFileIPAM(storage_path)
+            _, prefix, concentrators = ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(str(prefix), "2001:db8:ed0:2::/63")
+            self.assertEqual(concentrators, [])
+
+            with open(storage_path, "w", encoding="utf-8") as ranges_file:
+                json.dump(
+                    {
+                        "parent_prefix": "2001:db8:ed0::/56",
+                        "ranges": {"pubkey-a": "2001:db8:ed0:2::/63"},
+                        "concentrators": {"pubkey-a": "gw01", "pubkey-b": ["gw02"]},
+                    },
+                    ranges_file,
+                )
+            _, _, concentrators = ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(concentrators, [])
+            _, _, concentrators = ipam.get_or_allocate_prefix(
+                "pubkey-b", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(concentrators, ["gw02"])
+
+            with open(storage_path, "w", encoding="utf-8") as ranges_file:
+                json.dump(
+                    {
+                        "parent_prefix": "2001:db8:ed0::/56",
+                        "ranges": {},
+                        "concentrators": ["gw01"],
+                    },
+                    ranges_file,
+                )
+            _, _, concentrators = ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(concentrators, [])
+
+    def test_failing_update_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            ipam = JSONFileIPAM(storage_path)
+            ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+
+            with mock.patch.object(
+                ipam, "_atomic_write", side_effect=OSError("disk full")
+            ):
+                ipam.update_prefix(
+                    "pubkey-a", ipv4=False, ipv6=True, selected_concentrators=["gw01"]
+                )
+
+            _, _, concentrators = ipam.get_or_allocate_prefix(
+                "pubkey-a", ipv4=False, ipv6=True, ipv6_prefix_length=63
+            )
+            self.assertEqual(concentrators, [])
+
+    def test_concurrent_processes_keep_each_others_concentrators(self):
+        context = multiprocessing.get_context("fork")
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            storage_path = os.path.join(temporary_dir, "ipv6_ranges.json")
+            with open(storage_path, "w", encoding="utf-8") as ranges_file:
+                json.dump(
+                    {"parent_prefix": "2001:db8:ed0::/56", "ranges": {}},
+                    ranges_file,
+                )
+
+            start = context.Event()
+            pubkeys = [f"pubkey-{index}" for index in range(8)]
+            processes = [
+                context.Process(
+                    target=_update_concentrators, args=(storage_path, pubkey, start)
+                )
+                for pubkey in pubkeys
+            ]
+            for process in processes:
+                process.start()
+            start.set()
+            for process in processes:
+                process.join(timeout=10)
+                self.assertEqual(process.exitcode, 0)
+
+            with open(storage_path, "r", encoding="utf-8") as ranges_file:
+                persisted = json.load(ranges_file)
+            self.assertEqual(
+                persisted["concentrators"],
+                {pubkey: [pubkey] for pubkey in pubkeys},
             )
 
     def test_concurrent_processes_allocate_distinct_persistent_prefixes(self):
