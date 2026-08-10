@@ -190,9 +190,14 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     global _parker_worker_ready
 
     if parker_enabled:
-        topic = "parker/wireguard/+"
-        logger.info(f"Subscribing to topic {topic}")
-        client.subscribe(topic)
+        # Peer updates are addressed by worker name — the hostname, the same
+        # identity as the status/metrics topics and the broker's worker
+        # config; external_name is only the advertised endpoint address.
+        # "all" stays subscribed so a broker that still broadcasts keeps
+        # working during a rollout.
+        for topic in (f"parker/wireguard/{_HOSTNAME}", "parker/wireguard/all"):
+            logger.info(f"Subscribing to topic {topic}")
+            client.subscribe(topic)
 
         _parker_worker_ready = _publish_parker_worker_data(client, own_external_name)
 
@@ -297,6 +302,17 @@ def on_message_parker(
         userdata: the private user data.
         message: The MQTT message.
     """
+    # The subscriptions are already narrowed to this worker's topic, but the
+    # peer provisioning below mutates wg + routing state, so re-check the
+    # addressee instead of trusting whatever ended up subscribed.
+    target = message.topic.rpartition("/")[2]
+    if target not in (_HOSTNAME, "all"):
+        logger.debug(
+            "Ignoring Parker peer update addressed to %s (this worker is %s)",
+            target,
+            _HOSTNAME,
+        )
+        return
     # TODO: ensure payload is a dict mathing a TBD shared data class
     q.put(str(message.payload.decode("utf-8")))
 

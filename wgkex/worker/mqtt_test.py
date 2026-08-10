@@ -133,7 +133,8 @@ class MQTTTest(unittest.TestCase):
 
         mqtt_client_mock.assert_has_calls(
             [
-                mock.call().subscribe("parker/wireguard/+"),
+                mock.call().subscribe(f"parker/wireguard/{hostname}"),
+                mock.call().subscribe("parker/wireguard/all"),
                 mock.call().publish(
                     f"parker/wireguard-worker/{hostname}/data",
                     '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
@@ -154,7 +155,8 @@ class MQTTTest(unittest.TestCase):
 
         mqtt_client_mock.assert_has_calls(
             [
-                mock.call().subscribe("parker/wireguard/+"),
+                mock.call().subscribe(f"parker/wireguard/{hostname}"),
+                mock.call().subscribe("parker/wireguard/all"),
                 mock.call().publish(
                     f"parker/wireguard-worker/{hostname}/status", 0, qos=1, retain=True
                 ),
@@ -399,6 +401,24 @@ class MQTTTest(unittest.TestCase):
         mqtt.on_message_parker(None, None, message)
         self.assertEqual(mqtt.q.get_nowait(), '{"PublicKey":"key"}')
         mqtt.on_message(None, None, message)
+
+    def test_on_message_parker_ignores_other_workers_updates(self):
+        message = paho.mqtt.client.MQTTMessage()
+        message.payload = b'{"PublicKey":"key"}'
+
+        message.topic = "parker/wireguard/some-other-worker".encode()
+        mqtt.on_message_parker(None, None, message)
+        self.assertTrue(mqtt.q.empty())
+
+        # The externalName a worker advertises as its endpoint address is not
+        # its worker identity — only the hostname (and "all") is.
+        message.topic = "parker/wireguard/worker.example".encode()
+        mqtt.on_message_parker(None, None, message)
+        self.assertTrue(mqtt.q.empty())
+
+        message.topic = f"parker/wireguard/{socket.gethostname()}".encode()
+        mqtt.on_message_parker(None, None, message)
+        self.assertEqual(mqtt.q.get_nowait(), '{"PublicKey":"key"}')
 
     def test_metrics_loop_validation_exception_and_offline_publish(self):
         with self.assertRaisesRegex(ValueError, "Domain must be passed"):
