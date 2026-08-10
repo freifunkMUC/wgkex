@@ -402,6 +402,20 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             json.dumps(mqtt_data).encode("utf-8"),
         )
 
+    # A de-selected worker would keep the node's peer and prefix route until
+    # its stale-peer sweep runs, up to a full cleanup interval. Tell it to
+    # drop the peer right away instead. A worker that predates the Remove
+    # flag reads this as the re-provisioning it always received - no worse
+    # than before.
+    selected_names = {worker.name for worker in selected_workers}
+    for previous_name in old_selected_concentrators:
+        if previous_name in selected_names:
+            continue
+        mqtt.publish(
+            f"parker/wireguard/{previous_name}",
+            json.dumps({**mqtt_data, "Remove": True}).encode("utf-8"),
+        )
+
     ipam.update_prefix(
         req_data.pubkey,
         not config.get_config().parker.xlat,

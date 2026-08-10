@@ -593,6 +593,74 @@ class TestBrokerApp(unittest.TestCase):
             self.assertEqual(payload["PublicKey"], _PUBLIC_KEY)
             self.assertEqual(payload["Range6"], "2001:db8:42::/63")
 
+    def test_parker_exchange_removes_peer_from_deselected_workers(self):
+        cfg = _parker_config()
+        cfg.workers = config.Workers.from_dict(
+            {"worker1": {"id": 1}, "worker2": {"id": 2}}, 10
+        )
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/63"),
+            ["worker1", "worker3"],
+        )
+        query = {"pubkey": _PUBLIC_KEY, "nonce": "nonce"}
+        for name in ("worker1", "worker2"):
+            self.broker_app.parker_worker_data[name] = {
+                "LinkAddress": "fe80::1",
+                "ExternalAddress": f"{name}.example",
+                "Port": 10000,
+                "PublicKey": f"{name}-key",
+            }
+        workers = [
+            self.broker_app.WorkerResult(
+                name="worker1", id=1, diff=0, peers=0, target=0
+            ),
+            self.broker_app.WorkerResult(
+                name="worker2", id=2, diff=0, peers=0, target=0
+            ),
+        ]
+
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "ipam", ipam),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+            mock.patch.object(
+                self.broker_app.parker_worker_metrics,
+                "get_best_workers",
+                return_value=workers,
+            ),
+            mock.patch.object(
+                self.broker_app, "sign_response", return_value=b"signature"
+            ),
+        ):
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+
+        self.assertEqual(response.status_code, 200)
+        published = {
+            call.args[0]: json.loads(call.args[1])
+            for call in mqtt.publish.call_args_list
+        }
+        self.assertEqual(
+            sorted(published),
+            [
+                "parker/wireguard/worker1",
+                "parker/wireguard/worker2",
+                "parker/wireguard/worker3",
+            ],
+        )
+        self.assertNotIn("Remove", published["parker/wireguard/worker1"])
+        self.assertNotIn("Remove", published["parker/wireguard/worker2"])
+        self.assertIs(published["parker/wireguard/worker3"]["Remove"], True)
+        self.assertEqual(
+            published["parker/wireguard/worker3"]["PublicKey"], _PUBLIC_KEY
+        )
+        self.assertEqual(
+            published["parker/wireguard/worker3"]["Range6"], "2001:db8:42::/63"
+        )
+
     def test_parker_metric_status_and_invalid_data_handlers(self):
         self.broker_app.handle_mqtt_message_parker_metrics(
             None,
