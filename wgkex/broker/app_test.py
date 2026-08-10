@@ -443,8 +443,11 @@ class TestBrokerApp(unittest.TestCase):
             ipam.update_prefix.assert_not_called()
 
             self.broker_app.parker_worker_metrics.set_online("worker")
-            with mock.patch.object(
-                self.broker_app, "sign_response", return_value=b"signature"
+            with (
+                mock.patch.object(self.broker_app, "mqtt") as mqtt,
+                mock.patch.object(
+                    self.broker_app, "sign_response", return_value=b"signature"
+                ),
             ):
                 response = self.broker_app.app.test_client().get(
                     "/config", query_string=query
@@ -454,6 +457,10 @@ class TestBrokerApp(unittest.TestCase):
             self.assertEqual(payload["concentrators"][0]["id"], 7)
             ipam.update_prefix.assert_called_once_with(
                 _PUBLIC_KEY, False, True, ["worker"]
+            )
+            self.assertEqual(
+                [call.args[0] for call in mqtt.publish.call_args_list],
+                ["parker/wireguard/worker"],
             )
 
             self.broker_app.parker_worker_data.clear()
@@ -527,6 +534,64 @@ class TestBrokerApp(unittest.TestCase):
             {"worker": {"id": 7, "endpoint_name": "gw1.lab"}}, 10
         )
         self.assertEqual(_endpoint(), "gw1.lab:10000")
+
+    def test_parker_exchange_publishes_peer_only_to_selected_workers(self):
+        cfg = _parker_config()
+        cfg.workers = config.Workers.from_dict(
+            {"worker1": {"id": 1}, "worker2": {"id": 2}}, 10
+        )
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/63"),
+            [],
+        )
+        query = {"pubkey": _PUBLIC_KEY, "nonce": "nonce"}
+        for name in ("worker1", "worker2"):
+            self.broker_app.parker_worker_data[name] = {
+                "LinkAddress": "fe80::1",
+                "ExternalAddress": f"{name}.example",
+                "Port": 10000,
+                "PublicKey": f"{name}-key",
+            }
+        workers = [
+            self.broker_app.WorkerResult(
+                name="worker1", id=1, diff=0, peers=0, target=0
+            ),
+            self.broker_app.WorkerResult(
+                name="worker2", id=2, diff=0, peers=0, target=0
+            ),
+        ]
+
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "ipam", ipam),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+            mock.patch.object(
+                self.broker_app.parker_worker_metrics,
+                "get_best_workers",
+                return_value=workers,
+            ),
+            mock.patch.object(
+                self.broker_app, "sign_response", return_value=b"signature"
+            ),
+        ):
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+
+        self.assertEqual(response.status_code, 200)
+        published = [
+            (call.args[0], json.loads(call.args[1]))
+            for call in mqtt.publish.call_args_list
+        ]
+        self.assertEqual(
+            [topic for topic, _ in published],
+            ["parker/wireguard/worker1", "parker/wireguard/worker2"],
+        )
+        for _, payload in published:
+            self.assertEqual(payload["PublicKey"], _PUBLIC_KEY)
+            self.assertEqual(payload["Range6"], "2001:db8:42::/63")
 
     def test_parker_metric_status_and_invalid_data_handlers(self):
         self.broker_app.handle_mqtt_message_parker_metrics(
