@@ -26,7 +26,7 @@ jobs:
           curl -L https://files.pythonhosted.org/packages/9d/e0/70553e3000e345daff267cec284ce4cbf3fc141b6da229ac52775b5428f1/coverage-7.13.5.tar.gz| tar xvz
           cd "${GITHUB_WORKSPACE}"
           bazel coverage --combined_report=lcov --java_runtime_version=remotejdk_11 -t- --instrument_test_targets \
-            --test_output=errors --linkopt=--coverage --linkopt=-lc \
+            --test_output=errors --linkopt=--coverage --linkopt=-lc --instrumentation_filter=//wgkex \
             --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.13.5/__main__.py \
             --test_verbose_timeout_warnings --define=config_file=test ...:all
       - name: Coveralls

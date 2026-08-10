@@ -1,4 +1,4 @@
-FROM gcr.io/bazel-public/bazel:8.5.0 AS builder
+FROM gcr.io/bazel-public/bazel:9.0.0 AS builder
 # Make sure .bazelversion and the version of image are identical
 
 WORKDIR /wgkex
