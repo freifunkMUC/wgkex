@@ -13,6 +13,8 @@ from wgkex.worker.netlink import (
     WireGuardClient,
     get_parker_prefixes_for_peer,
     link_handler,
+    parker_link_handler,
+    parker_prefix_owned_by_other_peer,
 )
 from wgkex.worker.observability import PEER_OPS, QUEUE_DEPTH
 from wgkex.worker.peer_state import PeerMutationCoordinator, peer_mutations
@@ -108,11 +110,13 @@ def watch_queue(
     return thread
 
 
-def parse_parker_item(item: str, prefix_length: int) -> tuple[str, str, int | None]:
+def parse_parker_item(
+    item: str, prefix_length: int
+) -> tuple[str, str, int | None, bool]:
     """Validates a Parker JSON queue item.
 
     Returns:
-        The public key, the normalized Range6 and the keepalive.
+        The public key, the normalized Range6, the keepalive and whether to remove the peer.
 
     Raises:
         ValueError: If the item is malformed.
@@ -131,17 +135,19 @@ def parse_parker_item(item: str, prefix_length: int) -> tuple[str, str, int | No
         raise ValueError(
             f"Parker queue item Range6 prefix length must be /{prefix_length}"
         )
-    return public_key, str(range6), message.get("Keepalive")
+    return public_key, str(range6), message.get("Keepalive"), bool(message.get("Remove"))
 
 
 def process_parker_item(item: str, options: ParkerOptions | None = None) -> None:
-    """Adds or moves a Parker peer from a JSON queue item.
+    """Adds, moves or removes a Parker peer from a JSON queue item.
 
     Routes of prefixes previously assigned to the peer are removed after the new state is
     installed. Old route deletions which fail are retried by the stale peer cleanup.
     """
     options = options or parker_options
-    public_key, range6, keepalive = parse_parker_item(item, options.prefix_length)
+    public_key, range6, keepalive, remove = parse_parker_item(
+        item, options.prefix_length
+    )
     coordinator = options.coordinator
     previous_ranges6 = tuple(
         get_parker_prefixes_for_peer("wg-nodes", public_key, options.prefix_length)
@@ -150,15 +156,27 @@ def process_parker_item(item: str, options: ParkerOptions | None = None) -> None
         public_key=public_key,
         range6=range6,
         keepalive=keepalive,
-        remove=False,
+        remove=remove,
         previous_ranges6=previous_ranges6,
     )
     logger.info(
-        "Processing queue for key %s with range %s",
+        "Processing queue %s for key %s with range %s",
+        "removal" if client.remove else "update",
         client.public_key,
         client.range6,
     )
     with coordinator.peer_lock(client.public_key, [range6, *previous_ranges6]):
+        if client.remove:
+            # The broker de-selected this worker for the node. Like the stale peer cleanup: keep
+            # the route if another peer owns the prefix by now, and forget the peer so a later
+            # re-add gets a fresh grace. Provisioning state is not refreshed for removals.
+            preserve = parker_prefix_owned_by_other_peer(
+                "wg-nodes", client.range6, client.public_key, options.prefix_length
+            )
+            result = parker_link_handler(client, preserve_parker_route=preserve)
+            coordinator.forget(client.public_key)
+            logger.debug(result)
+            return
         coordinator.record_provisioned(
             client.public_key, options.initial_handshake_grace
         )
