@@ -12,11 +12,11 @@ pyroute2_module_mock = mock.MagicMock()
 pyroute2_module_mock.netlink.exceptions = pyroute2_netlink_exceptions
 sys.modules["pyroute2"] = pyroute2_module_mock
 sys.modules["pyroute2.netlink"] = mock.MagicMock()
-from pyroute2 import IPRoute, WireGuard  # noqa: E402
+from pyroute2 import IPRoute, WireGuard
 
 sys.modules.pop("wgkex.worker.netlink", None)
 netlink = importlib.import_module("wgkex.worker.netlink")
-from wgkex.worker.peer_state import PeerMutationCoordinator  # noqa: E402
+from wgkex.worker.peer_state import PeerMutationCoordinator
 
 
 class MutableClock:

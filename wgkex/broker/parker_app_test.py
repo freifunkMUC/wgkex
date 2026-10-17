@@ -3,9 +3,9 @@ import ipaddress
 import json
 import sys
 import unittest
+from unittest import mock
 
 import flask_mqtt
-import mock
 import paho.mqtt.client
 import paho.mqtt.enums
 

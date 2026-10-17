@@ -5,7 +5,7 @@ import json
 import os
 import stat
 import tempfile
-from typing import Dict, Iterator, List, Optional, Tuple
+from collections.abc import Iterator
 
 from wgkex.broker.ipam import ParkerIPAM
 from wgkex.common import logger
@@ -48,7 +48,7 @@ class JSONFileIPAM(ParkerIPAM):
 
     def _read(
         self,
-    ) -> Tuple[ipaddress.IPv6Network, Dict[str, str], Dict[str, List[str]]]:
+    ) -> tuple[ipaddress.IPv6Network, dict[str, str], dict[str, list[str]]]:
         """Reads the storage file. Must be called with the storage lock held.
 
         Returns:
@@ -56,8 +56,8 @@ class JSONFileIPAM(ParkerIPAM):
             concentrators per public key.
         """
         parent_prefix = ipaddress.IPv6Network("2001:db8:ed0::/56")
-        ranges: Dict[str, str] = {}
-        concentrators: Dict[str, List[str]] = {}
+        ranges: dict[str, str] = {}
+        concentrators: dict[str, list[str]] = {}
 
         try:
             with open(self.file_path, "r", encoding="utf-8") as ranges_file:
@@ -104,9 +104,7 @@ class JSONFileIPAM(ParkerIPAM):
         ipv6: bool,
         ipv4_prefix_length: int = 22,
         ipv6_prefix_length: int = 63,
-    ) -> Tuple[
-        Optional[ipaddress.IPv4Network], Optional[ipaddress.IPv6Network], List[str]
-    ]:
+    ) -> tuple[ipaddress.IPv4Network | None, ipaddress.IPv6Network | None, list[str]]:
         """Returns the IPv6 range and the last selected concentrators for a node with a given public key.
         Only supports 464XLAT mode."""
 
@@ -156,10 +154,10 @@ class JSONFileIPAM(ParkerIPAM):
     def _atomic_write(
         self,
         parent_prefix: ipaddress.IPv6Network,
-        ranges: Dict[str, str],
-        concentrators: Dict[str, List[str]],
+        ranges: dict[str, str],
+        concentrators: dict[str, list[str]],
     ) -> None:
-        existing_mode: Optional[int] = None
+        existing_mode: int | None = None
         try:
             existing_mode = stat.S_IMODE(os.stat(self.file_path).st_mode)
         except FileNotFoundError:
@@ -193,7 +191,7 @@ class JSONFileIPAM(ParkerIPAM):
         raise NotImplementedError
 
     def update_prefix(
-        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: List[str]
+        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: list[str]
     ) -> None:
         """Persists the concentrators handed out to a node, so the next request for
         the same public key can stick to them."""
@@ -224,7 +222,7 @@ class JSONFileIPAM(ParkerIPAM):
                     pubkey,
                 )
                 self._atomic_write(parent_prefix, ranges, concentrators)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001
             # Losing this update only costs the node its sticky concentrators on
             # the next request, so don't fail the response over it. A structurally
             # invalid storage file raises more than OSError/JSONDecodeError.

@@ -1,9 +1,9 @@
 import importlib
 import sys
 import unittest
+from unittest import mock
 
 import flask_mqtt
-import mock
 
 from wgkex.config import config
 

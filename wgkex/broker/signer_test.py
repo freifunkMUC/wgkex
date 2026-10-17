@@ -3,12 +3,11 @@ import hashlib
 import importlib
 import sys
 import unittest
-from typing import Optional
 
 from wgkex.config import config
 
 
-def _parker_config(signing_key: Optional[str]) -> config.Config:
+def _parker_config(signing_key: str | None) -> config.Config:
     return config.Config.from_dict(
         {
             "parker": {

@@ -6,7 +6,7 @@ import re
 import socket
 import threading
 import time
-from typing import Any, List, Optional
+from typing import Any
 
 import paho.mqtt.client as mqtt
 import paho.mqtt.enums
@@ -79,7 +79,7 @@ def connect(exit_event: threading.Event) -> None:
     broker_keepalive = base_config.keepalive
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, _HOSTNAME)
 
-    domains: List[str] = []
+    domains: list[str] = []
     if not parker_enabled:
         domains = get_config().domains
 
@@ -200,7 +200,7 @@ def on_disconnect(client: mqtt.Client, userdata: Any, rc):
 def _publish_parker_worker_data(client: mqtt.Client, own_external_name: str) -> bool:
     try:
         port, public_key, link_address = get_device_data("wg-nodes")
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         # Don't let the exception escape into paho's network loop.
         logger.warning("WireGuard interface wg-nodes is not ready yet: %s", ex)
         return False
@@ -296,7 +296,7 @@ def publish_worker_data_and_status(client: mqtt.Client) -> bool:
     if get_config().parker.enabled:
         if not _publish_parker_worker_data(client, own_external_name):
             return False
-        domains: List[str] = []
+        domains: list[str] = []
     else:
         domains = get_config().domains
     for domain in domains:
@@ -491,7 +491,7 @@ def on_message_parker(
 def publish_metrics_loop(
     exit_event: threading.Event,
     client: mqtt.Client,
-    domain: Optional[str],
+    domain: str | None,
     parker_enabled: bool = False,
 ) -> None:
     """Continuously send metrics every METRICS_SEND_INTERVAL seconds for this gateway and the given domain."""

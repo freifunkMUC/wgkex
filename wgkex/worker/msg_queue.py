@@ -123,7 +123,7 @@ def parse_parker_item(
     """
     message = json.loads(item)
     if not isinstance(message, dict):
-        raise ValueError("Parker queue item must be an object")
+        raise ValueError("Parker queue item must be an object")  # noqa: TRY004
     public_key = message.get("PublicKey")
     if not isinstance(public_key, str) or not public_key:
         raise ValueError("Parker queue item has no valid PublicKey")

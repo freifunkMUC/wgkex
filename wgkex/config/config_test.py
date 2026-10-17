@@ -238,9 +238,8 @@ class TestConfig(unittest.TestCase):
     def test_invalid_parker_configs_throw(self):
         """Test invalid parker configs throw errors."""
         mock_open = mock.mock_open(read_data=_VALID_CFG + "\nparker:\n  enabled: true")
-        with mock.patch("builtins.open", mock_open):
-            with self.assertRaises(ValueError):
-                config.get_config()
+        with mock.patch("builtins.open", mock_open), self.assertRaises(ValueError):
+            config.get_config()
 
     def test_parker_ipv6_prefix_length_must_contain_two_64s(self):
         for prefix_length in (-1, 64, 128, "invalid"):
@@ -258,16 +257,20 @@ class TestConfig(unittest.TestCase):
                     + f"      length: {prefix_length}\n"
                     + "broker_signing_key: asdfasdfasdf"
                 )
-                with mock.patch("builtins.open", mock_open):
-                    with self.assertRaises(ValueError):
-                        config.get_config()
+                with (
+                    mock.patch("builtins.open", mock_open),
+                    self.assertRaises(ValueError),
+                ):
+                    config.get_config()
                 config._parsed_config = None
 
     def test_worker_tolerance_bounds_are_validated(self):
         for tolerance in (-1, 101):
-            with self.subTest(tolerance=tolerance):
-                with self.assertRaisesRegex(ValueError, "between 0 and 100"):
-                    config.Workers.from_dict({}, tolerance)
+            with (
+                self.subTest(tolerance=tolerance),
+                self.assertRaisesRegex(ValueError, "between 0 and 100"),
+            ):
+                config.Workers.from_dict({}, tolerance)
 
     def test_worker_ids_are_stable_unique_integers(self):
         workers = config.Workers.from_dict(

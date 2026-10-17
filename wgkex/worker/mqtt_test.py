@@ -138,8 +138,7 @@ class MQTTTest(unittest.TestCase):
                 mock.call().subscribe("parker/wireguard/all", qos=1),
                 mock.call().publish(
                     f"parker/wireguard-worker/{hostname}/data",
-                    '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
-                    % hostname,
+                    f'{{"ExternalAddress": "{hostname}", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}}',
                     qos=1,
                     retain=True,
                 ),
@@ -173,8 +172,7 @@ class MQTTTest(unittest.TestCase):
             [
                 mock.call().publish(
                     f"parker/wireguard-worker/{hostname}/data",
-                    '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
-                    % hostname,
+                    f'{{"ExternalAddress": "{hostname}", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}}',
                     qos=1,
                     retain=True,
                 ),
@@ -549,12 +547,12 @@ class MQTTTest(unittest.TestCase):
     def test_message_parsers_reject_unknown_domain_and_queue_parker(self, config_mock):
         config_mock.return_value = _get_config_mock()
         message = paho.mqtt.client.MQTTMessage()
-        message.topic = "wireguard/no-match/all".encode()
+        message.topic = b"wireguard/no-match/all"
         message.payload = b"key"
         with self.assertRaisesRegex(ValueError, "Could not find a match"):
             mqtt.on_message_wireguard(None, None, message)
 
-        message.topic = "parker/wireguard/all".encode()
+        message.topic = b"parker/wireguard/all"
         message.payload = b'{"PublicKey":"key"}'
         mqtt.on_message_parker(None, None, message)
         self.assertEqual(mqtt.q.get_nowait(), '{"PublicKey":"key"}')
@@ -564,13 +562,13 @@ class MQTTTest(unittest.TestCase):
         message = paho.mqtt.client.MQTTMessage()
         message.payload = b'{"PublicKey":"key"}'
 
-        message.topic = "parker/wireguard/some-other-worker".encode()
+        message.topic = b"parker/wireguard/some-other-worker"
         mqtt.on_message_parker(None, None, message)
         self.assertTrue(mqtt.q.empty())
 
         # The externalName a worker advertises as its endpoint address is not
         # its worker identity — only the hostname (and "all") is.
-        message.topic = "parker/wireguard/worker.example".encode()
+        message.topic = b"parker/wireguard/worker.example"
         mqtt.on_message_parker(None, None, message)
         self.assertTrue(mqtt.q.empty())
 

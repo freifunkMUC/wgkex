@@ -1,10 +1,10 @@
 import ipaddress
 import json
-import mock
 import sys
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from unittest import mock
 
 from wgkex.broker.ipam_netbox import NetboxIPAM
 from wgkex.config import config
@@ -87,19 +87,17 @@ def _mocked_netbox_response(*args, **kwargs):
                     ],
                 },
             )
-    if args[0] == "POST":
-        if args[1].endswith("/api/ipam/prefixes/"):
-            return MockResponse.with_data(
-                status_code=201,
-                json_data={
-                    "id": 2,
-                    "prefix": "2001:db8:999::/63",
-                    "description": '{"pubkey": "pubkey"}',
-                },
-            )
-    if args[0] == "PATCH":
-        if args[1].endswith("/api/ipam/prefixes/2/"):
-            return MockResponse.with_data(status_code=200, json_data={})
+    if args[0] == "POST" and args[1].endswith("/api/ipam/prefixes/"):
+        return MockResponse.with_data(
+            status_code=201,
+            json_data={
+                "id": 2,
+                "prefix": "2001:db8:999::/63",
+                "description": '{"pubkey": "pubkey"}',
+            },
+        )
+    if args[0] == "PATCH" and args[1].endswith("/api/ipam/prefixes/2/"):
+        return MockResponse.with_data(status_code=200, json_data={})
 
     print(f"Unexpected request in _mocked_netbox_response: {args}, {kwargs}")
     return MockResponse.with_data(status_code=404, json_data={})
@@ -239,13 +237,15 @@ class TestNetboxIPAM(unittest.TestCase):
         )
         duplicate.delete.return_value = False
 
-        with mock.patch.object(
-            self.ipam,
-            "_get_prefixes",
-            return_value=[canonical, duplicate],
+        with (
+            mock.patch.object(
+                self.ipam,
+                "_get_prefixes",
+                return_value=[canonical, duplicate],
+            ),
+            self.assertRaises(RuntimeError),
         ):
-            with self.assertRaises(RuntimeError):
-                self.ipam._deduplicate_prefixes("pubkey", 6)
+            self.ipam._deduplicate_prefixes("pubkey", 6)
 
     def test_allocated_prefix_is_kept_when_requery_visibility_is_delayed(self):
         allocated = mock.MagicMock(

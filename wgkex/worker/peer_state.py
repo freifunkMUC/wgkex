@@ -3,9 +3,8 @@
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
-from typing import Callable, Iterator
 
 
 class PeerMutationCoordinator:

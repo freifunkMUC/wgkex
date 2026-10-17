@@ -7,7 +7,7 @@ import math
 import os
 import sys
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 import yaml
 
@@ -23,7 +23,8 @@ class ConfigFileNotFoundError(Error):
 def _positive_duration(value: Any, name: str) -> float:
     """Parse a finite, positive duration in seconds."""
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be a positive duration in seconds")
+        message = f"{name} must be a positive duration in seconds"
+        raise ValueError(message)  # noqa: TRY004
     try:
         duration = float(value)
     except (TypeError, ValueError) as error:
@@ -589,10 +590,10 @@ class Parker:
                 netbox_additional_data: Additional data to send to NetBox when reserving an IPv4 prefix when not using 464XLAT.
             """
 
-            clat_subnet: Optional[str] = None
-            length: Optional[int] = None
-            netbox_filter: Optional[Dict[str, Any]] = None
-            netbox_additional_data: Optional[Dict[str, Any]] = None
+            clat_subnet: str | None = None
+            length: int | None = None
+            netbox_filter: dict[str, Any] | None = None
+            netbox_additional_data: dict[str, Any] | None = None
 
         @dataclasses.dataclass
         class IPv6:
@@ -605,8 +606,8 @@ class Parker:
             """
 
             length: int
-            netbox_filter: Optional[Dict[str, Any]] = None
-            netbox_additional_data: Optional[Dict[str, Any]] = None
+            netbox_filter: dict[str, Any] | None = None
+            netbox_additional_data: dict[str, Any] | None = None
 
         ipv4: IPv4
         ipv6: IPv6
@@ -623,7 +624,7 @@ class Parker:
     wg_keepalive: int = 25
 
     @classmethod
-    def from_dict(cls, parker_cfg: Dict[str, Any]) -> "Parker":
+    def from_dict(cls, parker_cfg: dict[str, Any]) -> "Parker":
         """Generates a parker config object from a dictionary.
 
         Arguments:
@@ -740,7 +741,7 @@ class Netbox:
     api_key: str
 
     @classmethod
-    def from_dict(cls, netbox_cfg: Dict[str, str]) -> "Netbox":
+    def from_dict(cls, netbox_cfg: dict[str, str]) -> "Netbox":
         """Generates a netbox config object from a dictionary.
 
         Arguments:

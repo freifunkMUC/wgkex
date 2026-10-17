@@ -2,7 +2,6 @@ import base64
 import hashlib
 from enum import Enum
 from functools import cache
-from typing import Optional, Tuple
 
 import ecdsa
 
@@ -48,7 +47,7 @@ class KeyType(Enum):
 
 
 @cache
-def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
+def get_private_key() -> tuple[KeyType, ecdsa.SigningKey, bytes | None]:
     """
     Retrieve the private key from the configuration.
 
@@ -67,12 +66,12 @@ def get_private_key() -> Tuple[KeyType, ecdsa.SigningKey, Optional[bytes]]:
     try:
         # ecdsautil-style format
         privkey_bytes = bytes.fromhex(privkey_encoded)
-    except Exception:
+    except Exception:  # noqa: BLE001
         # signify-style and other base64-encoded formats
         privkey_bytes = base64.b64decode(privkey_encoded)
 
     keytype: KeyType
-    fingerprint_bytes: Optional[bytes] = None
+    fingerprint_bytes: bytes | None = None
     if len(privkey_bytes) == 104:
         # signify-style format
         kdfrounds = int.from_bytes(privkey_bytes[4:8], "big")
@@ -127,6 +126,6 @@ def sign_response(data: bytes) -> bytes:
     if keytype == KeyType.SIGNIFY:
         assert fingerprint is not None, "Fingerprint must be set for SIGNIFY key type."
         # Build the signature struct for the signify-format
-        raw_signature = "Ed".encode("utf-8") + fingerprint + raw_signature
+        raw_signature = b"Ed" + fingerprint + raw_signature
 
     return base64.b64encode(raw_signature)

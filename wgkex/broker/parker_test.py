@@ -1,9 +1,10 @@
 import importlib
 import ipaddress
 import json
-import mock
 import sys
 import unittest
+from unittest import mock
+
 import paho.mqtt.client
 
 from wgkex.config import config
@@ -319,7 +320,7 @@ class TestParker(unittest.TestCase):
             "PublicKey": "K==",
         }
         msg = paho.mqtt.client.MQTTMessage()
-        msg.topic = "parker/wireguard-worker/worker1/data".encode("utf-8")
+        msg.topic = b"parker/wireguard-worker/worker1/data"
         msg.payload = json.dumps(payload).encode("utf-8")
         broker_app.handle_mqtt_message_parker_data(None, None, msg)
         self.assertIn("worker1", broker_app.parker_worker_data)
@@ -341,7 +342,7 @@ class TestParker(unittest.TestCase):
             pass
 
         msg = paho.mqtt.client.MQTTMessage()
-        msg.topic = "parker/wireguard-metrics/workerX/connected_peers".encode("utf-8")
+        msg.topic = b"parker/wireguard-metrics/workerX/connected_peers"
         msg.payload = b"5"
         broker_app.handle_mqtt_message_parker_metrics(None, None, msg)
         self.assertEqual(

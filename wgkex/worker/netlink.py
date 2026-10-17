@@ -463,7 +463,7 @@ def _run_operation(
             operations[operation] = OperationOutcome(status="already_absent")
             return
         raise PeerMutationError(operation, client, operations.copy(), error) from error
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         raise PeerMutationError(operation, client, operations.copy(), error) from error
     operations[operation] = OperationOutcome(
         status="deleted" if client.remove else "updated", result=result
@@ -649,7 +649,7 @@ def _last_handshake_seconds(peer: Any) -> int | None:
     if handshake is None:
         return None
     if not isinstance(handshake, dict):
-        raise ValueError("invalid last handshake attribute")
+        raise ValueError("invalid last handshake attribute")  # noqa: TRY004
     seconds = handshake.get("tv_sec")
     if isinstance(seconds, bool) or not isinstance(seconds, int) or seconds < 0:
         raise ValueError("invalid last handshake seconds")

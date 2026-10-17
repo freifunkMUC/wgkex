@@ -2,18 +2,17 @@
 
 import dataclasses
 import json
-import os
+import random
 import re
 import socket
 import threading
 import time
 import uuid
-import random
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
-import paho.mqtt.enums
 import paho.mqtt.client as mqtt_client
+import paho.mqtt.enums
 from flask import Flask, Response, abort, render_template, request
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
@@ -22,6 +21,10 @@ from waitress import serve
 
 from wgkex.broker import observability
 from wgkex.broker.assignments import Assignment, AssignmentHistory
+from wgkex.broker.ipam import ParkerIPAM
+from wgkex.broker.ipam_json import JSONFileIPAM
+from wgkex.broker.ipam_netbox import NetboxIPAM
+from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
 from wgkex.broker.observability import (
     ASSIGNMENTS,
     KEY_EXCHANGE_REQUESTS,
@@ -30,12 +33,8 @@ from wgkex.broker.observability import (
     REBALANCE_HINTS,
     SHARED_ASSIGNMENTS,
 )
-from wgkex.broker.ratelimit import RateLimiter, client_address
-from wgkex.broker.ipam import ParkerIPAM
-from wgkex.broker.ipam_netbox import NetboxIPAM
-from wgkex.broker.ipam_json import JSONFileIPAM
-from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
 from wgkex.broker.parker import ParkerQuery, ParkerResponse
+from wgkex.broker.ratelimit import RateLimiter, client_address
 from wgkex.broker.signer import sign_response
 from wgkex.common import logger
 from wgkex.common.keylist import KeyList
@@ -111,7 +110,7 @@ def _fetch_app_config() -> Flask_app:
     return app
 
 
-def _load_parker_ipam() -> Optional[ParkerIPAM]:
+def _load_parker_ipam() -> ParkerIPAM | None:
     if not config.get_config().parker.enabled:
         return None
 
@@ -445,7 +444,7 @@ def _previous_workers(previous: Assignment, domain: str, worker: str) -> list[st
 @app.route("/api/v3/wg/key/exchange", methods=["GET"])
 @app.route("/api/v3/config", methods=["GET"])
 @app.route("/config", methods=["GET"])
-def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
+def wg_api_v3_key_exchange() -> tuple[Response | dict, int]:
     if not config.get_config().parker.enabled or ipam is None:
         KEY_EXCHANGE_REQUESTS.labels("v3", "disabled").inc()
         return {
@@ -454,7 +453,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
 
     try:
         req_data = ParkerQuery.from_dict(request.args)
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         logger.warning(
             "Couldn't parse client query in /api/v3/wg/key/exchange: %s",
             ex,
@@ -486,7 +485,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
             config.get_config().parker.prefixes.ipv4.length or 0,
             config.get_config().parker.prefixes.ipv6.length,
         )
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         logger.error(
             "Exception occurred while fetching/allocating IPv6 prefix for public key %s: %s",
             req_data.pubkey,
@@ -653,9 +652,7 @@ def wg_api_v3_key_exchange() -> Tuple[Response | Dict, int]:
         concentrators=concentrators,
     )
 
-    data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + "\n".encode(
-        "utf-8"
-    )
+    data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + b"\n"
     if config.get_config().broker_signing_key is None:
         logger.error(
             "Parker is enabled, but no broker_signing_key is set in the config file. Can't respond to key exchange."

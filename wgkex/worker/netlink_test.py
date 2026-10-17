@@ -132,7 +132,7 @@ class NetlinkTest(unittest.TestCase):
     def test_stale_parker_peer_without_allowed_ips_does_not_abort_search(self):
         _get_wg_mock(
             "PARKER_PUBLIC_KEY",
-            int((datetime.now() - timedelta(hours=1)).timestamp()),
+            int((datetime.now(tz=UTC) - timedelta(hours=1)).timestamp()),
             has_allowed_ips=False,
         )
 
@@ -409,7 +409,8 @@ class NetlinkTest(unittest.TestCase):
         """Tests find_stale_wireguard_clients in parker mode returning range6."""
 
         _ = _get_wg_mock(
-            "PARKER_PUBLIC_KEY", int((datetime.now() - timedelta(hours=1)).timestamp())
+            "PARKER_PUBLIC_KEY",
+            int((datetime.now(tz=UTC) - timedelta(hours=1)).timestamp()),
         )
 
         self.assertListEqual(
@@ -421,7 +422,8 @@ class NetlinkTest(unittest.TestCase):
         """Tests processing of stale WireGuard Peer in parker mode."""
 
         _ = _get_wg_mock(
-            "PARKER_PUBLIC_KEY", int((datetime.now() - timedelta(hours=1)).timestamp())
+            "PARKER_PUBLIC_KEY",
+            int((datetime.now(tz=UTC) - timedelta(hours=1)).timestamp()),
         )
 
         ret = netlink.wg_flush_stale_peers(True, "parker")
