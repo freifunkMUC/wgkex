@@ -89,13 +89,11 @@ docker run -d --name wgkex-broker -p 5000:5000 \
 
 [`docker-compose.yml`](docker-compose.yml) starts Mosquitto, a broker and a worker. Without a mounted
 `/etc/wgkex.yaml`, the [`entrypoint`](entrypoint) generates a minimal config from the environment variables in
-[`env.example`](env.example) (`WGKEX_DOMAINS`, `WGKEX_DOMAIN_PREFIXES`, `WGKEX_DEBUG`, `MQTT_*`).
+[`env.example`](env.example) (`WGKEX_DOMAINS`, `WGKEX_DOMAIN_PREFIXES`, `WGKEX_DEBUG`,
+`WGKEX_BROKER_LISTEN_HOST`/`_PORT` (default `0.0.0.0:5000`), `MQTT_*`). `WGKEX_IMAGE_TAG` selects the image tag
+(default `main`; the `latest` tag still points to v0.2.1).
 [`docker-compose.override.yaml.example`](docker-compose.override.yaml.example) shows how to mount configs or disable
 services.
-
-> [!WARNING]
-> The generated config does not contain `broker_listen`, which the broker requires (see
-> [Configuration](#configuration)). Mount your own `wgkex.yaml` for the broker.
 
 > [!NOTE]
 > The worker manages WireGuard and VXLAN interfaces of the host via netlink. It needs the host's network namespace and

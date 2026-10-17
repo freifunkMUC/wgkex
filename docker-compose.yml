@@ -12,7 +12,7 @@ services:
       - "9001:9001"
 
   broker:
-    image: ghcr.io/freifunkmuc/wgkex:latest
+    image: ghcr.io/freifunkmuc/wgkex:${WGKEX_IMAGE_TAG:-main}
     command: broker
     restart: unless-stopped
     ports:
@@ -23,6 +23,8 @@ services:
       WGKEX_DOMAINS: ${WGKEX_DOMAINS-ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_welt, ffwert_city}
       WGKEX_DOMAIN_PREFIXES: ${WGKEX_DOMAIN_PREFIXES-ffmuc_, ffdon_, ffwert_}
       WGKEX_DEBUG: ${WGKEX_DEBUG-DEBUG}
+      WGKEX_BROKER_LISTEN_HOST: ${WGKEX_BROKER_LISTEN_HOST-0.0.0.0}
+      WGKEX_BROKER_LISTEN_PORT: ${WGKEX_BROKER_LISTEN_PORT-5000}
       MQTT_BROKER_URL: ${MQTT_BROKER_URL-mqtt}
       MQTT_BROKER_PORT: ${MQTT_BROKER_PORT-1883}
       MQTT_USERNAME: ${MQTT_USERNAME-}
@@ -31,7 +33,7 @@ services:
       MQTT_TLS: ${MQTT_TLS-False}
 
   worker:
-    image: ghcr.io/freifunkmuc/wgkex:latest
+    image: ghcr.io/freifunkmuc/wgkex:${WGKEX_IMAGE_TAG:-main}
     command: worker
     restart: unless-stopped
     #volumes:
