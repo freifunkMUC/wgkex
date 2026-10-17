@@ -1,5 +1,6 @@
 """Tests for configuration handling class."""
 
+import ipaddress
 import unittest
 from unittest import mock
 
@@ -131,6 +132,55 @@ class TestConfig(unittest.TestCase):
         mock_open = mock.mock_open(read_data=_VALID_CFG)
         with mock.patch("builtins.open", mock_open):
             self.assertEqual(config.fetch_config_from_disk(), _VALID_CFG)
+
+    def test_phase_f_defaults_and_parsing(self):
+        cfg = config.Config.from_dict(yaml.safe_load(_VALID_CFG))
+        self.assertEqual(cfg.rate_limit, config.RateLimit())
+        self.assertEqual(cfg.key_lists, config.KeyLists())
+        self.assertFalse(cfg.load_balancing.share_pending_assignments)
+        cfg = config.Config.from_dict(
+            {
+                **yaml.safe_load(_VALID_CFG),
+                "workers": {"gw1": {"weight": 2, "location": "muc"}, "gw2": {}},
+                "rate_limit": {"per_client_requests": 5, "ipv6_prefix_length": 200},
+                "key_lists": {"blocklist": ["k1"], "allowlist_file": "/tmp/x"},
+                "load_balancing": {"location_tolerance": 0.2, "broker_id": "b1"},
+            }
+        )
+        self.assertEqual(cfg.workers.location("gw1"), "muc")
+        self.assertIsNone(cfg.workers.location("gw2"))
+        self.assertIsNone(cfg.workers.location("unknown"))
+        self.assertEqual(cfg.workers.get("gw2").weight, 1)
+        self.assertEqual(cfg.rate_limit.per_client_requests, 5)
+        self.assertEqual(cfg.rate_limit.ipv6_prefix_length, 128)
+        self.assertEqual(cfg.key_lists.blocklist, ["k1"])
+        self.assertEqual(cfg.key_lists.allowlist_file, "/tmp/x")
+        self.assertEqual(cfg.load_balancing.location_tolerance, 0.2)
+        self.assertEqual(cfg.load_balancing.broker_id, "b1")
+
+    def test_broker_trusted_proxies(self):
+        base = yaml.safe_load(_VALID_CFG)
+        cfg = config.Config.from_dict(base)
+        self.assertEqual(cfg.broker.trusted_proxies, 0)
+        self.assertFalse(cfg.broker.log_client_ip)
+        for value, expected in (
+            (2, 2),
+            (-1, 0),
+            (None, 0),
+            ("10.0.0.1", [ipaddress.ip_network("10.0.0.1/32")]),
+            (
+                ["10.0.0.5/24", "2001:db8::/64"],
+                [
+                    ipaddress.ip_network("10.0.0.0/24"),
+                    ipaddress.ip_network("2001:db8::/64"),
+                ],
+            ),
+        ):
+            cfg = config.Config.from_dict(
+                {**base, "broker": {"trusted_proxies": value, "log_client_ip": True}}
+            )
+            self.assertEqual(cfg.broker.trusted_proxies, expected)
+            self.assertTrue(cfg.broker.log_client_ip)
 
     def test_fetch_config_from_disk_fails_file_not_found(self):
         """Test fails on file not found on disk."""

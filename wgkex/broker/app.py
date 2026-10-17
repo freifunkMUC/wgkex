@@ -3,8 +3,10 @@
 import dataclasses
 import json
 import re
+import socket
 import threading
 import time
+import uuid
 from typing import Any
 
 import paho.mqtt.client as mqtt_client
@@ -23,10 +25,14 @@ from wgkex.broker.observability import (
     MQTT_MESSAGE_ERRORS,
     REBALANCE_HINT_EXCESS,
     REBALANCE_HINTS,
+    SHARED_ASSIGNMENTS,
 )
+from wgkex.broker.ratelimit import RateLimiter, client_address
 from wgkex.common import logger
+from wgkex.common.keylist import KeyList
 from wgkex.common.mqtt import (
     STATUS_DRAINING,
+    TOPIC_BROKER_ASSIGNMENT,
     TOPIC_WG_KEY,
     TOPIC_WORKER_REBALANCE,
     TOPIC_WORKER_REMOVE_PEER,
@@ -38,6 +44,7 @@ from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
 
 WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
+LOCATION_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
 @dataclasses.dataclass
@@ -47,10 +54,12 @@ class KeyExchange:
     Attributes:
         public_key: The public key for this exchange.
         domain: The domain for this exchange.
+        location: Optional location of the client, used to prefer workers in that location.
     """
 
     public_key: str
     domain: str
+    location: str | None = None
 
     @classmethod
     def from_dict(cls, msg: dict) -> "KeyExchange":
@@ -65,7 +74,11 @@ class KeyExchange:
         domain = str(msg.get("domain"))
         if not is_valid_domain(domain):
             raise ValueError(f"Domain {domain} not in configured domains.")
-        return cls(public_key=public_key, domain=domain)
+        location = msg.get("location")
+        # Optional and only a preference, so invalid values are ignored instead of rejected
+        if not isinstance(location, str) or not LOCATION_PATTERN.match(location):
+            location = None
+        return cls(public_key=public_key, domain=domain, location=location)
 
 
 def _fetch_app_config() -> Flask_app:
@@ -99,6 +112,79 @@ assignment_history = AssignmentHistory(
     max_entries=_load_balancing_cfg.previous_assignment_max_entries,
 )
 observability.register_worker_metrics(worker_metrics)
+broker_id = (
+    _load_balancing_cfg.broker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+)
+
+
+def _create_rate_limiter() -> RateLimiter:
+    cfg = config.get_config().rate_limit
+    return RateLimiter(
+        per_client_requests=cfg.per_client_requests,
+        per_client_period=cfg.per_client_period,
+        global_requests=cfg.global_requests,
+        global_period=cfg.global_period,
+        ipv6_prefix_length=cfg.ipv6_prefix_length,
+        max_clients=cfg.max_tracked_clients,
+    )
+
+
+def _on_blocklist_change(added: set[str], removed: set[str]) -> None:
+    """Removes newly blocked keys from all workers."""
+    logger.info(f"Blocklist reloaded: {len(added)} keys added, {len(removed)} removed")
+    for key in sorted(added):
+        for worker, domain in sorted(worker_data):
+            mqtt.publish(
+                TOPIC_WORKER_REMOVE_PEER.format(worker=worker, domain=domain),
+                key,
+                qos=1,
+            )
+
+
+def _create_blocklist() -> KeyList:
+    cfg = config.get_config().key_lists
+    return KeyList(
+        "blocklist",
+        keys=cfg.blocklist,
+        file=cfg.blocklist_file,
+        check_interval=cfg.reload_interval,
+        on_change=_on_blocklist_change,
+    )
+
+
+rate_limiter = _create_rate_limiter()
+blocklist = _create_blocklist()
+
+
+def _blocked_response(api: str, key: str) -> tuple[dict, int]:
+    logger.warning(f"Rejected blocked key {key} on the {api} API")
+    KEY_EXCHANGE_REQUESTS.labels(api, "blocked").inc()
+    return {"error": {"message": "key is blocked"}}, 403
+
+
+def _client_address() -> str | None:
+    """The client address of the current request, honoring trusted reverse proxies."""
+    return client_address(
+        request.remote_addr,
+        request.headers.get("X-Forwarded-For"),
+        config.get_config().broker.trusted_proxies,
+    )
+
+
+def _client_log_suffix(address: str | None) -> str:
+    return f", Client: {address}" if config.get_config().broker.log_client_ip else ""
+
+
+def _is_rate_limited(api: str, key: str, address: str | None) -> bool:
+    """Takes a rate limit token for the current request, returns True if the request is limited."""
+    allowed, limit = rate_limiter.allow(address)
+    if allowed:
+        return False
+    logger.info(
+        f"Rate limited ({limit}) {api} request from {address} for key {key}, not publishing it"
+    )
+    KEY_EXCHANGE_REQUESTS.labels(api, "rate_limited").inc()
+    return True
 
 
 @app.route("/", methods=["GET"])
@@ -138,7 +224,15 @@ def wg_api_v1_key_exchange() -> tuple[Response | dict, int]:
 
     key = data.public_key
     domain = data.domain
-    logger.info(f"wg_api_v1_key_exchange: Domain: {domain}, Key:{key}")
+    address = _client_address()
+    logger.info(
+        f"wg_api_v1_key_exchange: Domain: {domain}, Key:{key}{_client_log_suffix(address)}"
+    )
+    if key in blocklist:
+        return _blocked_response("v1", key)
+    if _is_rate_limited("v1", key, address):
+        # Same response as usual, but don't publish the key (again)
+        return {"Message": "OK"}, 200
 
     # v1 clients pick a random gateway themselves, so every worker needs the key
     publish_key(domain, key, WG_KEY_ALL_WORKERS)
@@ -168,16 +262,38 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
 
     key = data.public_key
     domain = data.domain
-    logger.info(f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}")
+    address = _client_address()
+    logger.info(
+        f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}, Location: {data.location}"
+        f"{_client_log_suffix(address)}"
+    )
+    if key in blocklist:
+        return _blocked_response("v2", key)
+    limited = _is_rate_limited("v2", key, address)
 
     # Only consider workers whose endpoint data we know, so we can always answer with a valid endpoint
+    def eligible(worker: str) -> bool:
+        return (worker, domain) in worker_data
+
+    if limited:
+        # Answer with the worker the key was already sent to, so the client connects there
+        sticky = _current_worker(key, domain, eligible)
+        if sticky is not None:
+            return {"Endpoint": _endpoint(worker_data[(sticky, domain)])}, 200
+
+    lb_cfg = config.get_config().load_balancing
     best_worker, diff, current_peers = worker_metrics.get_best_worker(
-        domain, eligible=lambda worker: (worker, domain) in worker_data
+        domain,
+        eligible=eligible,
+        location=data.location,
+        location_tolerance=lb_cfg.location_tolerance,
+        location_min_excess=lb_cfg.location_min_excess_peers,
     )
     if best_worker is None:
         logger.warning(f"No worker online for domain {domain}")
         # Like before, so the key is present on every worker once the client falls back to v1
-        publish_key(domain, key, WG_KEY_ALL_WORKERS)
+        if not limited:
+            publish_key(domain, key, WG_KEY_ALL_WORKERS)
         KEY_EXCHANGE_REQUESTS.labels("v2", "no_worker").inc()
         return {
             "error": {
@@ -188,9 +304,14 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
     w_data = worker_data.get((best_worker, domain), None)
     if w_data is None:
         logger.error(f"Couldn't get worker endpoint data for {best_worker}/{domain}")
-        publish_key(domain, key, WG_KEY_ALL_WORKERS)
+        if not limited:
+            publish_key(domain, key, WG_KEY_ALL_WORKERS)
         KEY_EXCHANGE_REQUESTS.labels("v2", "no_worker_data").inc()
         return {"error": {"message": "could not get gateway data"}}, 500
+
+    if limited:
+        # The key is not published, so don't count it as an assignment either
+        return {"Endpoint": _endpoint(w_data)}, 200
 
     # Count the peer for this worker until the worker metrics reflect it
     worker_metrics.record_assignment(best_worker, domain, key)
@@ -198,20 +319,52 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
     logger.debug(
         f"Chose worker {best_worker} with {current_peers} effective peers ({diff:.1f} to target)"
     )
-    if config.get_config().load_balancing.targeted_publish:
+    if lb_cfg.targeted_publish:
         publish_key(domain, key, best_worker)
     else:
         publish_key(domain, key, WG_KEY_ALL_WORKERS)
+    if lb_cfg.share_pending_assignments:
+        publish_shared_assignment(best_worker, domain, key)
 
-    endpoint = {
+    KEY_EXCHANGE_REQUESTS.labels("v2", "ok").inc()
+    return {"Endpoint": _endpoint(w_data)}, 200
+
+
+def _endpoint(w_data: dict) -> dict:
+    """Builds the v2 API endpoint response from worker data. Port must stay a string."""
+    return {
         "Address": w_data.get("ExternalAddress"),
         "Port": str(w_data.get("Port")),
         "AllowedIPs": [w_data.get("LinkAddress")],
         "PublicKey": w_data.get("PublicKey"),
     }
 
-    KEY_EXCHANGE_REQUESTS.labels("v2", "ok").inc()
-    return {"Endpoint": endpoint}, 200
+
+def _current_worker(key: str, domain: str, eligible) -> str | None:
+    """Returns the online worker a key is currently assigned to in a domain, if any."""
+    worker = worker_metrics.get_pending_worker(domain, key)
+    if worker is None:
+        previous = assignment_history.get(key)
+        if previous is not None and previous.domain == domain:
+            worker = previous.worker
+    if worker is None or worker == WG_KEY_ALL_WORKERS or not eligible(worker):
+        return None
+    if (
+        not worker_metrics.is_online(worker, domain)
+        or worker_metrics.get(worker).draining
+    ):
+        return None
+    return worker
+
+
+def publish_shared_assignment(worker: str, domain: str, key: str) -> None:
+    """Tells other broker instances about an assignment, so they count it as pending."""
+    mqtt.publish(
+        TOPIC_BROKER_ASSIGNMENT.format(broker=broker_id),
+        json.dumps({"worker": worker, "domain": domain, "key": key}),
+        qos=0,
+        retain=False,
+    )
 
 
 def publish_key(domain: str, key: str, worker: str) -> None:
@@ -254,6 +407,8 @@ def handle_mqtt_connect(
     mqtt.subscribe("wireguard-metrics/#")
     mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
     mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+    if config.get_config().load_balancing.share_pending_assignments:
+        mqtt.subscribe(TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
 
 
 @mqtt.on_topic("wireguard-metrics/#")
@@ -353,6 +508,33 @@ def handle_mqtt_message_data(
 
     logger.info("Worker data received for %s/%s: %s", worker, domain, data)
     worker_data[(worker, domain)] = data
+
+
+@mqtt.on_topic(TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
+def handle_mqtt_message_assignment(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Counts assignments of other broker instances as pending."""
+    if not config.get_config().load_balancing.share_pending_assignments:
+        return
+    sender = message.topic.split("/")[1]
+    if sender == broker_id:
+        return
+    try:
+        data = json.loads(message.payload)
+        worker, domain, key = str(data["worker"]), str(data["domain"]), data["key"]
+        is_valid_wg_pubkey(key)
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            f"Ignoring invalid assignment message from broker {sender}: "
+            f"{_decode_payload(message.payload)} ({e})"
+        )
+        MQTT_MESSAGE_ERRORS.labels("assignment").inc()
+        return
+    logger.debug(f"Broker {sender} assigned {key} to {worker}/{domain}")
+    worker_metrics.record_assignment(worker, domain, key)
+    assignment_history.record(key, domain, worker)
+    SHARED_ASSIGNMENTS.inc()
 
 
 @mqtt.on_message()

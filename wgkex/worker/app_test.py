@@ -172,6 +172,29 @@ class AppTest(unittest.TestCase):
         ).start()
         self.assertTrue(done.wait(2))
 
+    @mock.patch.object(app.config, "get_config")
+    @mock.patch.object(app, "is_allowlisted", side_effect=lambda k: k == "ALLOWED")
+    @mock.patch.object(app, "wg_flush_stale_peers")
+    def test_flush_workers_keeps_allowlisted_peers(
+        self, wg_flush_mock, allowlist_mock, config_mock
+    ):
+        config_mock.return_value.peer_cleanup = app.config.PeerCleanup(
+            stale_timeout=600, interval=0
+        )
+        done = threading.Event()
+
+        def flush(domain, timeout, keep):
+            self.assertTrue(keep("ALLOWED"))
+            self.assertFalse(keep("OTHER_KEY"))
+            done.set()
+            return []
+
+        wg_flush_mock.side_effect = flush
+        threading.Thread(
+            target=app.flush_workers, args=("allow_domain",), daemon=True
+        ).start()
+        self.assertTrue(done.wait(2))
+
 
 if __name__ == "__main__":
     unittest.main()

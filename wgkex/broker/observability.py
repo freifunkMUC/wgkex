@@ -34,6 +34,11 @@ REBALANCE_HINT_EXCESS = Counter(
     ["worker", "kind"],
     registry=REGISTRY,
 )
+SHARED_ASSIGNMENTS = Counter(
+    "wgkex_broker_shared_assignments_received",
+    "Assignments received from other broker instances",
+    registry=REGISTRY,
+)
 MQTT_MESSAGE_ERRORS = Counter(
     "wgkex_broker_mqtt_message_errors",
     "MQTT messages which could not be processed, by handler",

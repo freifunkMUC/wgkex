@@ -19,6 +19,7 @@ from collections.abc import Callable
 
 from wgkex.common import logger
 from wgkex.config.config import Rebalancing
+from wgkex.worker.allowlist import is_allowlisted
 from wgkex.worker.netlink import WireGuardClient, get_connected_peers, link_handler
 from wgkex.worker.observability import EVICTIONS
 
@@ -70,6 +71,8 @@ class Rebalancer:
         tracker: Record of peer add times.
         evict: Function evicting a peer, defaults to removing it via netlink.
         connected_peers: Function returning connected peers for a WireGuard interface.
+        protected: Function returning True for public keys which must never be evicted
+            (allowlisted keys).
     """
 
     def __init__(
@@ -80,6 +83,7 @@ class Rebalancer:
         tracker: PeerAddTracker = peer_add_tracker,
         evict: Callable[[str, str], object] | None = None,
         connected_peers: Callable[[str], list[str]] = get_connected_peers,
+        protected: Callable[[str], bool] = is_allowlisted,
         clock: Callable[[], float] = time.monotonic,
         rng: random.Random | None = None,
     ) -> None:
@@ -89,6 +93,7 @@ class Rebalancer:
         self._tracker = tracker
         self._evict = evict or _evict_peer
         self._connected_peers = connected_peers
+        self._protected = protected
         self._clock = clock
         self._rng = rng or random.Random()
         self._lock = threading.Lock()
@@ -154,7 +159,9 @@ class Rebalancer:
             total_connected += len(peers)
             if domain in instruction.domains:
                 candidates.extend(
-                    (iface, key) for key in peers if key not in evicted_recently
+                    (iface, key)
+                    for key in peers
+                    if key not in evicted_recently and not self._protected(key)
                 )
 
         ratio = (

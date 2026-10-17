@@ -97,6 +97,7 @@ py_binary(
     name = "app",
     srcs = ["app.py"],
     deps = [
+       ":allowlist",
        ":drain",
        ":mqtt",
        ":msg_queue",
@@ -146,6 +147,7 @@ py_library(
     deps = [
        "//wgkex/common:logger",
        "//wgkex/config:config",
+       ":allowlist",
        ":netlink",
        ":observability",
     ],
@@ -157,6 +159,26 @@ py_test(
     deps = [
        "//wgkex/config:config",
        "//wgkex/worker:rebalance",
+    ],
+    size="small",
+)
+
+py_library(
+    name = "allowlist",
+    srcs = ["allowlist.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:keylist",
+       "//wgkex/config:config",
+    ],
+)
+
+py_test(
+    name = "allowlist_test",
+    srcs = ["allowlist_test.py"],
+    deps = [
+       "//wgkex/config:config",
+       "//wgkex/worker:allowlist",
     ],
     size="small",
 )

@@ -88,9 +88,12 @@ JSON POST'd to this endpoint should be in this format:
 ```json
 {
   "domain": "CONFIGURED_DOMAIN",
-  "public_key": "PUBLIC_KEY"
+  "public_key": "PUBLIC_KEY",
+  "location": "OPTIONAL_LOCATION"
 }
 ```
+
+`location` is optional; workers with the same `location` in the `workers` config are preferred (see below).
 
 The broker will validate the domain and public key, and if valid, will push the key onto the MQTT bus.
 Additionally it chooses a worker (aka gateway, endpoint) that the client should connect to.
@@ -112,6 +115,33 @@ The response is JSON data containing the connection details for the chosen gatew
 Additional fields may be added to these responses in the future, but the existing fields will not be changed,
 as clients like the Gluon package `ffmuc-mesh-vpn-wireguard-vxlan` rely on them.
 
+#### Rate limiting, block- and allowlists
+
+Both endpoints are rate limited per client address (IPv6 per /64 by default) and globally (`rate_limit` config).
+A limited request still gets the normal `200` response, because Gluon clients fall back to `/api/v1` and a random
+gateway on errors. The key is just not published again, and `/api/v2` answers with the worker the key was already
+assigned to (if it is still online), so repeated requests are a no-op.
+
+#### Client address behind a reverse proxy
+
+By default, the client address is the TCP peer address. Behind a reverse proxy that would be the proxy for every
+request, so set `broker.trusted_proxies` to take it from `X-Forwarded-For`. The header can be spoofed by any client, so
+it is only used from trusted proxies:
+
+- A list of proxy addresses/networks (e.g. `["127.0.0.1/32", "::1/128"]`): the header is only used if the TCP peer is
+  in one of them. It is evaluated from the right, skipping trusted proxies, and the first other address is the
+  client. Entries further left were sent by the client and are ignored.
+- A number `n` of proxies every request passes through: the `n`-th entry from the right is used, like werkzeug's
+  `ProxyFix(x_for=n)`. Only use this if the broker can't be reached without passing the proxies.
+
+The resolved address is used for rate limiting and, with `broker.log_client_ip: true` (off by default), it is logged
+at INFO level with the domain and key of every key exchange request (`..., Client: 192.0.2.1`).
+
+Keys on the blocklist (`key_lists.blocklist` / `blocklist_file`) are rejected with `403` and never published; keys newly
+added to the file are also removed from all workers. Keys on the allowlist (`key_lists.allowlist` / `allowlist_file`,
+worker config) are never removed from a worker by the stale peer cleanup, rebalancing or draining. Both files are
+reloaded without a restart when modified.
+
 #### Load balancing
 
 For `/api/v2`, the broker chooses among the workers that are online for the requested domain and have published their
@@ -130,6 +160,14 @@ tells overloaded workers how many peers they have above their target (after the 
 recently (re-)connected ones and never evicting the same peer again within `eviction_cooldown`. The affected clients
 notice the broken connection and request a new gateway via the API within a minute or two.
 See [wgkex.yaml.example](wgkex.yaml.example) for all options.
+
+If the client sends a `location` and workers are configured with that location, these are preferred as long as their
+effective peers stay within `target + max(location_min_excess_peers, location_tolerance * target)`; beyond that, the
+normal selection applies. Keep `location_tolerance` at or below `rebalancing.tolerance`.
+
+When running multiple broker instances behind a load balancer, enable `load_balancing.share_pending_assignments` on all
+of them: each assignment is then published on `wireguard-broker/{broker_id}/assignment` and counted as pending by the
+other brokers as well.
 
 Workers only announce themselves as online once all their WireGuard interfaces are ready. A worker is treated as offline
 for a domain if the broker did not receive a connected peers metric for it within `load_balancing.metrics_max_age`
@@ -194,11 +232,12 @@ should not be public. It exports:
 | `wgkex_broker_worker_target_peers` | `worker` | Weighted share of the effective peers of all online, non-draining workers |
 | `wgkex_broker_worker_domain_online` | `worker`, `domain` | 1 if the worker is online for the domain with fresh metrics |
 | `wgkex_broker_worker_domain_connected_peers` | `worker`, `domain` | Connected peers reported for the domain |
-| `wgkex_broker_key_exchange_requests_total` | `api` (`v1`, `v2`), `result` (`ok`, `invalid`, `no_worker`, `no_worker_data`) | Key exchange requests |
+| `wgkex_broker_key_exchange_requests_total` | `api` (`v1`, `v2`), `result` (`ok`, `invalid`, `blocked`, `rate_limited`, `no_worker`, `no_worker_data`) | Key exchange requests |
 | `wgkex_broker_assignments_total` | `worker`, `domain` | Peers assigned by the v2 key exchange |
 | `wgkex_broker_rebalance_hints_total` | `worker`, `kind` (`rebalance`, `drain`) | Published rebalancing hints |
 | `wgkex_broker_rebalance_hint_excess_peers_total` | `worker`, `kind` | Sum of the excess peers in published hints |
-| `wgkex_broker_mqtt_message_errors_total` | `handler` (`metrics`, `status`, `data`) | Ignored invalid MQTT messages |
+| `wgkex_broker_shared_assignments_received_total` | | Assignments received from other broker instances |
+| `wgkex_broker_mqtt_message_errors_total` | `handler` (`metrics`, `status`, `data`, `assignment`) | Ignored invalid MQTT messages |
 
 Workers can serve metrics on a separate HTTP listener (`GET /metrics`), which is disabled unless `metrics.worker_port`
 is set (bind address `metrics.worker_host`, default `0.0.0.0`):
@@ -390,6 +429,8 @@ print(f'Key push was: {push_key.json().get("Message")}')
 - Publishing worker data: `wireguard-worker/{worker}/{domain}/data`
 - Rebalancing hints broker->worker (only if rebalancing is enabled): `wireguard-worker/{worker}/rebalance`,
   JSON `{"excess": int, "domains": [...]}`, plus `"max_evictions_ratio": float` for draining workers
+- Sharing assignments broker->broker (only if `share_pending_assignments` is enabled):
+  `wireguard-broker/{broker_id}/assignment`, JSON `{"worker": str, "domain": str, "key": str}`
 
 ## Contact
 

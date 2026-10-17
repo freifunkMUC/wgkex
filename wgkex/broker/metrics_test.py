@@ -333,6 +333,85 @@ class TestLoadBalancing(unittest.TestCase):
             chosen.add(wm.get_best_worker("d")[0])
         self.assertSetEqual(chosen, {"1", "2"})
 
+    def test_location_preferred_within_tolerance(self):
+        """Workers in the requested location are preferred while not too far above target."""
+        self.set_weights(
+            {
+                "1": {"weight": 1, "location": "muc"},
+                "2": {"weight": 1, "location": "fra"},
+            }
+        )
+        wm = self.collection()
+        self.add_worker(wm, "1", 100)
+        self.add_worker(wm, "2", 100)
+        # target 100 each, tolerance max(10, 0.1*target) -> fra may get up to 110 peers
+        for i in range(10):
+            worker, _, _ = wm.get_best_worker("d", location="fra")
+            self.assertEqual(worker, "2")
+            wm.record_assignment(worker, "d", f"key{i}")
+        # fra is preferred while its load stays within 1.1 * target, afterwards it stays there
+        for i in range(10, 40):
+            worker, _, _ = wm.get_best_worker("d", location="fra")
+            wm.record_assignment(worker, "d", f"key{i}")
+            fra = wm.get_effective_peer_count("2")
+            target = (fra + wm.get_effective_peer_count("1")) / 2
+            self.assertLessEqual(fra, target + max(10, 0.1 * target) + 1)
+        self.assertGreater(wm.get_pending_count("1"), 5)
+        self.assertGreater(wm.get_pending_count("1"), 0)
+
+    def test_location_overloaded_falls_back(self):
+        self.set_weights(
+            {
+                "1": {"weight": 1, "location": "muc"},
+                "2": {"weight": 1, "location": "fra"},
+            }
+        )
+        wm = self.collection()
+        self.add_worker(wm, "1", 50)
+        self.add_worker(wm, "2", 150)
+        for seed in range(20):
+            wm.rng = random.Random(seed)
+            self.assertEqual(wm.get_best_worker("d", location="fra")[0], "1")
+
+    def test_unknown_location_normal_selection(self):
+        self.set_weights({"1": {"weight": 1, "location": "muc"}, "2": {"weight": 1}})
+        wm = self.collection()
+        self.add_worker(wm, "1", 100)
+        self.add_worker(wm, "2", 0)
+        for seed in range(20):
+            wm.rng = random.Random(seed)
+            self.assertEqual(wm.get_best_worker("d", location="ber")[0], "2")
+            self.assertEqual(wm.get_best_worker("d")[0], "2")
+
+    def test_location_respects_tolerance_settings(self):
+        self.set_weights(
+            {
+                "1": {"weight": 1, "location": "muc"},
+                "2": {"weight": 1, "location": "fra"},
+            }
+        )
+        wm = self.collection()
+        self.add_worker(wm, "1", 0)
+        self.add_worker(wm, "2", 200)
+        # target 100: with tolerance 1.0 fra may get up to 200 + 1 is over -> fallback
+        self.assertEqual(
+            wm.get_best_worker("d", location="fra", location_tolerance=1.0)[0], "1"
+        )
+        self.assertEqual(
+            wm.get_best_worker(
+                "d", location="fra", location_tolerance=1.5, location_min_excess=0
+            )[0],
+            "2",
+        )
+
+    def test_get_pending_worker(self):
+        wm = self.collection()
+        self.add_worker(wm, "1", 0)
+        self.assertIsNone(wm.get_pending_worker("d", "key"))
+        wm.record_assignment("1", "d", "key")
+        self.assertEqual(wm.get_pending_worker("d", "key"), "1")
+        self.assertIsNone(wm.get_pending_worker("other", "key"))
+
     def test_get_best_worker_only_online_for_domain(self):
         """Workers offline for the domain are never chosen."""
         wm = self.collection()

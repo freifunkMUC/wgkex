@@ -44,3 +44,21 @@ py_library(
     srcs = ["mqtt.py"],
     visibility = ["//visibility:public"]
 )
+
+py_library(
+    name = "keylist",
+    srcs = ["keylist.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+    ],
+)
+
+py_test(
+    name = "keylist_test",
+    srcs = ["keylist_test.py"],
+    deps = [
+       "//wgkex/common:keylist",
+    ],
+    size="small",
+)

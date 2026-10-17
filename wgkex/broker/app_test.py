@@ -3,6 +3,7 @@
 The Gluon package ffmuc-mesh-vpn-wireguard-vxlan relies on the exact response shapes asserted here.
 """
 
+import ipaddress
 import json
 import sys
 import unittest
@@ -13,13 +14,14 @@ from wgkex.config import config
 
 _DOMAIN = "ffmuc_welt"
 _PUBKEY = "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g="
+_PUBKEY2 = "A" * 42 + "E="
 
 
 def _decorator_factory(*args, **kwargs):
     return lambda f: f
 
 
-class BrokerAppTest(unittest.TestCase):
+class BrokerTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         config._parsed_config = config.Config.from_dict(
@@ -52,6 +54,8 @@ class BrokerAppTest(unittest.TestCase):
         self.app.worker_data.clear()
         self.app.assignment_history._entries.clear()
         self.app.mqtt.reset_mock()
+        self.app.rate_limiter = self.app._create_rate_limiter()
+        self.app.blocklist = self.app._create_blocklist()
         self.client = self.app.app.test_client()
 
     def add_worker(self, worker: str, peers: int, with_data: bool = True) -> None:
@@ -73,6 +77,18 @@ class BrokerAppTest(unittest.TestCase):
             content_type="application/x-www-form-urlencoded",
         )
 
+    def status(self, worker: str, payload: bytes) -> None:
+        m = mock.MagicMock()
+        m.topic = f"wireguard-worker/{worker}/status"
+        m.payload = payload
+        self.app.handle_mqtt_message_status(None, None, m)
+
+    def sample(self, name: str, **labels) -> float:
+        value = self.app.observability.REGISTRY.get_sample_value(name, labels)
+        return value or 0.0
+
+
+class BrokerAppTest(BrokerTestCase):
     def test_v1_response_shape(self):
         """v1 responds with exactly {"Message": "OK"} and publishes the key to all workers."""
         resp = self.post("v1", {"domain": _DOMAIN, "public_key": _PUBKEY})
@@ -259,12 +275,6 @@ class BrokerAppTest(unittest.TestCase):
             retain=False,
         )
 
-    def status(self, worker: str, payload: bytes) -> None:
-        m = mock.MagicMock()
-        m.topic = f"wireguard-worker/{worker}/status"
-        m.payload = payload
-        self.app.handle_mqtt_message_status(None, None, m)
-
     def test_draining_status(self):
         """Status 2 keeps a worker online but excludes it from new v2 assignments."""
         self.add_worker("gw1", 0)
@@ -313,10 +323,6 @@ class BrokerAppTest(unittest.TestCase):
             ),
             40,
         )
-
-    def sample(self, name: str, **labels) -> float:
-        value = self.app.observability.REGISTRY.get_sample_value(name, labels)
-        return value or 0.0
 
     def test_metrics_endpoint(self):
         """/metrics exports worker state and request counters in the Prometheus format."""
@@ -381,6 +387,244 @@ class BrokerAppTest(unittest.TestCase):
             self.sample("wgkex_broker_mqtt_message_errors_total", handler="status"),
             before + 1,
         )
+
+
+class BrokerRateLimitTest(BrokerTestCase):
+    """Rate-limited requests get the normal 200 response, but the key is not published again."""
+
+    def limit(self, per_client: int = 1, global_requests: int = 0) -> None:
+        self.app.rate_limiter = self.app.RateLimiter(
+            per_client, 60, global_requests, 60
+        )
+
+    def test_v1_rate_limited_still_ok(self):
+        self.limit()
+        body = {"domain": _DOMAIN, "public_key": _PUBKEY}
+        self.assertEqual(self.post("v1", body).status_code, 200)
+        self.app.mqtt.reset_mock()
+        resp = self.post("v1", body)
+        self.assertEqual(resp.status_code, 200)
+        self.assertDictEqual(resp.get_json(), {"Message": "OK"})
+        self.app.mqtt.publish.assert_not_called()
+
+    def test_v2_rate_limited_returns_same_worker(self):
+        """A repeated, limited request is answered with the worker the key was sent to."""
+        self.limit()
+        self.add_worker("gw1", 10)
+        self.add_worker("gw2", 10)
+        body = {"domain": _DOMAIN, "public_key": _PUBKEY}
+        first = self.post("v2", body).get_json()
+        self.app.mqtt.reset_mock()
+        for _ in range(10):
+            resp = self.post("v2", body)
+            self.assertEqual(resp.status_code, 200)
+            self.assertDictEqual(resp.get_json(), first)
+        self.app.mqtt.publish.assert_not_called()
+        self.assertEqual(
+            self.app.worker_metrics.get_pending_count("gw1")
+            + self.app.worker_metrics.get_pending_count("gw2"),
+            1,
+        )
+
+    def test_v2_rate_limited_new_key_gets_valid_endpoint(self):
+        """A limited request for an unknown key still gets a valid endpoint, nothing is published."""
+        self.limit(per_client=0, global_requests=1)
+        self.add_worker("gw1", 10)
+        self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.app.mqtt.reset_mock()
+        resp = self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY2})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            set(resp.get_json()["Endpoint"]),
+            {"Address", "Port", "PublicKey", "AllowedIPs"},
+        )
+        self.assertIsInstance(resp.get_json()["Endpoint"]["Port"], str)
+        self.app.mqtt.publish.assert_not_called()
+        self.assertEqual(self.app.worker_metrics.get_pending_count("gw1"), 1)
+
+    def test_rate_limited_metric(self):
+        self.limit()
+        before = self.sample(
+            "wgkex_broker_key_exchange_requests_total", api="v1", result="rate_limited"
+        )
+        body = {"domain": _DOMAIN, "public_key": _PUBKEY}
+        self.post("v1", body)
+        self.post("v1", body)
+        self.assertEqual(
+            self.sample(
+                "wgkex_broker_key_exchange_requests_total",
+                api="v1",
+                result="rate_limited",
+            ),
+            before + 1,
+        )
+
+    def post_from(self, version: str, forwarded_for: str, remote: str = "127.0.0.1"):
+        return self.client.post(
+            f"/api/{version}/wg/key/exchange",
+            data=json.dumps({"domain": _DOMAIN, "public_key": _PUBKEY}),
+            headers={"X-Forwarded-For": forwarded_for},
+            environ_base={"REMOTE_ADDR": remote},
+        )
+
+    def test_forwarded_for_with_trusted_proxy(self):
+        """Behind a trusted proxy, clients are limited by their own address."""
+        self.limit()
+        for trusted in (1, [ipaddress.ip_network("127.0.0.0/8")]):
+            with mock.patch.object(
+                config.get_config().broker, "trusted_proxies", trusted
+            ):
+                for client in ("192.0.2.1", "192.0.2.2"):
+                    self.app.mqtt.reset_mock()
+                    self.post_from("v1", f"10.9.9.9, {client}")
+                    self.app.mqtt.publish.assert_called_once()
+            self.limit()
+
+    def test_forwarded_for_spoofed_from_untrusted_peer(self):
+        """A spoofed header from a peer that isn't a trusted proxy doesn't evade the limit."""
+        self.limit()
+        trusted = [ipaddress.ip_network("10.0.0.0/8")]
+        with mock.patch.object(config.get_config().broker, "trusted_proxies", trusted):
+            self.post_from("v1", "192.0.2.1", remote="198.51.100.7")
+            self.app.mqtt.reset_mock()
+            resp = self.post_from("v1", "192.0.2.2", remote="198.51.100.7")
+        self.assertEqual(resp.status_code, 200)
+        self.app.mqtt.publish.assert_not_called()
+
+    def test_log_client_ip(self):
+        self.add_worker("gw1", 10)
+        broker_cfg = config.get_config().broker
+        with mock.patch.object(broker_cfg, "trusted_proxies", 1):
+            for version in ("v1", "v2"):
+                with self.assertLogs(level="INFO") as logs:
+                    self.post_from(version, "192.0.2.1")
+                line = next(m for m in logs.output if "_key_exchange: Domain" in m)
+                self.assertNotIn("Client:", line)
+
+                with (
+                    mock.patch.object(broker_cfg, "log_client_ip", True),
+                    self.assertLogs(level="INFO") as logs,
+                ):
+                    resp = self.post_from(version, "spoofed, 192.0.2.1")
+                line = next(m for m in logs.output if "_key_exchange: Domain" in m)
+                self.assertIn(f"Domain: {_DOMAIN}, Key:{_PUBKEY}", line)
+                self.assertTrue(line.endswith("Client: 192.0.2.1"), line)
+                self.assertEqual(resp.status_code, 200)
+
+
+class BrokerBlocklistTest(BrokerTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.app.blocklist = self.app.KeyList("blocklist", keys=[_PUBKEY])
+
+    def test_blocked_key_rejected(self):
+        self.add_worker("gw1", 10)
+        for version in ("v1", "v2"):
+            resp = self.post(version, {"domain": _DOMAIN, "public_key": _PUBKEY})
+            self.assertEqual(resp.status_code, 403)
+            self.assertEqual(resp.get_json(), {"error": {"message": "key is blocked"}})
+        self.app.mqtt.publish.assert_not_called()
+        self.assertEqual(self.app.worker_metrics.get_pending_count("gw1"), 0)
+
+    def test_other_keys_allowed(self):
+        resp = self.post("v1", {"domain": _DOMAIN, "public_key": _PUBKEY2})
+        self.assertEqual(resp.status_code, 200)
+
+    def test_newly_blocked_keys_removed_from_workers(self):
+        self.add_worker("gw1", 10)
+        self.add_worker("gw2", 10)
+        self.app._on_blocklist_change({_PUBKEY2}, set())
+        self.app.mqtt.publish.assert_has_calls(
+            [
+                mock.call(f"wireguard-worker/gw1/{_DOMAIN}/remove", _PUBKEY2, qos=1),
+                mock.call(f"wireguard-worker/gw2/{_DOMAIN}/remove", _PUBKEY2, qos=1),
+            ]
+        )
+
+
+class BrokerLocationTest(BrokerTestCase):
+    def test_location_parsing(self):
+        base = {"domain": _DOMAIN, "public_key": _PUBKEY}
+        self.assertEqual(
+            self.app.KeyExchange.from_dict({**base, "location": "muc"}).location, "muc"
+        )
+        for invalid in (None, 5, "", "a b", "x" * 65, ["muc"]):
+            self.assertIsNone(
+                self.app.KeyExchange.from_dict({**base, "location": invalid}).location
+            )
+
+    def test_location_preferred(self):
+        workers = config.Workers.from_dict(
+            {
+                "gw1": {"weight": 1, "location": "muc"},
+                "gw2": {"weight": 1, "location": "fra"},
+            }
+        )
+        self.add_worker("gw1", 100)
+        self.add_worker("gw2", 100)
+        with mock.patch.object(config.get_config(), "workers", workers):
+            for _ in range(5):
+                resp = self.post(
+                    "v2", {"domain": _DOMAIN, "public_key": _PUBKEY, "location": "fra"}
+                )
+                self.assertEqual(resp.status_code, 200)
+                self.assertEqual(
+                    resp.get_json()["Endpoint"]["Address"], "gw2.ext.example.net"
+                )
+
+    def test_unknown_location_still_answers(self):
+        self.add_worker("gw1", 10)
+        resp = self.post(
+            "v2", {"domain": _DOMAIN, "public_key": _PUBKEY, "location": "nowhere"}
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()["Endpoint"]["Address"], "gw1.ext.example.net")
+
+
+class BrokerSharedAssignmentsTest(BrokerTestCase):
+    def assignment(self, broker: str, payload: bytes) -> None:
+        m = mock.MagicMock()
+        m.topic = f"wireguard-broker/{broker}/assignment"
+        m.payload = payload
+        self.app.handle_mqtt_message_assignment(None, None, m)
+
+    def test_disabled_by_default(self):
+        self.add_worker("gw1", 10)
+        self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        topics = [c.args[0] for c in self.app.mqtt.publish.call_args_list]
+        self.assertFalse(any(t.startswith("wireguard-broker/") for t in topics))
+        self.assignment(
+            "other",
+            json.dumps({"worker": "gw1", "domain": _DOMAIN, "key": _PUBKEY2}).encode(),
+        )
+        self.assertEqual(self.app.worker_metrics.get_pending_count("gw1"), 1)
+
+    def test_shared_assignments(self):
+        self.add_worker("gw1", 10)
+        lb = config.get_config().load_balancing
+        with mock.patch.object(lb, "share_pending_assignments", True):
+            self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+            self.app.mqtt.publish.assert_any_call(
+                f"wireguard-broker/{self.app.broker_id}/assignment",
+                json.dumps({"worker": "gw1", "domain": _DOMAIN, "key": _PUBKEY}),
+                qos=0,
+                retain=False,
+            )
+            msg = json.dumps({"worker": "gw1", "domain": _DOMAIN, "key": _PUBKEY2})
+            # Own messages are ignored
+            self.assignment(self.app.broker_id, msg.encode())
+            self.assertEqual(self.app.worker_metrics.get_pending_count("gw1"), 1)
+            self.assignment("other", msg.encode())
+            self.assertEqual(self.app.worker_metrics.get_pending_count("gw1"), 2)
+            self.assertEqual(self.app.assignment_history.get(_PUBKEY2).worker, "gw1")
+            # Invalid payloads don't raise
+            self.assignment("other", b"garbage")
+            self.assignment("other", b'{"worker": "gw1"}')
+            self.assignment(
+                "other",
+                json.dumps({"worker": "gw1", "domain": _DOMAIN, "key": "x"}).encode(),
+            )
+            self.assertEqual(self.app.worker_metrics.get_pending_count("gw1"), 2)
 
 
 if __name__ == "__main__":
