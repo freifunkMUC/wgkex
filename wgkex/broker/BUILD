@@ -20,7 +20,6 @@ py_test(
        "//wgkex/broker:parker",
        "//wgkex/config:config",
        requirement("flask-mqtt"),
-       requirement("mock"),
        requirement("paho-mqtt"),
     ],
     size="small",
@@ -40,7 +39,6 @@ py_test(
     srcs=["ipam_netbox_test.py"],
     deps = [
        "//wgkex/broker:ipam",
-       requirement("mock"),
     ],
     size="small",
 )
@@ -98,7 +96,6 @@ py_test(
        "//wgkex/broker:parker",
        "//wgkex/broker:signer",
        "//wgkex/config:config",
-       requirement("mock"),
        requirement("paho-mqtt"),
     ],
     size="small",
@@ -122,7 +119,6 @@ py_test(
        "//wgkex/broker:parker",
        "//wgkex/config:config",
        requirement("flask-mqtt"),
-       requirement("mock"),
     ],
     size="small",
 )
@@ -157,6 +153,7 @@ py_binary(
         ":assignments",
         ":metrics",
         ":observability",
+        ":parker",
         ":ratelimit",
     ],
 )
