@@ -269,7 +269,9 @@ class WorkerMetricsCollection:
     def get_total_peer_count(self) -> int:
         """Returns the sum of connected peers over all workers and domains"""
         with self._lock:
-            return sum(wm.get_peer_count() for wm in self.data.values())
+            return sum(
+                wm.get_peer_count() for wm in self.data.values() if wm is not None
+            )
 
     def _prune_expired(self) -> None:
         deadline = self.clock() - self.pending_ttl
@@ -411,20 +413,37 @@ class WorkerMetricsCollection:
             The best worker is defined as the one with the most number of clients missing
             to its should-be target value according to its weight.
 
+        Like for the v2 API, load includes pending assignments, and draining workers are neither
+        kept nor selected, unless all online workers of a PoP are draining.
+
         Returns:
             A List of WorkerResult containing the worker name, difference to target peers, number of connected peers.
             The list can be empty if no suitable worker could be determined.
         """
 
+        with self._lock:
+            return self._get_best_workers(
+                domain, current_selected_workers, require_configured
+            )
+
+    def _get_best_workers(
+        self,
+        domain: str,
+        current_selected_workers: list[str] | None,
+        require_configured: bool,
+    ) -> list[WorkerResult]:
         new_selected_workers: list[WorkerResult] = []
         workers_cfg = config.get_config().workers
+        self._prune_expired()
+        total_peers = self.get_total_peer_count() + sum(
+            len(assignments) for assignments in self._pending.values()
+        )
 
         for pop in workers_cfg.all_pops:
             candidates: list[WorkerResult] = []
-            total_peers = self.get_total_peer_count()
 
             # Map metrics to a list of (target diff, peer count, worker) tuples for online workers
-            for wm in self.data.values():
+            for wm in list(self.data.values()):
                 worker_cfg = workers_cfg.get(wm.worker)
                 if worker_cfg is None:
                     if require_configured:
@@ -438,10 +457,10 @@ class WorkerMetricsCollection:
                 if worker_cfg.pop != pop:
                     continue
 
-                if not wm.is_online(domain):
+                if not self._is_online(wm, domain):
                     continue
 
-                peers = wm.get_peer_count()
+                peers = self.get_effective_peer_count(wm.worker)
                 rel_weight = workers_cfg.relative_worker_weight(wm.worker)
                 target = round(rel_weight * total_peers)
                 diff = peers - target
@@ -451,6 +470,10 @@ class WorkerMetricsCollection:
                 candidates.append(
                     WorkerResult(wm.worker, worker_cfg.id, diff, peers, target)
                 )
+
+            not_draining = [c for c in candidates if not self.data[c.name].draining]
+            if not_draining:
+                candidates = not_draining
 
             # If one of the currently selected workers is a valid candidate, and below a certain treshold, keep it
             if current_selected_workers:

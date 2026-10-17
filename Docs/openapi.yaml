@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: wgkex broker API
-  version: "2"
+  version: "3"
   description: |
     HTTP API of the wgkex broker. Clients submit their WireGuard public key for a domain, the broker validates it and
     distributes it via MQTT to the wgkex workers (gateways).
@@ -20,7 +20,11 @@ info:
     **Rate limiting:** both key exchange endpoints are rate limited per client address (IPv6 per /64 by default)
     and globally. Rate limited requests deliberately still get the normal `200` response, so Gluon clients don't
     fall back to `/api/v1` and a random gateway. The key is just not published again, and `/api/v2` answers with the
-    worker the key was already assigned to (if it is still online). There is no `429` response.
+    worker the key was already assigned to (if it is still online). The v1 and v2 endpoints never answer with `429`.
+
+    **Parker (`/api/v3`):** with `parker.enabled`, the broker also serves the configuration of Parker nodes. These
+    endpoints are additive and don't change the v1/v2 contract above. Parker nodes have no fallback to an older API
+    and poll periodically, so rate limited v3 requests are answered with `429`.
   license:
     name: GPL-3.0
     url: https://github.com/freifunkMUC/wgkex/blob/main/LICENSE
@@ -30,6 +34,7 @@ servers:
 tags:
   - name: key exchange
   - name: operations
+  - name: parker
 paths:
   /api/v1/wg/key/exchange:
     post:
@@ -120,6 +125,71 @@ paths:
               example:
                 error:
                   message: could not get gateway data
+  /api/v3/wg/key/exchange:
+    get:
+      tags: [parker]
+      operationId: parkerConfigV3
+      summary: Get the signed configuration of a Parker node
+      description: |
+        Allocates (or looks up) the node's IPv6 range in the IPAM, chooses one concentrator (worker) per PoP and
+        provisions the node's key on exactly those workers via MQTT. Workers the node was previously assigned to are
+        told to remove it. Only workers that are online and not draining are chosen, unless all workers of a PoP
+        are draining. Same as `/api/v3/config` and `/config`.
+      parameters:
+        - $ref: "#/components/parameters/ParkerPubkey"
+        - $ref: "#/components/parameters/ParkerNonce"
+        - $ref: "#/components/parameters/ParkerV6MTU"
+      responses:
+        "200":
+          $ref: "#/components/responses/ParkerConfig"
+        "400":
+          $ref: "#/components/responses/ParkerBadRequest"
+        "403":
+          $ref: "#/components/responses/Blocked"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ParkerError"
+  /api/v3/config:
+    get:
+      tags: [parker]
+      operationId: parkerConfigV3Alias
+      summary: Alias of `/api/v3/wg/key/exchange`
+      parameters:
+        - $ref: "#/components/parameters/ParkerPubkey"
+        - $ref: "#/components/parameters/ParkerNonce"
+        - $ref: "#/components/parameters/ParkerV6MTU"
+      responses:
+        "200":
+          $ref: "#/components/responses/ParkerConfig"
+        "400":
+          $ref: "#/components/responses/ParkerBadRequest"
+        "403":
+          $ref: "#/components/responses/Blocked"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ParkerError"
+  /config:
+    get:
+      tags: [parker]
+      operationId: parkerConfig
+      summary: Alias of `/api/v3/wg/key/exchange`, the path used by Parker's nodeconfig client
+      parameters:
+        - $ref: "#/components/parameters/ParkerPubkey"
+        - $ref: "#/components/parameters/ParkerNonce"
+        - $ref: "#/components/parameters/ParkerV6MTU"
+      responses:
+        "200":
+          $ref: "#/components/responses/ParkerConfig"
+        "400":
+          $ref: "#/components/responses/ParkerBadRequest"
+        "403":
+          $ref: "#/components/responses/Blocked"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+        "500":
+          $ref: "#/components/responses/ParkerError"
   /metrics:
     get:
       tags: [operations]
@@ -162,7 +232,72 @@ components:
             domain: ffmuc_welt
             public_key: o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg=
             location: muc
+  parameters:
+    ParkerPubkey:
+      name: pubkey
+      in: query
+      required: true
+      description: The node's WireGuard public key (base64 encoded, 32 bytes).
+      schema:
+        type: string
+        pattern: "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$"
+    ParkerNonce:
+      name: nonce
+      in: query
+      required: false
+      description: Random value, returned in the signed response to prevent replay attacks.
+      schema:
+        type: string
+    ParkerV6MTU:
+      name: v6mtu
+      in: query
+      required: false
+      description: The IPv6 MTU of the node's uplink, defaults to 1280. The returned `mtu` is at most 1375.
+      schema:
+        type: integer
   responses:
+    ParkerConfig:
+      description: |
+        The node configuration as a single line of JSON (see `ParkerConfig`), followed by a newline and the base64
+        encoded Ed25519 signature of that line (including the newline) made with `broker_signing_key`.
+      content:
+        text/plain:
+          schema:
+            type: string
+            pattern: "^\\{.*\\}\\n[A-Za-z0-9+/]+=*$"
+    ParkerBadRequest:
+      description: Parker is not enabled on this broker, no concentrator is online, or the query is invalid.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            disabled:
+              value:
+                error:
+                  message: Parker support is not enabled on this broker
+            no_gateway:
+              value:
+                error:
+                  message: no gateway online, please try again later
+    ParkerError:
+      description: The IP range could not be allocated, concentrator data is missing, or the response can't be signed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              message: could not get gateway data
+    RateLimited:
+      description: Too many requests from the client address or in total. Only returned by `/api/v3`.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              message: too many requests
     InvalidRequest:
       description: |
         The request is invalid: the body is not a JSON object, the domain is not configured on the broker or the
@@ -256,3 +391,56 @@ components:
             message:
               type: string
               description: Human readable error message. Not meant to be parsed by clients.
+    ParkerConfig:
+      type: object
+      description: The JSON part of the Parker configuration response.
+      required: [nonce, time, id, mtu, concentrators, range6, address6, xlat_range6, range4, address4, wg_keepalive, retry]
+      properties:
+        nonce:
+          type: string
+        time:
+          type: integer
+          description: Unix timestamp of the response.
+        id:
+          type: string
+          description: The node's public key.
+        mtu:
+          type: integer
+        concentrators:
+          type: array
+          description: One concentrator per PoP.
+          items:
+            $ref: "#/components/schemas/ParkerConcentrator"
+        range6:
+          type: string
+          description: The node's client IPv6 /64.
+        address6:
+          type: string
+        xlat_range6:
+          type: string
+          description: The /64 the node uses as source prefix for 464XLAT.
+        range4:
+          type: string
+        address4:
+          type: string
+        wg_keepalive:
+          type: integer
+        retry:
+          type: integer
+          description: Seconds after which the node should fetch its configuration again.
+    ParkerConcentrator:
+      type: object
+      required: [address4, address6, endpoint, pubkey, id]
+      properties:
+        address4:
+          type: string
+        address6:
+          type: string
+        endpoint:
+          type: string
+          description: "host:port of the concentrator's WireGuard endpoint (`endpoint_name` if configured)."
+          example: "[2001:db8::1]:40000"
+        pubkey:
+          type: string
+        id:
+          type: integer

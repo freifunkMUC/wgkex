@@ -235,6 +235,50 @@ class TestMetrics(unittest.TestCase):
         results = worker_metrics.get_best_workers("d", current_selected_workers=["2"])
         self.assertEqual([result.name for result in results], ["2"])
 
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_workers_skips_draining_workers(self, config_mock):
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(
+            {"1": {"id": 1, "weight": 50}, "2": {"id": 2, "weight": 50}}, 25
+        )
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 0)
+        worker_metrics.update("2", "d", "connected_peers", 50)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+        worker_metrics.set_draining("1", True)
+
+        # Neither selected nor kept as sticky worker while draining
+        results = worker_metrics.get_best_workers("d", current_selected_workers=["1"])
+        self.assertEqual([result.name for result in results], ["2"])
+
+        # Still used if all workers are draining
+        worker_metrics.set_draining("2", True)
+        results = worker_metrics.get_best_workers("d", [])
+        self.assertEqual([result.name for result in results], ["1"])
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_get_best_workers_counts_pending_assignments(self, config_mock):
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(
+            {"1": {"id": 1, "weight": 50}, "2": {"id": 2, "weight": 50}}, 25
+        )
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("1", "d", "connected_peers", 10)
+        worker_metrics.update("2", "d", "connected_peers", 12)
+        worker_metrics.set_online("1")
+        worker_metrics.set_online("2")
+        for i in range(5):
+            worker_metrics.record_assignment("1", "d", f"/key{i}")
+
+        results = worker_metrics.get_best_workers("d", [])
+        self.assertEqual([result.name for result in results], ["2"])
+        self.assertEqual(results[0].peers, 12)
+
     def test_collection_set_and_total_skip_missing_record(self):
         worker_metrics = WorkerMetricsCollection()
         metrics = worker_metrics.get("worker")

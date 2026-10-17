@@ -93,98 +93,11 @@ class TestBrokerApp(unittest.TestCase):
         config._parsed_config = _test_config()
         self.broker_app.worker_data.clear()
         self.broker_app.parker_worker_data.clear()
-        self.broker_app.active_brokers.clear()
-        self.broker_app.parker_active_brokers.clear()
         self.broker_app.worker_metrics.data.clear()
         self.broker_app.parker_worker_metrics.data.clear()
-
-    def test_index_and_v1_exchange_routes(self):
-        with mock.patch.object(
-            self.broker_app, "render_template", return_value="index"
-        ):
-            response = self.broker_app.app.test_client().get("/")
-        self.assertEqual(response.text, "index")
-
-        with mock.patch.object(self.broker_app, "mqtt") as mqtt:
-            response = self.broker_app.app.test_client().post(
-                "/api/v1/wg/key/exchange",
-                json={"public_key": _PUBLIC_KEY, "domain": _DOMAIN},
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json, {"Message": "OK"})
-        mqtt.publish.assert_called_once_with(f"wireguard/{_DOMAIN}/all", _PUBLIC_KEY)
-
-        response = self.broker_app.app.test_client().post(
-            "/api/v1/wg/key/exchange",
-            json={"public_key": "invalid", "domain": "unknown"},
-        )
-        self.assertEqual(response.status_code, 400)
-
-    def test_v2_exchange_error_and_success_paths(self):
-        response = self.broker_app.app.test_client().post(
-            "/api/v2/wg/key/exchange",
-            json={"public_key": "invalid", "domain": _DOMAIN},
-        )
-        self.assertEqual(response.status_code, 400)
-
-        with mock.patch.object(
-            self.broker_app.worker_metrics,
-            "get_best_worker",
-            return_value=(None, 0, 0),
-        ):
-            response = self.broker_app.app.test_client().post(
-                "/api/v2/wg/key/exchange",
-                json={"public_key": _PUBLIC_KEY, "domain": _DOMAIN},
-            )
-        self.assertEqual(response.status_code, 400)
-
-        with mock.patch.object(
-            self.broker_app.worker_metrics,
-            "get_best_worker",
-            return_value=("worker", 0, 1),
-        ):
-            response = self.broker_app.app.test_client().post(
-                "/api/v2/wg/key/exchange",
-                json={"public_key": _PUBLIC_KEY, "domain": _DOMAIN},
-            )
-        self.assertEqual(response.status_code, 500)
-
-        self.broker_app.worker_data[("worker", _DOMAIN)] = {
-            "ExternalAddress": "gateway.example",
-            "Port": 51820,
-            "LinkAddress": "fe80::1",
-            "PublicKey": "gateway-key",
-        }
-        metrics = mock.MagicMock()
-        metrics.get_domain_metrics.return_value = {"connected_peers": 3}
-        self.broker_app.active_brokers.update({"broker-a", "broker-b"})
-        with (
-            mock.patch.object(
-                self.broker_app.worker_metrics,
-                "get_best_worker",
-                return_value=("worker", 0, 3),
-            ),
-            mock.patch.object(
-                self.broker_app.worker_metrics, "get", return_value=metrics
-            ),
-            mock.patch.object(self.broker_app.worker_metrics, "update") as update,
-        ):
-            response = self.broker_app.app.test_client().post(
-                "/api/v2/wg/key/exchange",
-                json={"public_key": _PUBLIC_KEY, "domain": _DOMAIN},
-            )
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.json["Endpoint"],
-            {
-                "Address": "gateway.example",
-                "Port": "51820",
-                "AllowedIPs": ["fe80::1"],
-                "PublicKey": "gateway-key",
-            },
-        )
-        update.assert_called_once_with("worker", _DOMAIN, "connected_peers", 5)
+        self.broker_app.parker_worker_metrics._pending.clear()
+        self.broker_app.rate_limiter = self.broker_app._create_rate_limiter()
+        self.broker_app.blocklist = self.broker_app._create_blocklist()
 
     def test_load_parker_ipam_modes(self):
         self.assertIsNone(self.broker_app._load_parker_ipam())
@@ -231,23 +144,22 @@ class TestBrokerApp(unittest.TestCase):
     def test_mqtt_connect_success_and_failure(self):
         mqtt = mock.MagicMock()
         client = mock.MagicMock(host="mqtt", port=1883)
-        with mock.patch.object(self.broker_app, "mqtt", mqtt):
+        with (
+            mock.patch.object(
+                self.broker_app.config, "get_config", return_value=_parker_config()
+            ),
+            mock.patch.object(self.broker_app, "mqtt", mqtt),
+        ):
             self.broker_app.handle_mqtt_connect(
                 client, b"", {}, paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED
             )
-        self.assertEqual(mqtt.subscribe.call_count, 4)
-        legacy_topic = self.broker_app.MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(
-            broker=self.broker_app._HOSTNAME
-        )
-        parker_topic = self.broker_app.MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
-            broker=self.broker_app._HOSTNAME
-        )
-        mqtt.publish.assert_has_calls(
-            [
-                mock.call(legacy_topic, 1, qos=1, retain=True),
-                mock.call(parker_topic, b"", qos=1, retain=True),
-            ]
-        )
+        subscribed = [c.args[0] for c in mqtt.subscribe.call_args_list]
+        # Legacy topics stay subscribed, so mixed fleets keep working
+        self.assertIn("wireguard-metrics/#", subscribed)
+        self.assertIn("parker/wireguard-worker/+/status", subscribed)
+        self.assertIn("parker/wireguard-worker/+/data", subscribed)
+        self.assertIn("parker/wireguard-metrics/+/connected_peers", subscribed)
+        mqtt.publish.assert_not_called()
 
         mqtt.reset_mock()
         with mock.patch.object(self.broker_app, "mqtt", mqtt):
@@ -326,48 +238,6 @@ class TestBrokerApp(unittest.TestCase):
             _message(f"wireguard-worker/worker/{_DOMAIN}/data", b"[]"),
         )
 
-    def test_broker_status_and_fallback_handlers(self):
-        message = _message("wireguard-broker/broker/status", b"invalid")
-        self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
-        self.assertNotIn("broker", self.broker_app.active_brokers)
-
-        parker_cfg = _parker_config()
-        with mock.patch.object(
-            self.broker_app.config, "get_config", return_value=parker_cfg
-        ):
-            message.payload = b"1"
-            self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
-            self.assertIn("broker", self.broker_app.active_brokers)
-            self.assertNotIn("broker", self.broker_app.parker_active_brokers)
-
-            self.broker_app.parker_active_brokers.add("broker")
-            message.payload = b"0"
-            self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
-            self.assertNotIn("broker", self.broker_app.parker_active_brokers)
-
-        message.payload = b"1"
-        self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
-        self.assertIn("broker", self.broker_app.active_brokers)
-        message.payload = b"0"
-        self.broker_app.handle_mqtt_message_broker_status(None, b"", message)
-        self.assertNotIn("broker", self.broker_app.active_brokers)
-
-        self.broker_app.handle_mqtt_message(
-            None, b"", _message("unhandled/topic", b"payload")
-        )
-
-    def test_non_parker_shutdown_uses_legacy_announcement(self):
-        with (
-            mock.patch.object(self.broker_app, "mqtt") as mqtt,
-            mock.patch.object(self.broker_app.time, "sleep") as sleep,
-            mock.patch.object(self.broker_app.sys, "exit") as exit_process,
-        ):
-            self.broker_app._publish_offline_and_exit(None, None)
-
-        mqtt.publish.assert_called_once_with(mock.ANY, 0, qos=1, retain=True)
-        sleep.assert_called_once_with(2)
-        exit_process.assert_called_once_with(0)
-
     def test_parker_exchange_reports_query_and_ipam_failures(self):
         cfg = _parker_config()
         ipam = mock.MagicMock()
@@ -394,6 +264,125 @@ class TestBrokerApp(unittest.TestCase):
                 "/config", query_string=query
             )
             self.assertEqual(response.status_code, 500)
+
+    def test_parker_exchange_rejects_blocked_and_rate_limited_keys(self):
+        cfg = _parker_config()
+        ipam = mock.MagicMock()
+        query = {"pubkey": _PUBLIC_KEY, "nonce": "nonce"}
+        requests = self.broker_app.KEY_EXCHANGE_REQUESTS
+
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "ipam", ipam),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+        ):
+            blocked = requests.labels("v3", "blocked")._value.get()
+            self.broker_app.blocklist = self.broker_app.KeyList(
+                "blocklist", keys=[_PUBLIC_KEY]
+            )
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+            self.assertEqual(response.status_code, 403)
+            self.assertEqual(requests.labels("v3", "blocked")._value.get(), blocked + 1)
+
+            limited = requests.labels("v3", "rate_limited")._value.get()
+            self.broker_app.blocklist = self.broker_app.KeyList("blocklist")
+            self.broker_app.rate_limiter = self.broker_app.RateLimiter(
+                per_client_requests=1,
+                per_client_period=60,
+                global_requests=0,
+                global_period=60,
+            )
+            self.broker_app.rate_limiter.allow("127.0.0.1")
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(
+                requests.labels("v3", "rate_limited")._value.get(), limited + 1
+            )
+
+        ipam.get_or_allocate_prefix.assert_not_called()
+        mqtt.publish.assert_not_called()
+
+    def test_parker_exchange_records_pending_assignments(self):
+        cfg = _parker_config()
+        cfg.workers = config.Workers.from_dict({"worker1": {"id": 1}}, 10)
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/63"),
+            [],
+        )
+        query = {"pubkey": _PUBLIC_KEY, "nonce": "nonce"}
+        self.broker_app.parker_worker_data["worker1"] = {
+            "LinkAddress": "fe80::1",
+            "ExternalAddress": "worker1.example",
+            "Port": 10000,
+            "PublicKey": "worker1-key",
+        }
+        self.broker_app.parker_worker_metrics.update(
+            "worker1", "parker", "connected_peers", 3
+        )
+        self.broker_app.parker_worker_metrics.set_online("worker1")
+        ok = self.broker_app.KEY_EXCHANGE_REQUESTS.labels("v3", "ok")._value.get()
+
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "ipam", ipam),
+            mock.patch.object(self.broker_app, "mqtt"),
+            mock.patch.object(
+                self.broker_app, "sign_response", return_value=b"signature"
+            ),
+        ):
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(
+                self.broker_app.parker_worker_metrics.get_effective_peer_count(
+                    "worker1"
+                ),
+                4,
+            )
+
+            # A periodic poll keeping the same concentrator does not count again
+            ipam.get_or_allocate_prefix.return_value = (
+                None,
+                ipaddress.IPv6Network("2001:db8:42::/63"),
+                ["worker1"],
+            )
+            response = self.broker_app.app.test_client().get(
+                "/config", query_string=query
+            )
+            self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(
+            self.broker_app.parker_worker_metrics.get_effective_peer_count("worker1"),
+            4,
+        )
+        self.assertEqual(
+            self.broker_app.KEY_EXCHANGE_REQUESTS.labels("v3", "ok")._value.get(),
+            ok + 2,
+        )
+
+    def test_parker_status_handler_tracks_draining(self):
+        self.broker_app.handle_mqtt_message_parker_status(
+            None, b"", _message("parker/wireguard-worker/worker/status", b"2")
+        )
+        self.assertTrue(self.broker_app.parker_worker_metrics.get("worker").online)
+        self.assertTrue(self.broker_app.parker_worker_metrics.is_draining("worker"))
+
+        self.broker_app.handle_mqtt_message_parker_status(
+            None, b"", _message("parker/wireguard-worker/worker/status", b"1")
+        )
+        self.assertFalse(self.broker_app.parker_worker_metrics.is_draining("worker"))
+
+        self.broker_app.handle_mqtt_message_parker_status(
+            None, b"", _message("parker/wireguard-worker/worker/status", b"0")
+        )
+        self.assertFalse(self.broker_app.parker_worker_metrics.get("worker").online)
 
     def test_parker_exchange_worker_fallback_and_error_paths(self):
         cfg = _parker_config()
@@ -725,12 +714,6 @@ class TestBrokerApp(unittest.TestCase):
         )
         self.assertNotIn("worker", self.broker_app.parker_worker_data)
 
-        invalid_status = _message("parker/wireguard-broker/broker/status", b"invalid")
-        self.broker_app.handle_mqtt_message_parker_broker_status(
-            None, b"", invalid_status
-        )
-        self.assertNotIn("broker", self.broker_app.parker_active_brokers)
-
     def test_metric_and_status_handlers_ignore_invalid_payloads(self):
         self.broker_app.handle_mqtt_message_metrics(
             None,
@@ -755,18 +738,6 @@ class TestBrokerApp(unittest.TestCase):
                 None, b"", _message("parker/wireguard-worker/worker/status", b"invalid")
             )
         get.assert_not_called()
-
-    def test_shutdown_still_exits_when_publish_fails(self):
-        with (
-            mock.patch.object(
-                self.broker_app.mqtt,
-                "publish",
-                side_effect=RuntimeError("publish failed"),
-            ),
-            mock.patch.object(self.broker_app.sys, "exit") as exit_process,
-        ):
-            self.broker_app._publish_offline_and_exit(None, None)
-        exit_process.assert_called_once_with(0)
 
 
 if __name__ == "__main__":
