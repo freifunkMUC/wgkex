@@ -1,8 +1,8 @@
 """Tests for configuration handling class."""
 
 import unittest
+from unittest import mock
 
-import mock
 import yaml
 
 from wgkex.config import config
@@ -55,9 +55,11 @@ class TestConfig(unittest.TestCase):
         """Test fails on file not found on disk."""
         mock_open = mock.mock_open()
         mock_open.side_effect = FileNotFoundError
-        with mock.patch("builtins.open", mock_open):
-            with self.assertRaises(config.ConfigFileNotFoundError):
-                config.fetch_config_from_disk()
+        with (
+            mock.patch("builtins.open", mock_open),
+            self.assertRaises(config.ConfigFileNotFoundError),
+        ):
+            config.fetch_config_from_disk()
 
     def test_raw_get_success(self):
         """Test fetch key from configuration."""

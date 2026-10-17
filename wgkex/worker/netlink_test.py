@@ -4,18 +4,18 @@
 # any testing platform can execute tests.
 import sys
 import unittest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from unittest import mock
 
-import mock
 import pyroute2.netlink.exceptions as pyroute2_netlink_exceptions
 
 pyroute2_module_mock = mock.MagicMock()
 pyroute2_module_mock.netlink.exceptions = pyroute2_netlink_exceptions
 sys.modules["pyroute2"] = pyroute2_module_mock
 sys.modules["pyroute2.netlink"] = mock.MagicMock()
-from pyroute2 import IPRoute, WireGuard  # noqa: E402
+from pyroute2 import IPRoute, WireGuard
 
-from wgkex.worker import netlink  # noqa: E402
+from wgkex.worker import netlink
 
 _WG_CLIENT_ADD = netlink.WireGuardClient(
     public_key="public_key", domain="add", remove=False
@@ -63,7 +63,7 @@ class NetlinkTest(unittest.TestCase):
         """Tests find_stale_wireguard_clients no operation on non-stale peers."""
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
-            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+            int((datetime.now(UTC) - timedelta(seconds=3)).timestamp()),
         )
         self.assertListEqual([], netlink.find_stale_wireguard_clients("some_interface"))
 
@@ -71,7 +71,7 @@ class NetlinkTest(unittest.TestCase):
         """Tests find_stale_wireguard_clients removal of stale peer"""
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY_STALE",
-            int((datetime.now() - timedelta(hours=5)).timestamp()),
+            int((datetime.now(UTC) - timedelta(hours=5)).timestamp()),
         )
         self.assertListEqual(
             ["WGPEER_A_PUBLIC_KEY_STALE"],
@@ -98,7 +98,7 @@ class NetlinkTest(unittest.TestCase):
         """Test update_wireguard_peer for normal operation."""
         wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
-            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+            int((datetime.now(UTC) - timedelta(seconds=3)).timestamp()),
         )
         self.assertDictEqual(
             {"WireGuard": "set"}, netlink.update_wireguard_peer(_WG_CLIENT_ADD)
@@ -145,7 +145,7 @@ class NetlinkTest(unittest.TestCase):
         }
         wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
-            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+            int((datetime.now(UTC) - timedelta(seconds=3)).timestamp()),
         )
         wg_info_mock.set.return_value = {"WireGuard": "set"}
         self.route_info_mock.fdb.return_value = {"IPRoute": "fdb"}
@@ -174,7 +174,7 @@ class NetlinkTest(unittest.TestCase):
         """Tests processing of non-stale WireGuard Peer."""
         _wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY",
-            int((datetime.now() - timedelta(seconds=3)).timestamp()),
+            int((datetime.now(UTC) - timedelta(seconds=3)).timestamp()),
         )
         self.route_info_mock.fdb.return_value = {"IPRoute": "fdb"}
         self.route_info_mock.route.return_value = {"IPRoute": "route"}
@@ -195,7 +195,7 @@ class NetlinkTest(unittest.TestCase):
         self.route_info_mock.route.return_value = {"IPRoute": "route"}
         wg_info_mock = _get_wg_mock(
             "WGPEER_A_PUBLIC_KEY_STALE",
-            int((datetime.now() - timedelta(hours=5)).timestamp()),
+            int((datetime.now(UTC) - timedelta(hours=5)).timestamp()),
         )
         wg_info_mock.set.return_value = {"WireGuard": "set"}
         self.assertListEqual(expected, netlink.wg_flush_stale_peers("domain"))
@@ -209,7 +209,7 @@ class NetlinkTest(unittest.TestCase):
         for i in range(10):
             peer_mock = _get_peer_mock(
                 "TEST_KEY",
-                int((datetime.now() - timedelta(minutes=i, seconds=5)).timestamp()),
+                int((datetime.now(UTC) - timedelta(minutes=i, seconds=5)).timestamp()),
             )
             peers.append(peer_mock)
 

@@ -1,6 +1,6 @@
 import dataclasses
 from operator import itemgetter
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 from wgkex.common import logger
 from wgkex.common.mqtt import CONNECTED_PEERS_METRIC
@@ -13,7 +13,7 @@ class WorkerMetrics:
 
     worker: str
     #            domain -> [metric name -> metric data]
-    domain_data: Dict[str, Dict[str, Any]] = dataclasses.field(default_factory=dict)
+    domain_data: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
     online: bool = False
 
     def is_online(self, domain: str = "") -> bool:
@@ -25,7 +25,7 @@ class WorkerMetrics:
         else:
             return self.online
 
-    def get_domain_metrics(self, domain: str) -> Dict[str, Any]:
+    def get_domain_metrics(self, domain: str) -> dict[str, Any]:
         return self.domain_data.get(domain, {})
 
     def set_metric(self, domain: str, metric: str, value: Any) -> None:
@@ -53,7 +53,7 @@ class WorkerMetricsCollection:
     """
 
     #     worker -> WorkerMetrics
-    data: Dict[str, WorkerMetrics] = dataclasses.field(default_factory=dict)
+    data: dict[str, WorkerMetrics] = dataclasses.field(default_factory=dict)
 
     def get(self, worker: str) -> WorkerMetrics:
         return self.data.get(worker, WorkerMetrics(worker=worker))
@@ -98,7 +98,7 @@ class WorkerMetricsCollection:
 
         return total
 
-    def get_best_worker(self, domain: str) -> Tuple[Optional[str], int, int]:
+    def get_best_worker(self, domain: str) -> tuple[str | None, int, int]:
         """Analyzes the metrics and determines the best worker that a new client should connect to.
         The best worker is defined as the one with the most number of clients missing
         to its should-be target value according to its weight.

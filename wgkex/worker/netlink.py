@@ -4,9 +4,8 @@
 import hashlib
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from textwrap import wrap
-from typing import Dict, List, Tuple
 
 import pyroute2
 import pyroute2.netlink
@@ -60,7 +59,7 @@ class WireGuardClient:
         return f"wg-{self.domain}"
 
 
-def wg_flush_stale_peers(domain: str) -> List[Dict]:
+def wg_flush_stale_peers(domain: str) -> list[dict]:
     """Removes stale peers.
 
     Arguments:
@@ -88,7 +87,7 @@ def wg_flush_stale_peers(domain: str) -> List[Dict]:
 
 
 # pyroute2 stuff
-def link_handler(client: WireGuardClient) -> Dict:
+def link_handler(client: WireGuardClient) -> dict:
     """Updates fdb, route and WireGuard peers tables for a given WireGuard peer.
 
     Arguments:
@@ -96,7 +95,7 @@ def link_handler(client: WireGuardClient) -> Dict:
     Returns:
         The outcome of each operation.
     """
-    results = dict()
+    results = {}
     # Updates WireGuard peers.
     results.update({"Wireguard": update_wireguard_peer(client)})
     logger.debug("Handling links for %s", client)
@@ -104,7 +103,7 @@ def link_handler(client: WireGuardClient) -> Dict:
         # Updates routes to the WireGuard Peer.
         results.update({"Route": route_handler(client)})
         logger.info("Updated route for %s", client)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         # TODO(ruairi): re-raise exception here.
         logger.error("Failed to update route for %s (%s)", client, e)
         results.update({"Route": e})
@@ -114,7 +113,7 @@ def link_handler(client: WireGuardClient) -> Dict:
     return results
 
 
-def bridge_fdb_handler(client: WireGuardClient) -> Dict:
+def bridge_fdb_handler(client: WireGuardClient) -> dict:
     """Handles updates of FDB info towards WireGuard peers.
 
     Note that set will remove an FDB entry if remove is set to True.
@@ -136,7 +135,7 @@ def bridge_fdb_handler(client: WireGuardClient) -> Dict:
         )
 
 
-def update_wireguard_peer(client: WireGuardClient) -> Dict:
+def update_wireguard_peer(client: WireGuardClient) -> dict:
     """Handles updates of WireGuard peers to netlink.
 
     Note that set will remove a peer if remove is set to True.
@@ -157,7 +156,7 @@ def update_wireguard_peer(client: WireGuardClient) -> Dict:
         return wg.set(client.wg_interface, peer=wg_peer)
 
 
-def route_handler(client: WireGuardClient) -> Dict:
+def route_handler(client: WireGuardClient) -> dict:
     """Handles updates of routes towards WireGuard peers.
 
     Note that set will remove a route if remove is set to True.
@@ -178,7 +177,7 @@ def route_handler(client: WireGuardClient) -> Dict:
         )
 
 
-def find_stale_wireguard_clients(wg_interface: str) -> List:
+def find_stale_wireguard_clients(wg_interface: str) -> list:
     """Fetches and returns a list of peers which have not had recent handshakes.
 
     Arguments:
@@ -188,7 +187,7 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
         # A list of peers which have not recently seen a handshake.
     """
     three_hrs_in_secs = int(
-        (datetime.now() - timedelta(hours=_PEER_TIMEOUT_HOURS)).timestamp()
+        (datetime.now(UTC) - timedelta(hours=_PEER_TIMEOUT_HOURS)).timestamp()
     )
     logger.info(
         "Starting search for stale wireguard peers for interface %s.", wg_interface
@@ -206,7 +205,7 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
             peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
             for peer in all_peers
             if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
-            and hshk_time.get("tv_sec", int()) < three_hrs_in_secs
+            and hshk_time.get("tv_sec", 0) < three_hrs_in_secs
         ]
         return ret
 
@@ -223,7 +222,7 @@ def get_connected_peers_count(wg_interface: str) -> int:
     Raises:
         NetlinkDumpInterrupted if the interface data has changed while it was being returned by netlink
     """
-    three_mins_ago_in_secs = int((datetime.now() - timedelta(minutes=3)).timestamp())
+    three_mins_ago_in_secs = int((datetime.now(UTC) - timedelta(minutes=3)).timestamp())
     logger.info("Counting connected wireguard peers for interface %s.", wg_interface)
     with pyroute2.WireGuard() as wg:
         try:
@@ -244,14 +243,14 @@ def get_connected_peers_count(wg_interface: str) -> int:
                     if (
                         hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")
                     ) is not None and hshk_time.get(
-                        "tv_sec", int()
+                        "tv_sec", 0
                     ) > three_mins_ago_in_secs:
                         count += 1
 
         return count
 
 
-def get_device_data(wg_interface: str) -> Tuple[int, str, str]:
+def get_device_data(wg_interface: str) -> tuple[int, str, str]:
     """Returns the listening port, public key and local IP address.
 
     Arguments:
