@@ -135,7 +135,12 @@ def parse_parker_item(
         raise ValueError(
             f"Parker queue item Range6 prefix length must be /{prefix_length}"
         )
-    return public_key, str(range6), message.get("Keepalive"), bool(message.get("Remove"))
+    return (
+        public_key,
+        str(range6),
+        message.get("Keepalive"),
+        bool(message.get("Remove")),
+    )
 
 
 def process_parker_item(item: str, options: ParkerOptions | None = None) -> None:
@@ -246,14 +251,15 @@ def process_batch(max_items: int = _MAX_BATCH, timeout: float | None = None) -> 
     start = time.monotonic()
     # Sorted by interface, so the cached netlink state of an interface is reused back to back
     for item in sorted(batch, key=_sort_key):
-        op = "remove" if getattr(item, "remove", False) else "add"
+        remove = _is_removal(item)
+        op = "remove" if remove else "add"
         try:
             process_item(item)
             PEER_OPS.labels(op, "ok").inc()
         except Exception as e:  # noqa: BLE001
             PEER_OPS.labels(op, "error").inc()
             # Don't crash the queue processor
-            if getattr(item, "remove", False):
+            if remove:
                 # Expected when the peer was already removed, e.g. by rebalancing
                 logger.info("Could not remove %s, probably already gone: %s", item, e)
             else:
@@ -267,6 +273,16 @@ def process_batch(max_items: int = _MAX_BATCH, timeout: float | None = None) -> 
         q.qsize(),
     )
     return len(batch)
+
+
+def _is_removal(item: PeerOp | str) -> bool:
+    if not isinstance(item, str):
+        return bool(getattr(item, "remove", False))
+    try:
+        message = json.loads(item)
+    except ValueError:
+        return False
+    return isinstance(message, dict) and bool(message.get("Remove"))
 
 
 def _sort_key(item) -> tuple[str, str]:

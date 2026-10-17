@@ -134,8 +134,8 @@ class MQTTTest(unittest.TestCase):
 
         mqtt_client_mock.assert_has_calls(
             [
-                mock.call().subscribe(f"parker/wireguard/{hostname}"),
-                mock.call().subscribe("parker/wireguard/all"),
+                mock.call().subscribe(f"parker/wireguard/{hostname}", qos=1),
+                mock.call().subscribe("parker/wireguard/all", qos=1),
                 mock.call().publish(
                     f"parker/wireguard-worker/{hostname}/data",
                     '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
@@ -152,28 +152,23 @@ class MQTTTest(unittest.TestCase):
         mqtt_client_mock.reset_mock()
         get_device_data_mock.side_effect = ValueError("no such device")
 
-        mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+        with mock.patch.object(mqtt, "_start_announce_retry") as retry:
+            mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+        retry.assert_called_once()
 
         mqtt_client_mock.assert_has_calls(
             [
-                mock.call().subscribe(f"parker/wireguard/{hostname}"),
-                mock.call().subscribe("parker/wireguard/all"),
-                mock.call().publish(
-                    f"parker/wireguard-worker/{hostname}/status", 0, qos=1, retain=True
-                ),
+                mock.call().subscribe(f"parker/wireguard/{hostname}", qos=1),
+                mock.call().subscribe("parker/wireguard/all", qos=1),
             ]
         )
-        published_topics = [
-            call.args[0] for call in mqtt_client_mock.return_value.publish.mock_calls
-        ]
-        self.assertNotIn(f"parker/wireguard-worker/{hostname}/data", published_topics)
+        # Not marked online (nor offline) until wg-nodes is ready, the retry announces it later
+        mqtt_client_mock.return_value.publish.assert_not_called()
 
         mqtt_client_mock.reset_mock()
         get_device_data_mock.side_effect = None
         get_device_data_mock.return_value = (51820, "456asdf=", "fe80::1")
-        with mock.patch.object(mqtt, "get_connected_peers_count", return_value=0):
-            mqtt.publish_metrics_parker(mqtt.mqtt.Client(), "parker/metrics")
-
+        self.assertTrue(mqtt.publish_worker_data_and_status(mqtt.mqtt.Client()))
         mqtt_client_mock.assert_has_calls(
             [
                 mock.call().publish(
@@ -186,8 +181,14 @@ class MQTTTest(unittest.TestCase):
                 mock.call().publish(
                     f"parker/wireguard-worker/{hostname}/status", 1, qos=1, retain=True
                 ),
-                mock.call().publish("parker/metrics", 0, retain=True),
             ]
+        )
+
+        mqtt_client_mock.reset_mock()
+        with mock.patch.object(mqtt, "get_connected_peers_count", return_value=0):
+            mqtt.publish_metrics_parker(mqtt.mqtt.Client(), "parker/metrics")
+        mqtt_client_mock.return_value.publish.assert_called_once_with(
+            "parker/metrics", 0, retain=True
         )
 
     @mock.patch.object(mqtt, "get_config")
@@ -207,8 +208,10 @@ class MQTTTest(unittest.TestCase):
             f"wireguard-worker/{socket.gethostname()}/status", 2, qos=1, retain=True
         )
 
-    def test_publish_status(self):
+    @mock.patch.object(mqtt, "get_config")
+    def test_publish_status(self, config_mock):
         """Status changes are only published after the announcement, and only once."""
+        config_mock.return_value = _get_config_mock()
         client = mock.MagicMock()
         topic = f"wireguard-worker/{socket.gethostname()}/status"
         mqtt.on_disconnect(client, None, 0)
@@ -512,9 +515,10 @@ class MQTTTest(unittest.TestCase):
             retain=True,
         )
         client.message_callback_add.assert_called_once_with(
-            "parker/wireguard/#", mqtt.on_message_parker
+            "parker/wireguard/+", mqtt.on_message_parker
         )
-        self.assertEqual(thread.call_count, 2)
+        # mark offline on exit, drain watcher, metrics
+        self.assertEqual(thread.call_count, 3)
         client.loop_forever.assert_called_once()
 
     @mock.patch.object(mqtt, "get_config")
@@ -527,19 +531,19 @@ class MQTTTest(unittest.TestCase):
         mqtt.on_connect(client, None, None, 1)
         client.subscribe.assert_not_called()
 
-        with mock.patch.object(mqtt, "wg_interface_name", return_value=None):
+        with (
+            mock.patch.object(mqtt, "wg_interface_name", return_value=None),
+            mock.patch.object(mqtt, "_start_announce_retry") as retry,
+        ):
             mqtt.on_connect(
                 client,
                 None,
                 None,
                 paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED,
             )
-        client.publish.assert_called_with(
-            MQTTTopics.TOPIC_WORKER_STATUS.format(worker=socket.gethostname()),
-            1,
-            qos=1,
-            retain=True,
-        )
+        # A missing interface keeps the worker unannounced and retries in the background
+        client.publish.assert_not_called()
+        retry.assert_called_once_with(client)
 
     @mock.patch.object(mqtt, "get_config")
     def test_message_parsers_reject_unknown_domain_and_queue_parker(self, config_mock):

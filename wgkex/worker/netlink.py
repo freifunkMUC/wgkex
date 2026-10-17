@@ -391,7 +391,9 @@ def flush_stale_parker_peers(
             )
             results.append(
                 PeerCleanupResult(
-                    public_key=client.public_key, status="deleted", operations=operations
+                    public_key=client.public_key,
+                    status="deleted",
+                    operations=operations,
                 )
             )
     return results
@@ -568,7 +570,7 @@ def update_wireguard_peer(
         }
         wg_interface = client.wg_interface
     return _netlink_call(
-        lambda h: h.wireguard().set(wg_interface, peer=wg_peer), "wg_set"
+        lambda h: h.wireguard().set(interface=wg_interface, peer=wg_peer), "wg_set"
     )
 
 

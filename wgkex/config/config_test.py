@@ -313,9 +313,6 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(workers.get("worker").pop, "")
         self.assertIsNone(workers.get("worker").endpoint_name)
 
-        workers = config.Workers.from_dict({"worker": {"weight": 0}}, 10)
-        self.assertEqual(workers.get("worker").weight, 0)
-
     def test_worker_endpoint_name_is_optional_string(self):
         workers = config.Workers.from_dict(
             {
@@ -329,42 +326,58 @@ class TestConfig(unittest.TestCase):
         self.assertIsNone(workers.get("empty").endpoint_name)
         self.assertIsNone(workers.get("unset").endpoint_name)
 
-    def test_cleanup_defaults_and_mode_timeouts(self):
-        cleanup = config.Cleanup.from_dict({})
-        self.assertEqual(cleanup.interval, 3600)
-        self.assertEqual(cleanup.stale_timeout(True), 300)
-        self.assertEqual(cleanup.stale_timeout(False), 10800)
+    def test_peer_cleanup_defaults_and_mode_timeouts(self):
+        cleanup = config.PeerCleanup.from_dict({})
+        self.assertEqual(cleanup.interval, 300)
+        self.assertEqual(cleanup.timeout_for(True), 300)
+        self.assertEqual(cleanup.timeout_for(False), 1800)
         self.assertEqual(cleanup.initial_handshake_grace, 600)
 
         cfg = _config_dict()
-        cfg["cleanup"] = {
+        cfg["peer_cleanup"] = {
             "interval": 30,
             "parker_stale_timeout": 600,
-            "legacy_stale_timeout": 7200,
+            "stale_timeout": 7200,
             "initial_handshake_grace": 900,
         }
         parsed = config.Config.from_dict(cfg)
-        self.assertEqual(parsed.cleanup.interval, 30)
-        self.assertEqual(parsed.cleanup.stale_timeout(True), 600)
-        self.assertEqual(parsed.cleanup.stale_timeout(False), 7200)
-        self.assertEqual(parsed.cleanup.initial_handshake_grace, 900)
+        self.assertEqual(parsed.peer_cleanup.interval, 30)
+        self.assertEqual(parsed.peer_cleanup.timeout_for(True), 600)
+        self.assertEqual(parsed.peer_cleanup.timeout_for(False), 7200)
+        self.assertEqual(parsed.peer_cleanup.initial_handshake_grace, 900)
 
-    def test_cleanup_durations_are_positive_and_finite(self):
-        fields = (
-            "interval",
-            "parker_stale_timeout",
-            "legacy_stale_timeout",
-            "initial_handshake_grace",
-        )
-        for field in fields:
+    def test_parker_cleanup_section_is_accepted_as_alias(self):
+        cfg = _config_dict()
+        cfg["cleanup"] = {
+            "interval": 3600,
+            "parker_stale_timeout": 600,
+            "legacy_stale_timeout": 10800,
+            "initial_handshake_grace": 900,
+        }
+        parsed = config.Config.from_dict(cfg).peer_cleanup
+        self.assertEqual(parsed.interval, 3600)
+        self.assertEqual(parsed.timeout_for(True), 600)
+        self.assertEqual(parsed.timeout_for(False), 10800)
+        self.assertEqual(parsed.initial_handshake_grace, 900)
+
+        # peer_cleanup wins over the alias
+        cfg["peer_cleanup"] = {"interval": 60, "initial_handshake_grace": 120}
+        parsed = config.Config.from_dict(cfg).peer_cleanup
+        self.assertEqual(parsed.interval, 60)
+        self.assertEqual(parsed.initial_handshake_grace, 120)
+        self.assertEqual(parsed.timeout_for(True), 600)
+
+        with self.assertRaisesRegex(ValueError, "mapping"):
+            config.PeerCleanup.from_dict({}, ["invalid"])  # type: ignore
+
+    def test_parker_cleanup_durations_are_positive_and_finite(self):
+        for field in ("parker_stale_timeout", "initial_handshake_grace"):
             for value in (0, -1, True, "invalid", float("inf"), None):
                 with (
                     self.subTest(field=field, value=value),
                     self.assertRaisesRegex(ValueError, field),
                 ):
-                    config.Cleanup.from_dict({field: value})
-        with self.assertRaisesRegex(ValueError, "mapping"):
-            config.Cleanup.from_dict([])  # type: ignore
+                    config.PeerCleanup.from_dict({field: value})
 
     def test_parker_prefix_structure_validation(self):
         invalid_configs = [

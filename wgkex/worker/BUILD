@@ -61,6 +61,17 @@ py_test(
     size="small",
 )
 
+py_test(
+    name = "parker_netlink_test",
+    srcs = ["parker_netlink_test.py"],
+    deps = [
+       "//wgkex/worker:netlink",
+       "//wgkex/worker:peer_state",
+       requirement("pyroute2"),
+    ],
+    size="small",
+)
+
 py_library(
     name = "mqtt",
     srcs = ["mqtt.py"],

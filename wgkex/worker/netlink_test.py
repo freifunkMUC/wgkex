@@ -404,6 +404,7 @@ class NetlinkTest(unittest.TestCase):
             _WG_CLIENT_ADD,
         )
         self.assertEqual(1, self.route_info_mock.route.call_count)
+
     def test_find_stale_wireguard_clients_parker_stale_peer(self):
         """Tests find_stale_wireguard_clients in parker mode returning range6."""
 
@@ -423,15 +424,13 @@ class NetlinkTest(unittest.TestCase):
             "PARKER_PUBLIC_KEY", int((datetime.now() - timedelta(hours=1)).timestamp())
         )
 
-        expected = [
-            {
-                "Wireguard": {"WireGuard": "set"},
-                "Route": {"IPRoute": "route"},
-            }
-        ]
-
         ret = netlink.wg_flush_stale_peers(True, "parker")
-        self.assertListEqual(expected, ret)
+        self.assertEqual(1, len(ret))
+        self.assertIsInstance(ret[0], netlink.PeerCleanupResult)
+        self.assertEqual("PARKER_PUBLIC_KEY", ret[0].public_key)
+        self.assertEqual("deleted", ret[0].status)
+        self.assertEqual({"route", "wireguard"}, set(ret[0].operations))
+        self.assertIsNone(ret[0].error)
 
         # Verify the stale peer resulted in a route deletion for the parker range
         self.route_info_mock.route.assert_called_with(
