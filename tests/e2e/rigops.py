@@ -24,10 +24,6 @@ NET = os.path.join(HERE, "lib", "net.sh")
 AGENT_PORT = 7700
 
 
-# Only the broker subscribes to this topic, so it shows up in the mosquitto subscribe log
-BROKER_ONLY_TOPIC = "wireguard-worker/+/+/data"
-
-
 class Ops:
     def __init__(self, base: str, python: str = sys.executable) -> None:
         self.base = os.path.abspath(base)
@@ -35,7 +31,6 @@ class Ops:
         self.procs: dict[str, subprocess.Popen] = {}
         self.out = self.base
         self.env = dict(os.environ)
-        self._broker_subs_before = 0
 
     # --- lifecycle ---------------------------------------------------------------------------
 
@@ -127,31 +122,11 @@ class Ops:
             "max_queued_messages 100000\n"
             "log_dest stdout\n"
             "log_type error\nlog_type warning\nlog_type notice\nlog_type information\n"
-            "log_type subscribe\n"
             "log_timestamp_format %Y-%m-%dT%H:%M:%S\n",
         )
         self.start("mosquitto", ["mosquitto", "-c", conf])
 
-    def _broker_subscriptions(self) -> int:
-        try:
-            with open(
-                os.path.join(self.out, "logs", "mosquitto.log"), errors="replace"
-            ) as f:
-                return sum(1 for line in f if line.rstrip().endswith(BROKER_ONLY_TOPIC))
-        except FileNotFoundError:
-            return 0
-
-    def broker_subscribed(self, timeout: float = 20) -> bool:
-        """True once the broker started by the last start_broker() subscribed (see the README)."""
-        end = time.time() + timeout
-        while time.time() < end:
-            if self._broker_subscriptions() > self._broker_subs_before:
-                return True
-            time.sleep(0.5)
-        return False
-
     def start_broker(self, config: str) -> None:
-        self._broker_subs_before = self._broker_subscriptions()
         path = os.path.join(self.out, "config-broker.yaml")
         self.write_file(path, config)
         # The logger always reads the default config location

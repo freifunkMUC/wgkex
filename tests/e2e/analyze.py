@@ -403,10 +403,7 @@ class Run:
 
     def warnings(self) -> list[str]:
         """Things that make a run unrepresentative of wgkex itself."""
-        res = []
-        for m in self.marks:
-            if m["mark"] == "broker_restart":
-                res.append(f"broker restarted ({m.get('reason')})")
+        res: list[str] = []
         online = self.mark("workers_online") or 0
         no_worker = sum(
             1

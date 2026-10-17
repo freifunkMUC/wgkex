@@ -238,23 +238,12 @@ class Rig:
         self.nodes.net("underlay_fdb", str(a.nodes))
         self.mark("setup_done", nodes_create_s=round(time.time() - t, 1))
 
-    def start_broker(self, attempts: int = 5) -> None:
-        # The broker registers its on_connect handler (which subscribes) after flask_mqtt has
-        # already connected; if the CONNACK wins the race it never subscribes and every v2
-        # request fails with "No worker online". Restart until it subscribed.
-        for attempt in range(attempts):
-            self.ctl.start_broker(self.config())
-            wait_port(HOST_IP, 5000)
-            if self.ctl.broker_subscribed():
-                return
-            self.mark("broker_restart", reason="not_subscribed", attempt=attempt + 1)
-        raise RuntimeError("broker never subscribed to its MQTT topics")
-
     def start_services(self) -> None:
         a = self.args
         self.ctl.start_mosquitto()
         wait_port(HOST_IP, 1883)
-        self.start_broker()
+        self.ctl.start_broker(self.config())
+        wait_port(HOST_IP, 5000)
         for k, h in self.gw_of.items():
             h.start_gateway(k, self.config(k), a.bum_pps)
         self.ctl.start_collector([], HOST_IP)

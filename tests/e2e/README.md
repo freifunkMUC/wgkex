@@ -44,10 +44,9 @@ broker 10.0.0.1:5000        wan 10.0.0.(10+K)                  wan 10.1.x.y
   the worker. The killed worker never publishes status 0, as with a real power loss.
 * All simulated nodes reach the broker from one IP, so the rig sets
   `rate_limit.per_client_requests: 0`; the global limit stays at its default.
-* The broker can miss its MQTT subscriptions if flask_mqtt connects before the `on_connect`
-  handler is registered (then every v2 request gets "No worker online"). The rig checks the
-  mosquitto subscribe log after starting the broker and restarts it if needed (`broker_restart`
-  mark, shown under **warnings**).
+* Brokers before #304 can miss their MQTT subscriptions (flask_mqtt connected before the
+  `on_connect` handler was registered); every v2 request then gets "No worker online". Such runs
+  show up under **warnings**.
 
 ## Usage
 
@@ -95,5 +94,5 @@ Scenarios:
 * **CPU**: per process (broker, mosquitto, workers) and host softirq.
 * **rate limited**: `wgkex_broker_key_exchange_requests_total{result="rate_limited"}` from the
   broker's `/metrics` at the end of the run (brokers with #299 and later).
-* **warnings**: broker restarts, "No worker online" answers, v1 fallbacks and node simulator
+* **warnings**: "No worker online" answers, v1 fallbacks and node simulator
   errors. A run with warnings does not show wgkex's normal behaviour.
