@@ -28,7 +28,7 @@ jobs:
           bazel coverage --combined_report=lcov --java_runtime_version=remotejdk_11 -t- --instrument_test_targets \
             --test_output=errors --linkopt=--coverage --linkopt=-lc \
             --test_env=PYTHON_COVERAGE=${GITHUB_WORKSPACE}/src/coverage-7.13.5/__main__.py \
-            --test_verbose_timeout_warnings --define=config_file=test ...:all
+            --test_verbose_timeout_warnings --define=config_file=test -- ...:all -//:requirements.test
       - name: Coveralls
         uses: coverallsapp/github-action@5cbfd81b66ca5d10c19b062c04de0199c215fb6e # v2.3.7
         with:
