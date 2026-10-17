@@ -57,6 +57,10 @@ The frontend broker exposes the following API endpoints for use:
 /api/v2/wg/key/exchange
 ```
 
+The full API, including all response codes, is specified as OpenAPI 3 in [Docs/openapi.yaml](Docs/openapi.yaml)
+(view it with e.g. the [Swagger Editor](https://editor.swagger.io/)). It is the reference for other client and broker
+implementations, and `//wgkex/broker:openapi_test` checks that the broker's responses match it.
+
 The listen address and port for the Flask server can be configured in `wgkex.yaml` under the `broker_listen` key:
 
 ```yaml
