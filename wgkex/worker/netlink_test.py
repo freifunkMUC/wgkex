@@ -47,7 +47,7 @@ def _get_wg_mock(public_key, last_handshake_time):
     msg_mock = mock.Mock()
     msg_mock.get_attr.side_effect = msg_get_attr
     wg_instance = WireGuard()
-    wg_info_mock = wg_instance.__enter__.return_value
+    wg_info_mock = wg_instance
     wg_info_mock.set.return_value = {"WireGuard": "set"}
     wg_info_mock.info.return_value = [msg_mock]
     return wg_info_mock
@@ -55,9 +55,11 @@ def _get_wg_mock(public_key, last_handshake_time):
 
 class NetlinkTest(unittest.TestCase):
     def setUp(self) -> None:
-        iproute_instance = IPRoute()
-        self.route_info_mock = iproute_instance.__enter__.return_value
-        # self.addCleanup(mock.patch.stopall)
+        netlink.reset_handles()
+        IPRoute.reset_mock(return_value=True, side_effect=True)
+        WireGuard.reset_mock(return_value=True, side_effect=True)
+        self.route_info_mock = IPRoute()
+        self.addCleanup(netlink.reset_handles)
 
     def test_find_stale_wireguard_clients_success_with_non_stale_peer(self):
         """Tests find_stale_wireguard_clients no operation on non-stale peers."""
@@ -248,7 +250,7 @@ class NetlinkTest(unittest.TestCase):
         msg_mock.get_attr.side_effect = msg_get_attr
 
         wg_instance = WireGuard()
-        wg_info_mock = wg_instance.__enter__.return_value
+        wg_info_mock = wg_instance
         wg_info_mock.info.return_value = [msg_mock]
 
         ret = netlink.get_connected_peers_count("wg-welt")
@@ -268,7 +270,7 @@ class NetlinkTest(unittest.TestCase):
 
         msg_mock = mock.Mock()
         msg_mock.get_attr.side_effect = msg_get_attr
-        wg_info_mock = WireGuard().__enter__.return_value
+        wg_info_mock = WireGuard()
         wg_info_mock.info.return_value = [msg_mock]
 
         self.assertListEqual(["CONNECTED"], netlink.get_connected_peers("wg-welt"))
@@ -283,8 +285,7 @@ class NetlinkTest(unittest.TestCase):
         )
         nl_wg_mock_ctx.info = wg_info_mock
 
-        nl_wg_mock_inst = pyroute2_wg_mock.return_value
-        nl_wg_mock_inst.__enter__ = mock.MagicMock(return_value=nl_wg_mock_ctx)
+        pyroute2_wg_mock.return_value = nl_wg_mock_ctx
 
         self.assertRaises(
             pyroute2_netlink_exceptions.NetlinkDumpInterrupted,
@@ -304,11 +305,52 @@ class NetlinkTest(unittest.TestCase):
         msg_mock.get_attr.side_effect = msg_get_attr
 
         wg_instance = WireGuard()
-        wg_info_mock = wg_instance.__enter__.return_value
+        wg_info_mock = wg_instance
         wg_info_mock.info.return_value = [msg_mock]
 
         ret = netlink.get_device_data("wg-welt")
         self.assertTupleEqual(ret, (51820, "TEST_PUBLIC_KEY", mock.ANY))
+
+    def test_handles_are_reused(self):
+        """Netlink sockets and interface indexes are kept across operations."""
+        IPRoute.reset_mock()
+        netlink.route_handler(_WG_CLIENT_ADD)
+        netlink.route_handler(_WG_CLIENT_ADD)
+        netlink.bridge_fdb_handler(_WG_CLIENT_ADD)
+        self.assertEqual(1, IPRoute.call_count)
+        # wg-add and vx-add, each looked up once
+        self.assertEqual(2, self.route_info_mock.link_lookup.call_count)
+
+    def test_reconnect_on_socket_error(self):
+        """A broken socket is replaced and the operation retried once."""
+        self.route_info_mock.route.side_effect = [OSError("broken"), {"ok": 1}]
+        self.assertEqual({"ok": 1}, netlink.route_handler(_WG_CLIENT_ADD))
+        self.route_info_mock.close.assert_called_once()
+        self.assertEqual(2, self.route_info_mock.route.call_count)
+
+    def test_refresh_ifindex_on_enodev(self):
+        """Recreated interfaces get their index looked up again."""
+        import errno
+
+        self.route_info_mock.route.side_effect = [
+            pyroute2_netlink_exceptions.NetlinkError(errno.ENODEV),
+            {"ok": 1},
+        ]
+        self.assertEqual({"ok": 1}, netlink.route_handler(_WG_CLIENT_ADD))
+        self.assertEqual(2, self.route_info_mock.link_lookup.call_count)
+        self.route_info_mock.close.assert_not_called()
+
+    def test_other_netlink_errors_are_raised(self):
+        """Request errors are not retried."""
+        self.route_info_mock.route.side_effect = (
+            pyroute2_netlink_exceptions.NetlinkError(17)
+        )
+        self.assertRaises(
+            pyroute2_netlink_exceptions.NetlinkError,
+            netlink.route_handler,
+            _WG_CLIENT_ADD,
+        )
+        self.assertEqual(1, self.route_info_mock.route.call_count)
 
 
 if __name__ == "__main__":
