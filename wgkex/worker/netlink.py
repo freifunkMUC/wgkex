@@ -1,12 +1,15 @@
 """Functions related to netlink manipulation for Wireguard, IPRoute and FDB on Linux."""
 
 # See https://docs.pyroute2.org/iproute.html for a documentation of the layout of netlink responses
+import errno
 import hashlib
 import re
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from textwrap import wrap
+from typing import Any
 
 import pyroute2
 import pyroute2.netlink
@@ -16,6 +19,91 @@ from wgkex.common import logger
 from wgkex.common.utils import mac2eui64
 
 _DEFAULT_PEER_TIMEOUT = 1800
+
+
+class _Handles:
+    """Long-lived netlink sockets and cached interface indexes of one thread.
+
+    Opening a WireGuard socket requires resolving the generic netlink family, which is about as
+    expensive as the operation itself. pyroute2 sockets are not shared between threads, so every
+    thread (queue processor, metrics, cleanup) gets its own handles.
+    """
+
+    def __init__(self) -> None:
+        self._ipr = None
+        self._wg = None
+        self.ifindex: dict[str, int] = {}
+
+    def iproute(self):
+        if self._ipr is None:
+            self._ipr = pyroute2.IPRoute()
+        return self._ipr
+
+    def wireguard(self):
+        if self._wg is None:
+            self._wg = pyroute2.WireGuard()
+        return self._wg
+
+    def link_index(self, ifname: str) -> int:
+        """Returns the (cached) interface index, raises IndexError if the interface does not exist."""
+        index = self.ifindex.get(ifname)
+        if index is None:
+            index = self.iproute().link_lookup(ifname=ifname)[0]
+            self.ifindex[ifname] = index
+        return index
+
+    def close(self) -> None:
+        for handle in (self._ipr, self._wg):
+            if handle is not None:
+                try:
+                    handle.close()
+                except Exception:  # noqa: BLE001, S110
+                    pass
+        self._ipr = None
+        self._wg = None
+        self.ifindex.clear()
+
+
+_thread_local = threading.local()
+
+# Errors caused by the request itself, a new socket would not help
+_REQUEST_ERRORS = (ValueError, TypeError, KeyError, IndexError)
+
+
+def _handles() -> _Handles:
+    handles = getattr(_thread_local, "handles", None)
+    if handles is None:
+        handles = _thread_local.handles = _Handles()
+    return handles
+
+
+def reset_handles() -> None:
+    """Closes the netlink sockets of the current thread, they are reopened on next use."""
+    _handles().close()
+
+
+def _netlink_call(op: Callable[[_Handles], Any]) -> Any:
+    """Runs a netlink operation with the long-lived handles of this thread.
+
+    Retries once with fresh interface indexes if an interface was recreated (ENODEV), and once
+    with new sockets on socket level errors.
+    """
+    handles = _handles()
+    try:
+        return op(handles)
+    except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
+        raise
+    except pyroute2.netlink.exceptions.NetlinkError as e:
+        if e.code != errno.ENODEV:
+            raise
+        logger.info("Interface vanished (%s), refreshing interface indexes", e)
+        handles.ifindex.clear()
+    except _REQUEST_ERRORS:
+        raise
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Netlink socket error (%s), reconnecting", e)
+        handles.close()
+    return op(handles)
 
 
 @dataclass
@@ -134,14 +222,15 @@ def bridge_fdb_handler(client: WireGuardClient) -> dict:
         A dict.
     """
     # TODO(ruairi): Splice this into an add_ and remove_ function.
-    with pyroute2.IPRoute() as ip:
-        return ip.fdb(
+    return _netlink_call(
+        lambda h: h.iproute().fdb(
             "del" if client.remove else "append",
-            ifindex=ip.link_lookup(ifname=client.vx_interface)[0],
+            ifindex=h.link_index(client.vx_interface),
             lladdr="00:00:00:00:00:00",
             dst=re.sub(r"/\d+$", "", client.lladdr),
-            NDA_IFINDEX=ip.link_lookup(ifname=client.wg_interface)[0],
+            NDA_IFINDEX=h.link_index(client.wg_interface),
         )
+    )
 
 
 def update_wireguard_peer(client: WireGuardClient) -> dict:
@@ -156,13 +245,12 @@ def update_wireguard_peer(client: WireGuardClient) -> dict:
         A dict.
     """
     # TODO(ruairi): Splice this into an add_ and remove_ function.
-    with pyroute2.WireGuard() as wg:
-        wg_peer = {
-            "public_key": client.public_key,
-            "allowed_ips": [client.lladdr],
-            "remove": client.remove,
-        }
-        return wg.set(client.wg_interface, peer=wg_peer)
+    wg_peer = {
+        "public_key": client.public_key,
+        "allowed_ips": [client.lladdr],
+        "remove": client.remove,
+    }
+    return _netlink_call(lambda h: h.wireguard().set(client.wg_interface, peer=wg_peer))
 
 
 def route_handler(client: WireGuardClient) -> dict:
@@ -178,12 +266,13 @@ def route_handler(client: WireGuardClient) -> dict:
     """
     # TODO(ruairi): Determine what Exceptions are raised by ip.route
     # TODO(ruairi): Splice this into an add_ and remove_ function.
-    with pyroute2.IPRoute() as ip:
-        return ip.route(
+    return _netlink_call(
+        lambda h: h.iproute().route(
             "del" if client.remove else "replace",
             dst=client.lladdr,
-            oif=ip.link_lookup(ifname=client.wg_interface)[0],
+            oif=h.link_index(client.wg_interface),
         )
+    )
 
 
 def find_stale_wireguard_clients(
@@ -202,20 +291,19 @@ def find_stale_wireguard_clients(
     logger.info(
         "Starting search for stale wireguard peers for interface %s.", wg_interface
     )
-    with pyroute2.WireGuard() as wg:
-        all_peers = []
-        msgs = wg.info(wg_interface)
-        for msg in msgs:
-            peers = msg.get_attr("WGDEVICE_A_PEERS")
-            if peers:
-                all_peers.extend(peers)
-        ret = [
-            peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
-            for peer in all_peers
-            if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
-            and hshk_time.get("tv_sec", 0) < stale_before
-        ]
-        return ret
+    msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
+    all_peers = []
+    for msg in msgs:
+        peers = msg.get_attr("WGDEVICE_A_PEERS")
+        if peers:
+            all_peers.extend(peers)
+    ret = [
+        peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
+        for peer in all_peers
+        if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
+        and hshk_time.get("tv_sec", 0) < stale_before
+    ]
+    return ret
 
 
 def get_connected_peers(wg_interface: str) -> list[str]:
@@ -232,31 +320,28 @@ def get_connected_peers(wg_interface: str) -> list[str]:
     """
     three_mins_ago_in_secs = int((datetime.now(UTC) - timedelta(minutes=3)).timestamp())
     logger.debug("Collecting connected wireguard peers for interface %s.", wg_interface)
-    with pyroute2.WireGuard() as wg:
-        try:
-            msgs = wg.info(wg_interface)
-        except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
-            # Normal behaviour, data has changed while it was being returned by netlink.
-            # Retry once, don't catch the exception this time, and let the caller handle it.
-            # See https://github.com/svinota/pyroute2/issues/874
-            msgs = wg.info(wg_interface)
+    try:
+        msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
+    except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
+        # Normal behaviour, data has changed while it was being returned by netlink.
+        # Retry once, don't catch the exception this time, and let the caller handle it.
+        # See https://github.com/svinota/pyroute2/issues/874
+        msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
 
-        connected = []
-        for msg in msgs:
-            peers = msg.get_attr("WGDEVICE_A_PEERS")
-            if peers:
-                for peer in peers:
-                    if (
-                        hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")
-                    ) is not None and hshk_time.get(
-                        "tv_sec", 0
-                    ) > three_mins_ago_in_secs:
-                        connected.append(
-                            peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
-                        )
+    connected = []
+    for msg in msgs:
+        peers = msg.get_attr("WGDEVICE_A_PEERS")
+        if peers:
+            for peer in peers:
+                if (
+                    hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")
+                ) is not None and hshk_time.get("tv_sec", 0) > three_mins_ago_in_secs:
+                    connected.append(
+                        peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
+                    )
 
-        logger.debug("Found %d connected peers on %s.", len(connected), wg_interface)
-        return connected
+    logger.debug("Found %d connected peers on %s.", len(connected), wg_interface)
+    return connected
 
 
 def get_connected_peers_count(wg_interface: str) -> int:
@@ -284,27 +369,27 @@ def get_device_data(wg_interface: str) -> tuple[int, str, str]:
         # The listening port, public key, and local IP address of the WireGuard interface.
     """
     logger.info("Reading data from interface %s.", wg_interface)
-    with pyroute2.WireGuard() as wg, pyroute2.IPRoute() as ipr:
-        msgs = wg.info(wg_interface)
-        if len(msgs) > 1:
-            logger.warning(
-                "Got multiple messages from netlink, expected one. Using only first one."
-            )
-        info: pyroute2.netlink.nla = msgs[0]
-
-        port = int(info.get_attr("WGDEVICE_A_LISTEN_PORT"))
-        public_key = info.get_attr("WGDEVICE_A_PUBLIC_KEY").decode("ascii")
-
-        # Get link address using IPRoute
-        ipr_link = ipr.link_lookup(ifname=wg_interface)[0]
-        msgs = ipr.get_addr(index=ipr_link)
-        link_address = msgs[0].get_attr("IFA_ADDRESS")
-
-        logger.debug(
-            "Interface data: port '%s', public key '%s', link address '%s",
-            port,
-            public_key,
-            link_address,
+    msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
+    if len(msgs) > 1:
+        logger.warning(
+            "Got multiple messages from netlink, expected one. Using only first one."
         )
+    info: pyroute2.netlink.nla = msgs[0]
 
-        return (port, public_key, link_address)
+    port = int(info.get_attr("WGDEVICE_A_LISTEN_PORT"))
+    public_key = info.get_attr("WGDEVICE_A_PUBLIC_KEY").decode("ascii")
+
+    # Get link address using IPRoute
+    msgs = _netlink_call(
+        lambda h: h.iproute().get_addr(index=h.link_index(wg_interface))
+    )
+    link_address = msgs[0].get_attr("IFA_ADDRESS")
+
+    logger.debug(
+        "Interface data: port '%s', public key '%s', link address '%s",
+        port,
+        public_key,
+        link_address,
+    )
+
+    return (port, public_key, link_address)

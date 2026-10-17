@@ -1,6 +1,6 @@
 import threading
-from queue import Queue
-from time import sleep
+import time
+from queue import Empty, Queue
 from typing import NamedTuple
 
 from wgkex.common import logger
@@ -52,6 +52,9 @@ class UniqueQueue(Queue):
 
 q = UniqueQueue()
 
+# Maximum number of queued operations processed at once
+_MAX_BATCH = 256
+
 
 def watch_queue() -> None:
     """Watches the queue for new messages."""
@@ -81,24 +84,53 @@ def process_item(item: PeerOp) -> None:
 
 
 def pick_from_queue() -> None:
-    """Picks a message from the queue and processes it."""
+    """Processes queued peer operations, forever."""
     logger.debug("Starting queue processor")
     while True:
-        if not q.empty():
-            logger.debug("Queue is not empty current size is %i", q.qsize())
-            item = q.get()
-            try:
-                process_item(item)
-            except Exception as e:  # noqa: BLE001
-                # Don't crash the queue processor
-                if getattr(item, "remove", False):
-                    # Expected when the peer was already removed, e.g. by rebalancing
-                    logger.info(
-                        "Could not remove %s, probably already gone: %s", item, e
-                    )
-                else:
-                    logger.error("Failed to process %s: %s", item, e)
-            finally:
-                q.task_done()
-        else:
-            sleep(1)
+        process_batch()
+
+
+def process_batch(max_items: int = _MAX_BATCH, timeout: float | None = None) -> int:
+    """Waits for queued peer operations and processes all of them (up to max_items).
+
+    Arguments:
+        max_items: Maximum number of operations to take from the queue at once.
+        timeout: Seconds to wait for the first operation, None waits forever.
+
+    Returns:
+        The number of processed operations.
+    """
+    try:
+        batch = [q.get(timeout=timeout)]
+    except Empty:
+        return 0
+    while len(batch) < max_items:
+        try:
+            batch.append(q.get_nowait())
+        except Empty:
+            break
+    start = time.monotonic()
+    # Sorted by interface, so the cached netlink state of an interface is reused back to back
+    for item in sorted(batch, key=_sort_key):
+        try:
+            process_item(item)
+        except Exception as e:  # noqa: BLE001
+            # Don't crash the queue processor
+            if getattr(item, "remove", False):
+                # Expected when the peer was already removed, e.g. by rebalancing
+                logger.info("Could not remove %s, probably already gone: %s", item, e)
+            else:
+                logger.error("Failed to process %s: %s", item, e)
+        finally:
+            q.task_done()
+    logger.debug(
+        "Processed %d peer operations in %.1f ms, %d queued",
+        len(batch),
+        (time.monotonic() - start) * 1000,
+        q.qsize(),
+    )
+    return len(batch)
+
+
+def _sort_key(item) -> tuple[str, str]:
+    return (str(item[0]), str(item[1]))

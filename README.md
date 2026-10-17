@@ -145,6 +145,10 @@ Each worker must run on a machine with a unique hostname, as it is used for sepa
 On SIGINT or SIGTERM (e.g. `docker stop`), the worker marks itself offline at the broker before exiting.
 Peers without a handshake for `peer_cleanup.stale_timeout` seconds (default 1800) are removed every
 `peer_cleanup.interval` seconds (default 300). Peers which were just added are kept until they had time to connect.
+Queued key operations are picked up immediately (blocking queue, processed in batches of up to 256), and each worker
+thread keeps its netlink sockets and interface indexes open instead of reconnecting per operation. Broken sockets are
+reopened and recreated interfaces looked up again automatically. WireGuard peers are still added one per netlink
+message, as pyroute2's `WireGuard.set()` accepts only a single peer.
 
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
