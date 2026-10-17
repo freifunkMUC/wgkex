@@ -56,6 +56,7 @@ NODES=50 ./run.sh local smoke
 sudo ./run.sh agent <CTL_IP>
 # then on the broker host (one IP per gateway; repeat an IP to stack gateways on one host)
 sudo ./run.sh controller "<GW1_IP> <GW2_IP> <GW3_IP> <GW4_IP>" <NODES_IP> stack
+# or in the background: ./run.sh controller-bg ... and poll ./run.sh status
 ```
 
 Agents listen on TCP 7700 and only accept the controller's IP. The controller pulls every host's

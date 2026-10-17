@@ -4,6 +4,7 @@
 #   run.sh local [PLAN]                         everything on this host
 #   run.sh agent CONTROLLER_IP                  gateway/node hosts: start the agent and return
 #   run.sh controller "GW_IPS" NODES_IP [PLAN]  broker host: run the plan on all hosts
+#   run.sh controller-bg ... / run.sh status    same in the background (systemd unit), poll status
 #
 # GW_IPS has one address per gateway (4 gateways: weights 30,30,20,20), e.g. "10.1.0.5 10.1.0.6
 # 10.1.0.7 10.1.0.8"; addresses may repeat to put several gateways on one host. PLAN is a file in
@@ -93,8 +94,31 @@ controller)
 	done
 	run_plan "$plan" "$ctl_ip" "$gw_ips" "$nodes_ip"
 	;;
+controller-bg)
+	# same as controller, but as a systemd unit that survives the calling shell; poll with "status"
+	mkdir -p "$RESULTS"
+	systemctl stop wgkex-e2e-ctl 2>/dev/null || true
+	systemctl reset-failed wgkex-e2e-ctl 2>/dev/null || true
+	rm -f "$RESULTS/exit_code"
+	systemd-run --unit wgkex-e2e-ctl --working-directory "$HERE" -E RESULTS_DIR="$RESULTS" \
+		${NODES:+-E NODES="$NODES"} -p StandardOutput=append:"$RESULTS/run.log" \
+		-p StandardError=append:"$RESULTS/run.log" \
+		bash -c '"$0" controller "$1" "$2" "$3"; echo $? >"$4/exit_code"' \
+		"$HERE/run.sh" "${1:?gateway host IPs}" "${2:?node host IP}" "${3:-}" "$RESULTS"
+	echo "controller started; poll with: $0 status"
+	;;
+status)
+	if [ -f "$RESULTS/exit_code" ]; then
+		echo "FINISHED exit_code=$(cat "$RESULTS/exit_code")"
+	elif systemctl is-active -q wgkex-e2e-ctl; then
+		echo "RUNNING"
+	else
+		echo "NOT RUNNING (no exit_code)"
+	fi
+	grep -a '^===\|MARK\|failed\|skipping' "$RESULTS/controller.log" 2>/dev/null | tail -5
+	;;
 *)
-	echo "usage: $0 local|agent|controller ..." >&2
+	echo "usage: $0 local|agent|controller|controller-bg|status ..." >&2
 	exit 2
 	;;
 esac
