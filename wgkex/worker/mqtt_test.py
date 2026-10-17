@@ -91,6 +91,83 @@ class MQTTTest(unittest.TestCase):
             ]
         )
 
+    @mock.patch.object(mqtt, "_start_announce_retry")
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_device_data")
+    def test_on_connect_not_ready_does_not_announce_online(
+        self, get_device_data_mock, config_mock, retry_mock
+    ):
+        """The worker is not marked online while a WireGuard interface is not ready."""
+        config = _get_config_mock()
+        config.external_name = None
+        config_mock.return_value = config
+        get_device_data_mock.side_effect = IndexError("no such interface")
+        client = mock.MagicMock()
+
+        mqtt.on_connect(client, None, None, 0)
+
+        hostname = socket.gethostname()
+        self.assertNotIn(
+            mock.call(f"wireguard-worker/{hostname}/status", 1, qos=1, retain=True),
+            client.publish.mock_calls,
+        )
+        retry_mock.assert_called_once_with(client)
+
+    @mock.patch.object(mqtt, "_ANNOUNCE_RETRY_INTERVAL", 0.01)
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_device_data")
+    def test_announce_retry_marks_online_when_ready(
+        self, get_device_data_mock, config_mock
+    ):
+        """The worker is marked online once its interfaces become ready."""
+        config = _get_config_mock()
+        config.external_name = None
+        config_mock.return_value = config
+        get_device_data_mock.side_effect = [
+            IndexError("no such interface"),
+            (51820, "456asdf=", "fe80::1"),
+        ]
+        client = mock.MagicMock()
+        client.is_connected.return_value = True
+        status_call = mock.call(
+            f"wireguard-worker/{socket.gethostname()}/status", 1, qos=1, retain=True
+        )
+
+        self.assertFalse(mqtt.publish_worker_data_and_status(client))
+        mqtt._start_announce_retry(client)
+
+        i = 0
+        while i < 50 and status_call not in client.publish.mock_calls:
+            i += 1
+            sleep(0.02)
+        self.assertIn(status_call, client.publish.mock_calls)
+
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_device_data")
+    def test_on_connect_subscribes_rebalance_when_enabled(
+        self, get_device_data_mock, config_mock
+    ):
+        """The rebalance topic is only subscribed if rebalancing is enabled."""
+        config = _get_config_mock()
+        config.external_name = None
+        config_mock.return_value = config
+        get_device_data_mock.return_value = (51820, "456asdf=", "fe80::1")
+        topic = f"wireguard-worker/{socket.gethostname()}/rebalance"
+
+        client = mock.MagicMock()
+        mqtt.on_connect(client, None, None, 0)
+        self.assertNotIn(mock.call(topic), client.subscribe.mock_calls)
+
+        with mock.patch.object(mqtt, "_rebalancer", mock.MagicMock()) as rebalancer:
+            client = mock.MagicMock()
+            mqtt.on_connect(client, None, None, 0)
+            self.assertIn(mock.call(topic), client.subscribe.mock_calls)
+
+            message = mock.MagicMock()
+            message.payload = b'{"excess": 1, "domains": []}'
+            mqtt.on_message_rebalance(client, None, message)
+            rebalancer.handle_instruction.assert_called_once_with(message.payload)
+
     @mock.patch.object(mqtt, "get_config")
     @mock.patch.object(mqtt, "get_connected_peers_count")
     def test_publish_metrics_loop_success(self, conn_peers_mock, config_mock):

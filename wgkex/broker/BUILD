@@ -32,7 +32,20 @@ py_binary(
         requirement("flask-mqtt"),
         requirement("waitress"),
         "//wgkex/config:config",
+        "//wgkex/common:logger",
         "//wgkex/common:mqtt",
+        "//wgkex/common:utils",
         ":metrics"
     ],
+)
+
+py_test(
+    name="app_test",
+    srcs=["app_test.py"],
+    deps=[
+        "//wgkex/broker:app",
+        "//wgkex/common:mqtt",
+        "//wgkex/config:config",
+    ],
+    size="small",
 )

@@ -23,6 +23,30 @@ workers:
     weight: 20
   gw07.in.ffmuc.net:
     weight: 20
+# [broker, worker] Optional: load balancing of peers across the workers. All values below are the defaults.
+load_balancing:
+  # [broker] Seconds a peer assigned via /api/v2 counts towards the load of the chosen worker
+  # until it shows up in the connected peers metric reported by that worker
+  pending_assignment_ttl: 300
+  # [broker] Minimum seconds an assignment is kept before a metric update may supersede it
+  pending_assignment_settle_time: 60
+  # Active rebalancing: overloaded workers slowly evict peers so they reconnect to underloaded workers,
+  # e.g. after a gateway reboot. Must be enabled on the broker and on the workers to have any effect.
+  rebalancing:
+    # [broker, worker]
+    enabled: false
+    # [broker, worker] Seconds between rebalancing rounds
+    interval: 60
+    # [broker] Relative excess over the weighted target that is tolerated without rebalancing
+    tolerance: 0.1
+    # [broker] Absolute excess (in peers) that is tolerated without rebalancing
+    min_excess_peers: 10
+    # [broker] Seconds the set of online workers must be unchanged before rebalancing starts
+    stable_time: 600
+    # [worker] Maximum share of the connected peers evicted per interval (at least 1 peer)
+    max_evictions_ratio: 0.01
+    # [worker] Seconds before the same peer may be evicted again
+    eviction_cooldown: 3600
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
 # [broker, worker] MQTT connection informations

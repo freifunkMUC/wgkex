@@ -42,6 +42,7 @@ py_library(
        "//wgkex/config:config",
        ":msg_queue",
        ":netlink",
+       ":rebalance",
     ],
 )
 
@@ -84,5 +85,28 @@ py_library(
     visibility = ["//visibility:public"],
     deps = [
        "//wgkex/common:logger",
+       ":netlink",
+       ":rebalance",
     ],
+)
+
+py_library(
+    name = "rebalance",
+    srcs = ["rebalance.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+       "//wgkex/config:config",
+       ":netlink",
+    ],
+)
+
+py_test(
+    name = "rebalance_test",
+    srcs = ["rebalance_test.py"],
+    deps = [
+       "//wgkex/config:config",
+       "//wgkex/worker:rebalance",
+    ],
+    size="small",
 )

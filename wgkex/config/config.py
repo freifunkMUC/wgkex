@@ -71,6 +71,78 @@ class Workers:
 
 
 @dataclasses.dataclass
+class Rebalancing:
+    """A representation of the 'load_balancing.rebalancing' key in the configuration file.
+
+    Active rebalancing makes overloaded workers drop a small number of connected peers per interval.
+    Gluon nodes notice the lost tunnel and redo the key exchange, which lets the broker assign them
+    to an underloaded worker. Both broker and worker need to have it enabled.
+
+    Attributes:
+        enabled: [broker, worker] Whether active rebalancing is enabled. Defaults to False.
+        interval: [broker, worker] Seconds between rebalancing rounds.
+        tolerance: [broker] Relative deviation from a worker's weighted target that is tolerated.
+        min_excess_peers: [broker] Absolute number of excess peers that is always tolerated.
+        stable_time: [broker] Seconds without any worker going online/offline before rebalancing.
+        max_evictions_ratio: [worker] Max share of connected peers evicted per interval (at least 1).
+        eviction_cooldown: [worker] Seconds during which a peer is not evicted again.
+    """
+
+    enabled: bool = False
+    interval: int = 60
+    tolerance: float = 0.1
+    min_excess_peers: int = 10
+    stable_time: int = 600
+    max_evictions_ratio: float = 0.01
+    eviction_cooldown: int = 3600
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Rebalancing":
+        return cls(
+            enabled=bool(cfg.get("enabled", cls.enabled)),
+            interval=int(cfg.get("interval", cls.interval)),
+            tolerance=float(cfg.get("tolerance", cls.tolerance)),
+            min_excess_peers=int(cfg.get("min_excess_peers", cls.min_excess_peers)),
+            stable_time=int(cfg.get("stable_time", cls.stable_time)),
+            max_evictions_ratio=float(
+                cfg.get("max_evictions_ratio", cls.max_evictions_ratio)
+            ),
+            eviction_cooldown=int(cfg.get("eviction_cooldown", cls.eviction_cooldown)),
+        )
+
+
+@dataclasses.dataclass
+class LoadBalancing:
+    """A representation of the 'load_balancing' key in the configuration file.
+
+    Attributes:
+        pending_assignment_ttl: [broker] Seconds a peer assigned by the v2 API counts towards the
+            load of its worker if the worker metrics do not reflect it yet.
+        pending_assignment_settle_time: [broker] Seconds after which a pending assignment is
+            assumed to be included in newly received worker metrics.
+        rebalancing: Active rebalancing configuration.
+    """
+
+    pending_assignment_ttl: int = 300
+    pending_assignment_settle_time: int = 60
+    rebalancing: Rebalancing = dataclasses.field(default_factory=Rebalancing)
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "LoadBalancing":
+        return cls(
+            pending_assignment_ttl=int(
+                cfg.get("pending_assignment_ttl", cls.pending_assignment_ttl)
+            ),
+            pending_assignment_settle_time=int(
+                cfg.get(
+                    "pending_assignment_settle_time", cls.pending_assignment_settle_time
+                )
+            ),
+            rebalancing=Rebalancing.from_dict(cfg.get("rebalancing") or {}),
+        )
+
+
+@dataclasses.dataclass
 class BrokerListen:
     """A representation of the 'broker_listen' key in Configuration file.
 
@@ -140,6 +212,7 @@ class Config:
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        load_balancing: Load balancing and rebalancing configuration.
     """
 
     raw: dict[str, Any]
@@ -149,6 +222,7 @@ class Config:
     mqtt: MQTT
     workers: Workers
     external_name: str | None
+    load_balancing: LoadBalancing = dataclasses.field(default_factory=LoadBalancing)
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
@@ -169,6 +243,7 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            load_balancing=LoadBalancing.from_dict(cfg.get("load_balancing") or {}),
         )
 
     def get(self, key: str) -> Any:

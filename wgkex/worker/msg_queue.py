@@ -4,6 +4,7 @@ from time import sleep
 
 from wgkex.common import logger
 from wgkex.worker.netlink import WireGuardClient, link_handler
+from wgkex.worker.rebalance import peer_add_tracker
 
 
 class UniqueQueue(Queue):
@@ -47,6 +48,7 @@ def pick_from_queue() -> None:
                 f"Processing queue for key {client.public_key} on domain {domain} with lladdr {client.lladdr}"
             )
             logger.debug(link_handler(client))
+            peer_add_tracker.note_added(client.wg_interface, client.public_key)
             q.task_done()
         else:
             logger.debug("Queue is empty")

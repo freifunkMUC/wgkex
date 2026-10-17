@@ -227,6 +227,25 @@ class NetlinkTest(unittest.TestCase):
         ret = netlink.get_connected_peers_count("wg-welt")
         self.assertEqual(ret, 3)
 
+    def test_get_connected_peers_success(self):
+        """Tests getting the public keys of connected peers only."""
+        now = datetime.now(UTC)
+        peers = [
+            _get_peer_mock("CONNECTED", int((now - timedelta(seconds=5)).timestamp())),
+            _get_peer_mock("STALE", int((now - timedelta(minutes=10)).timestamp())),
+        ]
+
+        def msg_get_attr(attr: str):
+            if attr == "WGDEVICE_A_PEERS":
+                return peers
+
+        msg_mock = mock.Mock()
+        msg_mock.get_attr.side_effect = msg_get_attr
+        wg_info_mock = WireGuard().__enter__.return_value
+        wg_info_mock.info.return_value = [msg_mock]
+
+        self.assertListEqual(["CONNECTED"], netlink.get_connected_peers("wg-welt"))
+
     @mock.patch("pyroute2.WireGuard")
     def test_get_connected_peers_count_NetlinkDumpInterrupted(self, pyroute2_wg_mock):
         """Tests getting the correct number of connected peers for an interface."""

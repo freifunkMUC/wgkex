@@ -210,6 +210,48 @@ def find_stale_wireguard_clients(wg_interface: str) -> list:
         return ret
 
 
+def get_connected_peers(wg_interface: str) -> list[str]:
+    """Fetches and returns the public keys of connected peers, i.e. which had recent handshakes.
+
+    Arguments:
+        wg_interface: The WireGuard interface to query.
+
+    Returns:
+        The public keys of peers which have recently seen a handshake.
+
+    Raises:
+        NetlinkDumpInterrupted if the interface data has changed while it was being returned by netlink
+    """
+    three_mins_ago_in_secs = int((datetime.now(UTC) - timedelta(minutes=3)).timestamp())
+    logger.info("Collecting connected wireguard peers for interface %s.", wg_interface)
+    with pyroute2.WireGuard() as wg:
+        try:
+            msgs = wg.info(wg_interface)
+        except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
+            # Normal behaviour, data has changed while it was being returned by netlink.
+            # Retry once, don't catch the exception this time, and let the caller handle it.
+            # See https://github.com/svinota/pyroute2/issues/874
+            msgs = wg.info(wg_interface)
+
+        logger.debug("Got infos for connected peers: %s.", msgs)
+        connected = []
+        for msg in msgs:
+            peers = msg.get_attr("WGDEVICE_A_PEERS")
+            logger.debug("Got clients: %s.", peers)
+            if peers:
+                for peer in peers:
+                    if (
+                        hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")
+                    ) is not None and hshk_time.get(
+                        "tv_sec", 0
+                    ) > three_mins_ago_in_secs:
+                        connected.append(
+                            peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
+                        )
+
+        return connected
+
+
 def get_connected_peers_count(wg_interface: str) -> int:
     """Fetches and returns the number of connected peers, i.e. which had recent handshakes.
 
@@ -222,32 +264,7 @@ def get_connected_peers_count(wg_interface: str) -> int:
     Raises:
         NetlinkDumpInterrupted if the interface data has changed while it was being returned by netlink
     """
-    three_mins_ago_in_secs = int((datetime.now(UTC) - timedelta(minutes=3)).timestamp())
-    logger.info("Counting connected wireguard peers for interface %s.", wg_interface)
-    with pyroute2.WireGuard() as wg:
-        try:
-            msgs = wg.info(wg_interface)
-        except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
-            # Normal behaviour, data has changed while it was being returned by netlink.
-            # Retry once, don't catch the exception this time, and let the caller handle it.
-            # See https://github.com/svinota/pyroute2/issues/874
-            msgs = wg.info(wg_interface)
-
-        logger.debug("Got infos for connected peers: %s.", msgs)
-        count = 0
-        for msg in msgs:
-            peers = msg.get_attr("WGDEVICE_A_PEERS")
-            logger.debug("Got clients: %s.", peers)
-            if peers:
-                for peer in peers:
-                    if (
-                        hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")
-                    ) is not None and hshk_time.get(
-                        "tv_sec", 0
-                    ) > three_mins_ago_in_secs:
-                        count += 1
-
-        return count
+    return len(get_connected_peers(wg_interface))
 
 
 def get_device_data(wg_interface: str) -> tuple[int, str, str]:

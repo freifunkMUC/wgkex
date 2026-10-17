@@ -1,7 +1,10 @@
+import random
+import threading
 import unittest
 from unittest import mock
 
 from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.common.mqtt import CONNECTED_PEERS_METRIC
 from wgkex.config import config
 
 
@@ -80,7 +83,7 @@ class TestMetrics(unittest.TestCase):
 
         worker, diff, connected = worker_metrics.get_best_worker("d")
         self.assertEqual(worker, "2")
-        self.assertEqual(diff, -20)  # 19-(1*(20+19))
+        self.assertEqual(diff, -0.5)  # 19-(0.5*(20+19))
         self.assertEqual(connected, 19)
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
@@ -100,7 +103,7 @@ class TestMetrics(unittest.TestCase):
 
         worker, diff, connected = worker_metrics.get_best_worker("domain1")
         self.assertEqual(worker, "1")
-        self.assertEqual(diff, -40)  # 30-(1*(25+5+20+20))
+        self.assertEqual(diff, -5)  # 30-(0.5*(25+5+20+20))
         self.assertEqual(connected, 30)
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
@@ -139,6 +142,279 @@ class TestMetrics(unittest.TestCase):
 
         worker, _, _ = worker_metrics.get_best_worker("d")
         self.assertIsNone(worker)
+
+
+class FakeClock:
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class TestLoadBalancing(unittest.TestCase):
+    def setUp(self) -> None:
+        patcher = mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+        self.config_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.set_weights({})
+        self.clock = FakeClock()
+
+    def set_weights(self, weights: dict) -> None:
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(weights)
+        self.config_mock.return_value = test_config
+
+    def collection(self, seed: int = 0, **kwargs) -> WorkerMetricsCollection:
+        return WorkerMetricsCollection(
+            clock=self.clock, rng=random.Random(seed), **kwargs
+        )
+
+    @staticmethod
+    def add_worker(wm, worker, peers, domains=("d",)):
+        for domain in domains:
+            wm.update(worker, domain, CONNECTED_PEERS_METRIC, peers)
+        wm.set_online(worker)
+
+    def test_pending_assignments_count_towards_load(self):
+        """Pending assignments increase the effective load until reflected by metrics."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 10)
+        wm.record_assignment("1", "d", "key1")
+        wm.record_assignment("1", "d", "key2")
+        self.assertEqual(wm.get_effective_peer_count("1"), 12)
+
+    def test_pending_assignment_reassigned(self):
+        """A re-keying peer is only pending on the worker it was last assigned to."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 0)
+        self.add_worker(wm, "2", 0)
+        wm.record_assignment("1", "d", "key")
+        wm.record_assignment("2", "d", "key")
+        self.assertEqual(wm.get_pending_count("1"), 0)
+        self.assertEqual(wm.get_pending_count("2"), 1)
+
+    def test_metric_update_keeps_recent_pending(self):
+        """A metric update does not erase assignments younger than the settle time."""
+        wm = self.collection(pending_settle_time=60)
+        self.add_worker(wm, "1", 10)
+        wm.record_assignment("1", "d", "key")
+        self.clock.now += 30
+        wm.update("1", "d", CONNECTED_PEERS_METRIC, 10)
+        self.assertEqual(wm.get_effective_peer_count("1"), 11)
+
+    def test_metric_update_drops_settled_pending(self):
+        """A metric update drops assignments old enough to be included in it."""
+        wm = self.collection(pending_settle_time=60)
+        self.add_worker(wm, "1", 10)
+        wm.record_assignment("1", "d", "key")
+        self.clock.now += 61
+        wm.update("1", "d", CONNECTED_PEERS_METRIC, 11)
+        self.assertEqual(wm.get_effective_peer_count("1"), 11)
+
+    def test_metric_update_other_domain_keeps_pending(self):
+        """Metrics of another domain don't affect pending assignments."""
+        wm = self.collection(pending_settle_time=60)
+        self.add_worker(wm, "1", 10, domains=("d", "e"))
+        wm.record_assignment("1", "d", "key")
+        self.clock.now += 61
+        wm.update("1", "e", CONNECTED_PEERS_METRIC, 10)
+        self.assertEqual(wm.get_pending_count("1"), 1)
+
+    def test_pending_expires_after_ttl(self):
+        """Pending assignments expire after the TTL even without metric updates."""
+        wm = self.collection(pending_ttl=300)
+        self.add_worker(wm, "1", 10)
+        wm.record_assignment("1", "d", "key")
+        self.clock.now += 301
+        self.assertEqual(wm.get_effective_peer_count("1"), 10)
+
+    def test_offline_worker_drops_pending(self):
+        """Pending assignments of a worker going offline are dropped."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 10)
+        wm.record_assignment("1", "d", "key")
+        wm.set_offline("1")
+        self.assertEqual(wm.get_pending_count("1"), 0)
+
+    def test_burst_is_spread_with_pending_assignments(self):
+        """A burst of key exchanges between metric updates (e.g. after a gateway went down)
+        is spread over the remaining workers instead of all landing on one."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 100)
+        self.add_worker(wm, "2", 100)
+        self.add_worker(wm, "3", 100)
+        counts = {"1": 0, "2": 0, "3": 0}
+        for i in range(300):
+            worker, _, _ = wm.get_best_worker("d")
+            wm.record_assignment(worker, "d", f"key{i}")
+            counts[worker] += 1
+        for count in counts.values():
+            self.assertAlmostEqual(count, 100, delta=5)
+
+    def test_burst_respects_weights(self):
+        """Assignments follow the configured worker weights."""
+        self.set_weights({"1": {"weight": 3}, "2": {"weight": 1}})
+        wm = self.collection()
+        self.add_worker(wm, "1", 0)
+        self.add_worker(wm, "2", 0)
+        counts = {"1": 0, "2": 0}
+        for i in range(400):
+            worker, _, _ = wm.get_best_worker("d")
+            wm.record_assignment(worker, "d", f"key{i}")
+            counts[worker] += 1
+        self.assertAlmostEqual(counts["1"], 300, delta=5)
+        self.assertAlmostEqual(counts["2"], 100, delta=5)
+
+    def test_rebooted_worker_is_filled_first(self):
+        """A worker that comes back empty gets new clients until it reaches its target."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 0)
+        self.add_worker(wm, "2", 500)
+        self.add_worker(wm, "3", 500)
+        for i in range(100):
+            worker, _, _ = wm.get_best_worker("d")
+            self.assertEqual(worker, "1")
+            wm.record_assignment(worker, "d", f"key{i}")
+
+    def test_selection_is_not_deterministic_when_balanced(self):
+        """Balanced workers are chosen randomly, so multiple brokers don't herd onto one worker."""
+        chosen = set()
+        for seed in range(20):
+            wm = self.collection(seed=seed)
+            self.add_worker(wm, "1", 50)
+            self.add_worker(wm, "2", 50)
+            chosen.add(wm.get_best_worker("d")[0])
+        self.assertSetEqual(chosen, {"1", "2"})
+
+    def test_get_best_worker_only_online_for_domain(self):
+        """Workers offline for the domain are never chosen."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 1000)
+        self.add_worker(wm, "2", 0, domains=("other",))
+        wm.update("2", "d", CONNECTED_PEERS_METRIC, -1)
+        for seed in range(20):
+            wm.rng = random.Random(seed)
+            self.assertEqual(wm.get_best_worker("d")[0], "1")
+
+    def test_get_best_worker_eligible(self):
+        """Workers rejected by the eligible filter are never chosen."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 1000)
+        self.add_worker(wm, "2", 0)
+        worker, _, _ = wm.get_best_worker("d", eligible=lambda w: w != "2")
+        self.assertEqual(worker, "1")
+        worker, _, _ = wm.get_best_worker("d", eligible=lambda w: False)
+        self.assertIsNone(worker)
+
+    def test_concurrent_assignments_are_thread_safe(self):
+        """Concurrent selection, assignment and metric updates don't raise or lose assignments."""
+        wm = WorkerMetricsCollection(pending_settle_time=1000)
+        for w in ("1", "2", "3"):
+            self.add_worker(wm, w, 0)
+        errors = []
+
+        def assign(n):
+            try:
+                for i in range(200):
+                    worker, _, _ = wm.get_best_worker("d")
+                    wm.record_assignment(worker, "d", f"key{n}-{i}")
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        def update_metrics():
+            try:
+                for _ in range(200):
+                    for w in ("1", "2", "3"):
+                        wm.update(w, "d", CONNECTED_PEERS_METRIC, 0)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=assign, args=(n,)) for n in range(4)]
+        threads.append(threading.Thread(target=update_metrics))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertListEqual(errors, [])
+        self.assertEqual(sum(wm.get_pending_count(w) for w in ("1", "2", "3")), 800)
+
+    def hints(self, wm, **kwargs):
+        args = {
+            "domains": ["d"],
+            "tolerance": 0.1,
+            "min_excess": 10,
+            "stable_time": 600,
+        }
+        args.update(kwargs)
+        return wm.compute_rebalance_hints(**args)
+
+    def test_rebalance_hints_for_overloaded_worker(self):
+        """An overloaded worker gets a hint with its excess over the weighted target."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 100)
+        self.add_worker(wm, "2", 400)
+        self.add_worker(wm, "3", 700)
+        self.clock.now += 600
+        hints = self.hints(wm)
+        self.assertSetEqual(set(hints), {"3"})
+        self.assertEqual(hints["3"].excess, 300)
+        self.assertListEqual(hints["3"].domains, ["d"])
+        self.assertDictEqual(hints["3"].to_dict(), {"excess": 300, "domains": ["d"]})
+
+    def test_rebalance_hints_respect_weights(self):
+        """Weighted targets are used for the excess computation."""
+        self.set_weights({"1": {"weight": 3}, "2": {"weight": 1}})
+        wm = self.collection()
+        self.add_worker(wm, "1", 300)
+        self.add_worker(wm, "2", 100)
+        self.clock.now += 600
+        self.assertDictEqual(self.hints(wm), {})
+
+    def test_rebalance_hints_within_tolerance(self):
+        """No hints are produced when the excess is within the tolerance."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 95)
+        self.add_worker(wm, "2", 105)
+        self.clock.now += 600
+        self.assertDictEqual(self.hints(wm), {})
+
+    def test_rebalance_hints_wait_for_stable_fleet(self):
+        """No hints are produced shortly after a worker came online (hysteresis)."""
+        wm = self.collection()
+        self.add_worker(wm, "2", 600)
+        self.clock.now += 3600
+        self.add_worker(wm, "1", 0)
+        self.clock.now += 599
+        self.assertDictEqual(self.hints(wm), {})
+        self.clock.now += 1
+        self.assertSetEqual(set(self.hints(wm)), {"2"})
+
+    def test_rebalance_hints_wait_after_broker_start(self):
+        """No hints are produced right after the broker started."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 0)
+        self.add_worker(wm, "2", 600)
+        self.assertDictEqual(self.hints(wm), {})
+
+    def test_rebalance_hints_only_domains_with_underloaded_worker(self):
+        """Hints only allow evictions in domains where an underloaded worker is online."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 0, domains=("a",))
+        self.add_worker(wm, "2", 300, domains=("a", "b"))
+        self.clock.now += 600
+        hints = self.hints(wm, domains=["a", "b"])
+        self.assertListEqual(hints["2"].domains, ["a"])
+
+    def test_rebalance_hints_include_pending(self):
+        """Pending assignments count towards the load for rebalancing."""
+        wm = self.collection(pending_ttl=10000)
+        self.add_worker(wm, "1", 100)
+        self.add_worker(wm, "2", 100)
+        self.clock.now += 600
+        for i in range(100):
+            wm.record_assignment("2", "d", f"key{i}")
+        self.assertEqual(self.hints(wm)["2"].excess, 50)
 
 
 if __name__ == "__main__":

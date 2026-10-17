@@ -45,6 +45,40 @@ class TestConfig(unittest.TestCase):
             config.get_config()
             exit_mock.assert_called_with(2)
 
+    def test_load_balancing_defaults(self):
+        """Load balancing settings default to rebalancing disabled."""
+        cfg = config.Config.from_dict(yaml.safe_load(_VALID_CFG))
+        self.assertEqual(cfg.load_balancing, config.LoadBalancing())
+        self.assertFalse(cfg.load_balancing.rebalancing.enabled)
+        self.assertEqual(cfg.load_balancing.pending_assignment_ttl, 300)
+
+    def test_load_balancing_from_config(self):
+        """Load balancing settings are read from the configuration file."""
+        raw = yaml.safe_load(
+            _VALID_CFG
+            + "load_balancing:\n  pending_assignment_ttl: 120\n  pending_assignment_settle_time: 30\n"
+            "  rebalancing:\n    enabled: true\n    interval: 30\n    tolerance: 0.2\n"
+            "    min_excess_peers: 5\n    stable_time: 300\n    max_evictions_ratio: 0.05\n"
+            "    eviction_cooldown: 600\n"
+        )
+        lb = config.Config.from_dict(raw).load_balancing
+        self.assertEqual(
+            lb,
+            config.LoadBalancing(
+                pending_assignment_ttl=120,
+                pending_assignment_settle_time=30,
+                rebalancing=config.Rebalancing(
+                    enabled=True,
+                    interval=30,
+                    tolerance=0.2,
+                    min_excess_peers=5,
+                    stable_time=300,
+                    max_evictions_ratio=0.05,
+                    eviction_cooldown=600,
+                ),
+            ),
+        )
+
     def test_fetch_config_from_disk_success(self):
         """Test fetch file from disk."""
         mock_open = mock.mock_open(read_data=_VALID_CFG)
