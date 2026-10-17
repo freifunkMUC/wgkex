@@ -124,7 +124,9 @@ recently (re-)connected ones and never evicting the same peer again within `evic
 notice the broken connection and request a new gateway via the API within a minute or two.
 See [wgkex.yaml.example](wgkex.yaml.example) for all options.
 
-Workers only announce themselves as online once all their WireGuard interfaces are ready.
+Workers only announce themselves as online once all their WireGuard interfaces are ready. A worker is treated as offline
+for a domain if the broker did not receive a connected peers metric for it within `load_balancing.metrics_max_age`
+seconds (default 180, i.e. three metrics intervals). Workers missing from the `workers` config get the average weight.
 
 ### Backend worker
 
@@ -133,6 +135,7 @@ validation task on the key, then injects those keys into a WireGuard instance(Wh
 It reports metrics like number of connected peers and instance data like local address, WG listening port and
 external domain name (configured in config.yml) back to the broker.
 Each worker must run on a machine with a unique hostname, as it is used for separation of metrics.
+On SIGINT or SIGTERM (e.g. `docker stop`), the worker marks itself offline at the broker before exiting.
 
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
@@ -149,6 +152,9 @@ For further information, please see this [presentation on the architecture](http
 
 The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
 can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
+
+The log level is set with `log_level` (default `INFO`), a full Python logging configuration can be given in
+`logging_config`.
 
 ## Development
 

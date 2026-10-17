@@ -51,5 +51,4 @@ def pick_from_queue() -> None:
             peer_add_tracker.note_added(client.wg_interface, client.public_key)
             q.task_done()
         else:
-            logger.debug("Queue is empty")
             sleep(1)

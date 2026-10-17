@@ -64,10 +64,30 @@ class Workers:
         return self._workers.get(worker)
 
     def relative_worker_weight(self, worker_name: str) -> float:
+        """Returns the share of all peers this worker should get according to the configured weights.
+
+        Workers missing from the configuration get the average configured weight.
+        """
         worker = self.get(worker_name)
         if worker is None:
-            return 1 / self.total_weight
+            if worker_name not in _warned_unknown_workers:
+                _warned_unknown_workers.add(worker_name)
+                logging.warning(  # noqa: LOG015
+                    "Worker %s is not in the workers configuration, using the average weight",
+                    worker_name,
+                )
+            return self.average_weight() / self.total_weight
         return worker.weight / self.total_weight
+
+    def average_weight(self) -> float:
+        """Returns the average weight of the configured workers, 1 if none are configured."""
+        if not self._workers:
+            return 1
+        return sum(w.weight for w in self._workers.values()) / len(self._workers)
+
+
+# Workers not in the configuration we already warned about
+_warned_unknown_workers: set[str] = set()
 
 
 @dataclasses.dataclass
@@ -120,11 +140,14 @@ class LoadBalancing:
             load of its worker if the worker metrics do not reflect it yet.
         pending_assignment_settle_time: [broker] Seconds after which a pending assignment is
             assumed to be included in newly received worker metrics.
+        metrics_max_age: [broker] Seconds after which a worker is treated as offline for a domain
+            if no connected peers metric was received for it. 0 disables the check.
         rebalancing: Active rebalancing configuration.
     """
 
     pending_assignment_ttl: int = 300
     pending_assignment_settle_time: int = 60
+    metrics_max_age: int = 180
     rebalancing: Rebalancing = dataclasses.field(default_factory=Rebalancing)
 
     @classmethod
@@ -138,6 +161,7 @@ class LoadBalancing:
                     "pending_assignment_settle_time", cls.pending_assignment_settle_time
                 )
             ),
+            metrics_max_age=int(cfg.get("metrics_max_age", cls.metrics_max_age)),
             rebalancing=Rebalancing.from_dict(cfg.get("rebalancing") or {}),
         )
 

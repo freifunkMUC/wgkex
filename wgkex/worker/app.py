@@ -44,8 +44,9 @@ def flush_workers(domain: str) -> None:
             logger.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
         except Exception as e:  # noqa: BLE001
             # Don't crash the thread when an exception is encountered
-            logger.error(f"Exception during cleanup task for {domain}:")
-            logger.error(e)
+            logger.error(
+                "Exception during cleanup task for %s: %s", domain, e, exc_info=True
+            )
 
 
 def clean_up_worker() -> None:
@@ -79,9 +80,9 @@ def clean_up_worker() -> None:
                 thread.start()
     if cleanup_counter < len(domains):
         logger.error(
-            "Not every domain got cleaned. Check domains for missing prefixes",
-            repr(domains),
-            repr(prefixes),
+            "Not every domain got cleaned. Check domains for missing prefixes: domains %r, prefixes %r",
+            domains,
+            prefixes,
         )
 
 
@@ -126,7 +127,9 @@ def main():
         time.sleep(2)
         sys.exit()
 
+    # SIGTERM is sent by e.g. docker stop and systemd
     signal.signal(signal.SIGINT, on_exit)
+    signal.signal(signal.SIGTERM, on_exit)
 
     domains = config.get_config().domains
     prefixes = config.get_config().domain_prefixes

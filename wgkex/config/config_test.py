@@ -79,6 +79,13 @@ class TestConfig(unittest.TestCase):
             ),
         )
 
+    def test_relative_worker_weight_unknown_worker(self):
+        """Workers missing from the config get the average weight."""
+        workers = config.Workers.from_dict({"a": {"weight": 10}, "b": {"weight": 30}})
+        self.assertEqual(workers.relative_worker_weight("a"), 0.25)
+        self.assertEqual(workers.relative_worker_weight("unknown"), 0.5)
+        self.assertEqual(config.Workers.from_dict({}).relative_worker_weight("x"), 1)
+
     def test_fetch_config_from_disk_success(self):
         """Test fetch file from disk."""
         mock_open = mock.mock_open(read_data=_VALID_CFG)

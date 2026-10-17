@@ -7,7 +7,6 @@ py_library(
     srcs = ["utils.py"],
     visibility = ["//visibility:public"],
     deps = [
-       requirement("ipaddress"),
     ],
 )
 
@@ -17,7 +16,6 @@ py_test(
     deps = [
        "//wgkex/common:utils",
        "//wgkex/config:config",
-       requirement("mock"),
     ],
     size="small",
 )
@@ -25,7 +23,20 @@ py_test(
 py_library(
     name = "logger",
     srcs = ["logger.py"],
-    visibility = ["//visibility:public"]
+    visibility = ["//visibility:public"],
+    deps = [
+       requirement("PyYAML"),
+       "//wgkex/config:config",
+    ],
+)
+
+py_test(
+    name = "logger_test",
+    srcs = ["logger_test.py"],
+    deps = [
+       "//wgkex/common:logger",
+    ],
+    size="small",
 )
 
 py_library(

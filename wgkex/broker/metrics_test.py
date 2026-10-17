@@ -176,6 +176,52 @@ class TestLoadBalancing(unittest.TestCase):
             wm.update(worker, domain, CONNECTED_PEERS_METRIC, peers)
         wm.set_online(worker)
 
+    def test_stale_metrics_mark_domain_offline(self):
+        """A worker without a recent connected peers metric is offline for that domain."""
+        wm = self.collection(metrics_max_age=180)
+        self.add_worker(wm, "w1", 10, domains=("d", "e"))
+        self.clock.now += 100
+        wm.update("w1", "e", CONNECTED_PEERS_METRIC, 10)
+        self.clock.now += 100
+        self.assertEqual(wm.get_best_worker("d")[0], None)
+        self.assertEqual(wm.get_best_worker("e")[0], "w1")
+        # Fresh metrics bring the domain back
+        wm.update("w1", "d", CONNECTED_PEERS_METRIC, 10)
+        self.assertEqual(wm.get_best_worker("d")[0], "w1")
+
+    def test_stale_metrics_disabled(self):
+        """With metrics_max_age 0, metrics never become stale."""
+        wm = self.collection(metrics_max_age=0)
+        self.add_worker(wm, "w1", 10)
+        self.clock.now += 100000
+        self.assertEqual(wm.get_best_worker("d")[0], "w1")
+
+    def test_stale_metrics_change_topology(self):
+        """A worker going stale counts as topology change for rebalancing."""
+        wm = self.collection(metrics_max_age=180)
+        self.add_worker(wm, "w1", 10)
+        self.add_worker(wm, "w2", 10, domains=("d", "e"))
+        self.clock.now += 120
+        wm.update("w2", "d", CONNECTED_PEERS_METRIC, 10)
+        self.assertTrue(wm.is_topology_stable(100))
+        self.clock.now += 100
+        # w1/d and w2/e went stale
+        self.assertFalse(wm.is_topology_stable(1))
+
+    def test_unknown_worker_gets_average_weight(self):
+        """Workers missing from the config get the average configured weight."""
+        self.set_weights({"w1": {"weight": 10}, "w2": {"weight": 30}})
+        wm = self.collection()
+        self.add_worker(wm, "w1", 0)
+        self.add_worker(wm, "w2", 0)
+        self.add_worker(wm, "w3", 0)
+        for i in range(400):
+            worker = wm.get_best_worker("d")[0]
+            wm.record_assignment(worker, "d", f"key{i}")
+        # Weights 10:30:20
+        self.assertAlmostEqual(wm.get_effective_peer_count("w1"), 400 / 6, delta=2)
+        self.assertAlmostEqual(wm.get_effective_peer_count("w3"), 400 // 3, delta=2)
+
     def test_pending_assignments_count_towards_load(self):
         """Pending assignments increase the effective load until reflected by metrics."""
         wm = self.collection()

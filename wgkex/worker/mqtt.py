@@ -149,7 +149,7 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         # reconnect then subscriptions will be renewed.
         topic = f"wireguard/{domain}/+"
         logger.info(f"Subscribing to topic {topic}")
-        client.subscribe(topic)
+        client.subscribe(topic, qos=1)
 
     if _rebalancer is not None:
         client.subscribe(TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME))
