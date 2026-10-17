@@ -3,8 +3,7 @@
 import threading
 import unittest
 from time import sleep
-
-import mock
+from unittest import mock
 
 from wgkex.worker import app
 

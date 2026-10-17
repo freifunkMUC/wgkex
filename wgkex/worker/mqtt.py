@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Process messages from MQTT."""
 
 # TODO(ruairi): Deprecate __init__.py from config, as it masks namespace.
@@ -6,7 +5,7 @@ import json
 import re
 import socket
 import threading
-from typing import Any, Optional
+from typing import Any
 
 import paho.mqtt.client as mqtt
 import pyroute2.netlink.exceptions
@@ -164,7 +163,6 @@ def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) ->
         message: The MQTT message.
     """
     logger.info("Got unhandled message on %s from MQTT", message.topic)
-    return
 
 
 def on_message_wireguard(
@@ -194,7 +192,7 @@ def on_message_wireguard(
     domain = domain.group(1)
     logger.debug("Found domain %s", domain)
     logger.info(
-        f"Received create message for key {str(message.payload.decode('utf-8'))} on domain {domain} adding to queue"
+        f"Received create message for key {message.payload.decode('utf-8')!s} on domain {domain} adding to queue"
     )
     q.put((domain, str(message.payload.decode("utf-8"))))
 
@@ -210,7 +208,7 @@ def publish_metrics_loop(
     while not exit_event.is_set():
         try:
             publish_metrics(client, topic, domain)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # Don't crash the thread when an exception is encountered
             logger.error(f"Exception during publish metrics task for {domain}:")
             logger.error(e)
@@ -249,7 +247,7 @@ def publish_metrics(client: mqtt.Client, topic: str, domain: str) -> None:
     client.publish(topic, peer_count, retain=True)
 
 
-def wg_interface_name(domain: str) -> Optional[str]:
+def wg_interface_name(domain: str) -> str | None:
     """Calculates the WireGuard interface name for a domain"""
     domain_prefixes = get_config().domain_prefixes
     cleaned_domain = None

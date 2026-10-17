@@ -4,7 +4,6 @@ import signal
 import sys
 import threading
 import time
-from typing import Text
 
 from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
@@ -36,14 +35,14 @@ class InvalidDomain(Error):
     """If the domains is invalid and is not listed in the configuration file."""
 
 
-def flush_workers(domain: Text) -> None:
+def flush_workers(domain: str) -> None:
     """Calls peer flush every _CLEANUP_TIME interval."""
     while True:
         try:
             time.sleep(_CLEANUP_TIME)
             logger.info(f"Running cleanup task for {domain}")
             logger.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             # Don't crash the thread when an exception is encountered
             logger.error(f"Exception during cleanup task for {domain}:")
             logger.error(e)

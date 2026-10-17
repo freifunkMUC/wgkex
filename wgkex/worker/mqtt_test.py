@@ -4,8 +4,8 @@ import socket
 import threading
 import unittest
 from time import sleep
+from unittest import mock
 
-import mock
 import paho.mqtt.client
 import pyroute2.netlink.exceptions
 
@@ -81,8 +81,7 @@ class MQTTTest(unittest.TestCase):
                 mock.call().subscribe("wireguard/_ffmuc_domain.one/+"),
                 mock.call().publish(
                     f"wireguard-worker/{hostname}/_ffmuc_domain.one/data",
-                    '{"ExternalAddress": "%s", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}'
-                    % hostname,
+                    f'{{"ExternalAddress": "{hostname}", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}}',
                     qos=1,
                     retain=True,
                 ),
