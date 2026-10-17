@@ -3,6 +3,8 @@
 import dataclasses
 import json
 import re
+import threading
+import time
 from typing import Any
 
 import paho.mqtt.client as mqtt_client
@@ -14,7 +16,7 @@ from waitress import serve
 from wgkex.broker.metrics import WorkerMetricsCollection
 from wgkex.common import logger
 from wgkex.common.mqtt import (
-    CONNECTED_PEERS_METRIC,
+    TOPIC_WORKER_REBALANCE,
     TOPIC_WORKER_STATUS,
     TOPIC_WORKER_WG_DATA,
 )
@@ -71,7 +73,11 @@ def _fetch_app_config() -> Flask_app:
 
 app = _fetch_app_config()
 mqtt = Mqtt(app)
-worker_metrics = WorkerMetricsCollection()
+_load_balancing_cfg = config.get_config().load_balancing
+worker_metrics = WorkerMetricsCollection(
+    pending_ttl=_load_balancing_cfg.pending_assignment_ttl,
+    pending_settle_time=_load_balancing_cfg.pending_assignment_settle_time,
+)
 worker_data: dict[tuple[str, str], dict] = {}
 
 
@@ -136,7 +142,10 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
 
     mqtt.publish(f"wireguard/{domain}/{gateway}", key)
 
-    best_worker, diff, current_peers = worker_metrics.get_best_worker(domain)
+    # Only consider workers whose endpoint data we know, so we can always answer with a valid endpoint
+    best_worker, diff, current_peers = worker_metrics.get_best_worker(
+        domain, eligible=lambda worker: (worker, domain) in worker_data
+    )
     if best_worker is None:
         logger.warning(f"No worker online for domain {domain}")
         return {
@@ -145,18 +154,10 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
             }
         }, 400
 
-    # Update number of peers locally to interpolate data between MQTT updates from the worker
-    # TODO fix data race
-    current_peers_domain = (
-        worker_metrics.get(best_worker)
-        .get_domain_metrics(domain)
-        .get(CONNECTED_PEERS_METRIC, 0)
-    )
-    worker_metrics.update(
-        best_worker, domain, CONNECTED_PEERS_METRIC, current_peers_domain + 1
-    )
+    # Count the peer for this worker until the worker metrics reflect it
+    worker_metrics.record_assignment(best_worker, domain, key)
     logger.debug(
-        f"Chose worker {best_worker} with {current_peers} connected clients ({diff})"
+        f"Chose worker {best_worker} with {current_peers} effective peers ({diff:.1f} to target)"
     )
 
     w_data = worker_data.get((best_worker, domain), None)
@@ -260,6 +261,38 @@ def handle_mqtt_message(
     )
 
 
+def publish_rebalance_hints() -> None:
+    """Publishes rebalancing hints to workers which have more peers than their weighted target."""
+    cfg = config.get_config()
+    rebalancing = cfg.load_balancing.rebalancing
+    hints = worker_metrics.compute_rebalance_hints(
+        domains=cfg.domains,
+        tolerance=rebalancing.tolerance,
+        min_excess=rebalancing.min_excess_peers,
+        stable_time=rebalancing.stable_time,
+    )
+    for worker, hint in hints.items():
+        logger.info(f"Asking worker {worker} to shed peers: {hint}")
+        mqtt.publish(
+            TOPIC_WORKER_REBALANCE.format(worker=worker),
+            json.dumps(hint.to_dict()),
+            qos=0,
+            retain=False,
+        )
+
+
+def rebalance_loop() -> None:
+    """Periodically publishes rebalancing hints."""
+    interval = config.get_config().load_balancing.rebalancing.interval
+    while True:
+        time.sleep(interval)
+        try:
+            publish_rebalance_hints()
+        except Exception as e:  # noqa: BLE001
+            # Don't crash the thread when an exception is encountered
+            logger.error("Exception during rebalancing task: %s", e, exc_info=True)
+
+
 def is_valid_wg_pubkey(pubkey: str) -> str:
     """Verifies if key is a valid WireGuard public key or not.
 
@@ -299,5 +332,9 @@ if __name__ == "__main__":
     if listen_config is not None:
         listen_host = listen_config.host
         listen_port = listen_config.port
+
+    if config.get_config().load_balancing.rebalancing.enabled:
+        logger.info("Active rebalancing is enabled")
+        threading.Thread(target=rebalance_loop, daemon=True).start()
 
     serve(app, host=listen_host, port=listen_port)

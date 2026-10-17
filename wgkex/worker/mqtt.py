@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import threading
+import time
 from typing import Any
 
 import paho.mqtt.client as mqtt
@@ -13,6 +14,7 @@ import pyroute2.netlink.exceptions
 from wgkex.common import logger
 from wgkex.common.mqtt import (
     TOPIC_CONNECTED_PEERS,
+    TOPIC_WORKER_REBALANCE,
     TOPIC_WORKER_STATUS,
     TOPIC_WORKER_WG_DATA,
 )
@@ -22,9 +24,21 @@ from wgkex.worker.netlink import (
     get_connected_peers_count,
     get_device_data,
 )
+from wgkex.worker.rebalance import Rebalancer
 
 _HOSTNAME = socket.gethostname()
 _METRICS_SEND_INTERVAL = 60
+_ANNOUNCE_RETRY_INTERVAL = 10
+
+# Set when active rebalancing is enabled in the configuration
+_rebalancer: Rebalancer | None = None
+_announce_retry_lock = threading.Lock()
+_announce_retry_running = False
+
+
+def _rebalancing_enabled() -> bool:
+    # Compare with True explicitly, so that mocked configs don't enable it by accident
+    return get_config().load_balancing.rebalancing.enabled is True
 
 
 def connect(exit_event: threading.Event) -> None:
@@ -50,6 +64,16 @@ def connect(exit_event: threading.Event) -> None:
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.message_callback_add("wireguard/#", on_message_wireguard)
+
+    global _rebalancer
+    if _rebalancing_enabled():
+        logger.info("Active rebalancing is enabled")
+        _rebalancer = Rebalancer(
+            get_config().load_balancing.rebalancing, domains, wg_interface_name
+        )
+        client.message_callback_add(
+            TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME), on_message_rebalance
+        )
     logger.info("connecting to broker %s", broker_address)
 
     client.username_pw_set(broker_username, broker_password)
@@ -77,6 +101,11 @@ def connect(exit_event: threading.Event) -> None:
             target=publish_metrics_loop, args=(exit_event, client, domain)
         )
         metrics_thread.start()
+
+    if _rebalancer is not None:
+        threading.Thread(
+            target=_rebalancer.loop, args=(exit_event,), daemon=True
+        ).start()
 
     client.loop_forever()
 
@@ -115,12 +144,6 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     logger.debug("Connected with result code " + str(rc))
     domains = get_config().domains
 
-    own_external_name = (
-        get_config().external_name
-        if get_config().external_name is not None
-        else _HOSTNAME
-    )
-
     for domain in domains:
         # Subscribing in on_connect() means that if we lose the connection and
         # reconnect then subscriptions will be renewed.
@@ -128,30 +151,88 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         logger.info(f"Subscribing to topic {topic}")
         client.subscribe(topic)
 
+    if _rebalancer is not None:
+        client.subscribe(TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME))
+
+    # Only mark the worker as online once the data of all WireGuard interfaces could be published,
+    # otherwise the broker would send clients to interfaces which are not ready yet (e.g. during boot).
+    if not publish_worker_data_and_status(client):
+        _start_announce_retry(client)
+
+
+def publish_worker_data_and_status(client: mqtt.Client) -> bool:
+    """Publishes the worker data (WG pubkeys, ports, local addresses) of all domains and,
+    if successful for all of them, marks the worker as online.
+
+    Returns:
+        Whether the worker was marked as online.
+    """
+    domains = get_config().domains
+    own_external_name = (
+        get_config().external_name
+        if get_config().external_name is not None
+        else _HOSTNAME
+    )
+
+    ready = True
     for domain in domains:
-        # Publish worker data (WG pubkeys, ports, local addresses)
         iface = wg_interface_name(domain)
-        if iface:
-            port, public_key, link_address = get_device_data(iface)
-            data = {
-                "ExternalAddress": own_external_name,
-                "Port": port,
-                "PublicKey": public_key,
-                "LinkAddress": link_address,
-            }
-            client.publish(
-                TOPIC_WORKER_WG_DATA.format(worker=_HOSTNAME, domain=domain),
-                json.dumps(data),
-                qos=1,
-                retain=True,
-            )
-        else:
+        if not iface:
             logger.error(
                 f"Could not get interface name for domain {domain}. Skipping worker data publication"
             )
+            ready = False
+            continue
+        try:
+            port, public_key, link_address = get_device_data(iface)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"WireGuard interface {iface} is not ready yet: {e}")
+            ready = False
+            continue
+        data = {
+            "ExternalAddress": own_external_name,
+            "Port": port,
+            "PublicKey": public_key,
+            "LinkAddress": link_address,
+        }
+        client.publish(
+            TOPIC_WORKER_WG_DATA.format(worker=_HOSTNAME, domain=domain),
+            json.dumps(data),
+            qos=1,
+            retain=True,
+        )
+
+    if not ready:
+        return False
 
     # Mark worker as online
     client.publish(TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), 1, qos=1, retain=True)
+    return True
+
+
+def _start_announce_retry(client: mqtt.Client) -> None:
+    """Retries publishing worker data and status in the background until it succeeds."""
+    global _announce_retry_running
+    with _announce_retry_lock:
+        if _announce_retry_running:
+            return
+        _announce_retry_running = True
+
+    def retry() -> None:
+        global _announce_retry_running
+        try:
+            while True:
+                time.sleep(_ANNOUNCE_RETRY_INTERVAL)
+                if not client.is_connected():
+                    # Messages published while disconnected would be lost, wait for the reconnect
+                    continue
+                if publish_worker_data_and_status(client):
+                    return
+        finally:
+            with _announce_retry_lock:
+                _announce_retry_running = False
+
+    threading.Thread(target=retry, daemon=True).start()
 
 
 def on_message(client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage) -> None:
@@ -195,6 +276,14 @@ def on_message_wireguard(
         f"Received create message for key {message.payload.decode('utf-8')!s} on domain {domain} adding to queue"
     )
     q.put((domain, str(message.payload.decode("utf-8"))))
+
+
+def on_message_rebalance(
+    client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
+) -> None:
+    """Passes rebalancing hints from the broker to the rebalancer."""
+    if _rebalancer is not None:
+        _rebalancer.handle_instruction(message.payload)
 
 
 def publish_metrics_loop(

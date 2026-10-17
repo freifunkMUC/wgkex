@@ -102,6 +102,30 @@ The response is JSON data containing the connection details for the chosen gatew
 }
 ```
 
+Additional fields may be added to these responses in the future, but the existing fields will not be changed,
+as clients like the Gluon package `ffmuc-mesh-vpn-wireguard-vxlan` rely on them.
+
+#### Load balancing
+
+For `/api/v2`, the broker chooses among the workers that are online for the requested domain and have published their
+connection data. Each worker gets a target share of all peers according to its `weight` in the `workers` config.
+The worker is picked randomly, with a probability proportional to how far it is below its target. Randomization avoids
+that all clients reconnecting after a gateway outage (or talking to different broker instances) land on the same worker.
+
+Workers only report peers with a recent handshake as connected. To bridge the time until a newly assigned peer shows up
+in these metrics, the broker counts recent assignments as pending load of the chosen worker
+(`load_balancing.pending_assignment_ttl`).
+
+Clients stay connected to their gateway as long as the connection works, so after a gateway reboot the load would stay
+uneven. Optionally (`load_balancing.rebalancing.enabled` on the broker *and* the workers), the broker periodically
+tells overloaded workers how many peers they have above their target (after the set of online workers has been stable for
+`stable_time`). These workers then remove a small, rate-limited number of their peers per interval, preferring the most
+recently (re-)connected ones and never evicting the same peer again within `eviction_cooldown`. The affected clients
+notice the broken connection and request a new gateway via the API within a minute or two.
+See [wgkex.yaml.example](wgkex.yaml.example) for all options.
+
+Workers only announce themselves as online once all their WireGuard interfaces are ready.
+
 ### Backend worker
 
 The backend (worker) waits for new keys to appear on the MQTT message bus. Once a new key appears, the worker performs
@@ -262,6 +286,7 @@ print(f'Key push was: {push_key.json().get("Message")}')
 - Publishing metrics worker->broker: `wireguard-metrics/{domain}/{worker}/connected_peers`
 - Publishing worker status: `wireguard-worker/{worker}/status`
 - Publishing worker data: `wireguard-worker/{worker}/{domain}/data`
+- Rebalancing hints broker->worker (only if rebalancing is enabled): `wireguard-worker/{worker}/rebalance`
 
 ## Contact
 
