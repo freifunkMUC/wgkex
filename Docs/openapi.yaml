@@ -1,0 +1,258 @@
+openapi: 3.0.3
+info:
+  title: wgkex broker API
+  version: "2"
+  description: |
+    HTTP API of the wgkex broker. Clients submit their WireGuard public key for a domain, the broker validates it and
+    distributes it via MQTT to the wgkex workers (gateways).
+
+    This document describes the existing behaviour of the broker, so that other client and broker implementations
+    can be compatible with it. The contract is fixed by the Gluon package `ffmuc-mesh-vpn-wireguard-vxlan`
+    (freifunk-gluon/community-packages):
+
+    - The request body is parsed as JSON regardless of the `Content-Type` header. The Gluon client posts with
+      `wget --post-data` and doesn't send a JSON content type.
+    - Clients use `/api/v2` first and fall back to `/api/v1` (and a random gateway from their own configuration) on
+      any response that isn't `200`.
+    - Additional fields may be added to responses in the future, but existing fields will not be changed. Clients
+      must ignore unknown fields.
+
+    **Rate limiting:** both key exchange endpoints are rate limited per client address (IPv6 per /64 by default)
+    and globally. Rate limited requests deliberately still get the normal `200` response, so Gluon clients don't
+    fall back to `/api/v1` and a random gateway. The key is just not published again, and `/api/v2` answers with the
+    worker the key was already assigned to (if it is still online). There is no `429` response.
+  license:
+    name: GPL-3.0
+    url: https://github.com/freifunkMUC/wgkex/blob/main/LICENSE
+servers:
+  - url: http://127.0.0.1:5000
+    description: Default `broker_listen` address
+tags:
+  - name: key exchange
+  - name: operations
+paths:
+  /api/v1/wg/key/exchange:
+    post:
+      tags: [key exchange]
+      operationId: keyExchangeV1
+      summary: Submit a WireGuard public key to all gateways
+      description: |
+        Validates the domain and public key and publishes the key to all workers of the domain. The client picks a
+        gateway itself. Requests for an already known key are idempotent.
+
+        The `location` field is accepted but ignored by this endpoint.
+      requestBody:
+        $ref: "#/components/requestBodies/KeyExchange"
+      responses:
+        "200":
+          description: |
+            The key was accepted. Also returned for rate limited requests, in which case the key is not published
+            again.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/V1Response"
+              example:
+                Message: OK
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "403":
+          $ref: "#/components/responses/Blocked"
+  /api/v2/wg/key/exchange:
+    post:
+      tags: [key exchange]
+      operationId: keyExchangeV2
+      summary: Submit a WireGuard public key and get a gateway assigned
+      description: |
+        Validates the domain and public key, chooses a worker (gateway) for the client and publishes the key to it
+        (or to all workers, depending on `load_balancing.targeted_publish`). The response contains the connection
+        details of the chosen gateway.
+
+        Only workers that are online for the domain and have published their endpoint data are considered. With a
+        `location`, workers configured with the same location are preferred.
+      requestBody:
+        $ref: "#/components/requestBodies/KeyExchange"
+      responses:
+        "200":
+          description: |
+            The key was accepted and a gateway was chosen. Also returned for rate limited requests, in which case the
+            key is not published again and the gateway the key is already assigned to is returned, if it is still
+            online.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/V2Response"
+              example:
+                Endpoint:
+                  Address: gw04.ext.ffmuc.net
+                  Port: "40011"
+                  PublicKey: TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=
+                  AllowedIPs:
+                    - fe80::27c:16ff:fec0:6c74
+        "400":
+          description: |
+            The request is invalid (see `/api/v1/wg/key/exchange`), or no gateway is online for the domain. In the
+            latter case the key is still published to all workers, so it is present once the client falls back to
+            `/api/v1`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                invalid:
+                  value:
+                    error:
+                      message: An internal error has occurred. Please try again later.
+                no_gateway:
+                  value:
+                    error:
+                      message: no gateway online for this domain, please check the domain value and try again later
+        "403":
+          $ref: "#/components/responses/Blocked"
+        "500":
+          description: |
+            The endpoint data of the chosen gateway is unavailable. The key is published to all workers, like when no
+            gateway is online.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example:
+                error:
+                  message: could not get gateway data
+  /metrics:
+    get:
+      tags: [operations]
+      operationId: metrics
+      summary: Prometheus metrics
+      description: Broker and worker metrics in the Prometheus text exposition format.
+      responses:
+        "200":
+          description: The metrics.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: "The endpoint is disabled (`metrics.broker_endpoint: false`)."
+  /:
+    get:
+      tags: [operations]
+      operationId: index
+      summary: Landing page
+      responses:
+        "200":
+          description: A static HTML page.
+          content:
+            text/html:
+              schema:
+                type: string
+components:
+  requestBodies:
+    KeyExchange:
+      required: true
+      description: |
+        A JSON object. The body is parsed as JSON regardless of the `Content-Type` header, so it may also be sent
+        without one or e.g. as `application/x-www-form-urlencoded`. Unknown fields are ignored.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/KeyExchangeRequest"
+          example:
+            domain: ffmuc_welt
+            public_key: o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg=
+            location: muc
+  responses:
+    InvalidRequest:
+      description: |
+        The request is invalid: the body is not a JSON object, the domain is not configured on the broker or the
+        public key is not a valid WireGuard public key.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              message: An internal error has occurred. Please try again later.
+    Blocked:
+      description: The public key is on the broker's blocklist.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            error:
+              message: key is blocked
+  schemas:
+    KeyExchangeRequest:
+      type: object
+      required: [domain, public_key]
+      properties:
+        domain:
+          type: string
+          description: |
+            The client's domain. Must be one of the broker's configured `domains` and start with one of its
+            `domain_prefixes`.
+          example: ffmuc_welt
+        public_key:
+          type: string
+          description: The client's WireGuard public key (base64 encoded, 32 bytes).
+          pattern: "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$"
+          example: o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg=
+        location:
+          description: |
+            Optional location of the client, used by `/api/v2` to prefer workers configured with the same
+            `location`. Only a preference, so values that aren't a string matching `^[A-Za-z0-9_.:-]{1,64}$` are
+            ignored instead of rejected.
+          example: muc
+    V1Response:
+      type: object
+      required: [Message]
+      properties:
+        Message:
+          type: string
+          enum: [OK]
+    V2Response:
+      type: object
+      required: [Endpoint]
+      properties:
+        Endpoint:
+          $ref: "#/components/schemas/Endpoint"
+    Endpoint:
+      type: object
+      description: Connection details of the gateway the client should connect to.
+      required: [Address, Port, PublicKey, AllowedIPs]
+      properties:
+        Address:
+          type: string
+          description: Hostname or IP address of the gateway's WireGuard endpoint (worker `ExternalAddress`).
+          example: gw04.ext.ffmuc.net
+        Port:
+          type: string
+          description: The gateway's WireGuard port. Always a string, as clients rely on that.
+          pattern: "^[0-9]+$"
+          example: "40011"
+        PublicKey:
+          type: string
+          description: The gateway's WireGuard public key.
+          example: TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=
+        AllowedIPs:
+          type: array
+          description: The gateway's WireGuard interface (link-local) address, as a single element list.
+          minItems: 1
+          maxItems: 1
+          items:
+            type: string
+          example:
+            - fe80::27c:16ff:fec0:6c74
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message]
+          properties:
+            message:
+              type: string
+              description: Human readable error message. Not meant to be parsed by clients.

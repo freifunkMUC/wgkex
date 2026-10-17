@@ -93,3 +93,16 @@ py_test(
     ],
     size="small",
 )
+
+py_test(
+    name="openapi_test",
+    srcs=["openapi_test.py", "app_test.py"],
+    data=["//Docs:openapi.yaml"],
+    deps=[
+        requirement("PyYAML"),
+        "//wgkex/broker:app",
+        "//wgkex/common:mqtt",
+        "//wgkex/config:config",
+    ],
+    size="small",
+)
