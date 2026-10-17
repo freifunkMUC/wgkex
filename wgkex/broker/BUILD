@@ -17,7 +17,6 @@ py_test(
     srcs=["metrics_test.py"],
     deps = [
        "//wgkex/broker:metrics",
-       requirement("mock"),
     ],
     size="small",
 )

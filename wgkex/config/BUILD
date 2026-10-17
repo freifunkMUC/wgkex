@@ -8,7 +8,6 @@ py_library(
     visibility=["//visibility:public"],
     deps=[requirement("PyYAML"),
     "//wgkex/common:utils",
-    "//wgkex/common:logger",
     ],
 )
 
@@ -17,7 +16,6 @@ py_test(
     srcs=["config_test.py"],
     deps=[
        "//wgkex/config:config",
-        requirement("mock"),
     ],
     size="small",
 )

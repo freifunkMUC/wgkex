@@ -18,15 +18,27 @@ class WorkerMetrics:
     #            domain -> [metric name -> metric data]
     domain_data: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
     online: bool = False
+    #            domain -> time the connected peers metric was last received
+    updated_at: dict[str, float] = dataclasses.field(default_factory=dict)
 
-    def is_online(self, domain: str = "") -> bool:
-        if domain:
-            return (
-                self.online
-                and self.get_domain_metrics(domain).get(CONNECTED_PEERS_METRIC, -1) >= 0
-            )
-        else:
+    def is_online(
+        self, domain: str = "", now: float | None = None, max_age: float = 0
+    ) -> bool:
+        """Whether the worker is online, optionally for a specific domain.
+
+        A worker is online for a domain if it has a non-negative connected peers metric for it,
+        which (if now and max_age are given) has been received within max_age seconds.
+        """
+        if not domain:
             return self.online
+        if not (
+            self.online
+            and self.get_domain_metrics(domain).get(CONNECTED_PEERS_METRIC, -1) >= 0
+        ):
+            return False
+        if max_age > 0 and now is not None and domain in self.updated_at:
+            return now - self.updated_at[domain] <= max_age
+        return True
 
     def get_domain_metrics(self, domain: str) -> dict[str, Any]:
         return self.domain_data.get(domain, {})
@@ -95,6 +107,7 @@ class WorkerMetricsCollection:
     data: dict[str, WorkerMetrics] = dataclasses.field(default_factory=dict)
     pending_ttl: float = 300
     pending_settle_time: float = 60
+    metrics_max_age: float = 0
     clock: Callable[[], float] = dataclasses.field(default=time.monotonic, repr=False)
     rng: random.Random = dataclasses.field(default_factory=random.Random, repr=False)
     #        domain -> public key -> assignment
@@ -104,11 +117,34 @@ class WorkerMetricsCollection:
     _lock: threading.RLock = dataclasses.field(
         default_factory=threading.RLock, repr=False, compare=False
     )
-    # Time of the last change of the set of online workers (or broker start)
+    # Time of the last change of the set of online workers/domains (or broker start)
     _last_topology_change: float | None = dataclasses.field(default=None, repr=False)
+    _online_snapshot: frozenset[tuple[str, str]] = dataclasses.field(
+        default_factory=frozenset, repr=False
+    )
 
     def __post_init__(self) -> None:
         if self._last_topology_change is None:
+            self._last_topology_change = self.clock()
+
+    def _is_online(self, wm: WorkerMetrics, domain: str = "") -> bool:
+        return wm.is_online(domain, self.clock(), self.metrics_max_age)
+
+    def _refresh_topology(self) -> None:
+        """Records the time of a change in the set of online workers and domains.
+
+        Called on every update and when the topology is queried, so that workers whose metrics
+        became stale are noticed as well.
+        """
+        snapshot = frozenset(
+            (wm.worker, domain)
+            for wm in self.data.values()
+            if wm.online
+            for domain in [""] + list(wm.domain_data)
+            if self._is_online(wm, domain)
+        )
+        if snapshot != self._online_snapshot:
+            self._online_snapshot = snapshot
             self._last_topology_change = self.clock()
 
     def get(self, worker: str) -> WorkerMetrics:
@@ -118,17 +154,17 @@ class WorkerMetricsCollection:
     def set(self, worker: str, metrics: WorkerMetrics) -> None:
         with self._lock:
             self.data[worker] = metrics
-            self._last_topology_change = self.clock()
+            self._refresh_topology()
 
     def update(self, worker: str, domain: str, metric: str, value: Any) -> None:
         with self._lock:
             if worker not in self.data:
                 self.data[worker] = WorkerMetrics(worker)
             wm = self.data[worker]
-            was_online = wm.is_online(domain)
             wm.set_metric(domain, metric, value)
-            if was_online != wm.is_online(domain):
-                self._last_topology_change = self.clock()
+            if metric == CONNECTED_PEERS_METRIC:
+                wm.updated_at[domain] = self.clock()
+            self._refresh_topology()
 
             if (
                 metric == CONNECTED_PEERS_METRIC
@@ -146,15 +182,14 @@ class WorkerMetricsCollection:
         with self._lock:
             if worker not in self.data:
                 self.data[worker] = WorkerMetrics(worker)
-            if not self.data[worker].online:
-                self.data[worker].online = True
-                self._last_topology_change = self.clock()
+            self.data[worker].online = True
+            self._refresh_topology()
 
     def set_offline(self, worker: str) -> None:
         with self._lock:
             if worker in self.data and self.data[worker].online:
                 self.data[worker].online = False
-                self._last_topology_change = self.clock()
+                self._refresh_topology()
                 self._prune_pending(lambda p: p.worker == worker)
 
     def record_assignment(self, worker: str, domain: str, public_key: str) -> None:
@@ -235,7 +270,8 @@ class WorkerMetricsCollection:
             candidates = [
                 wm.worker
                 for wm in self.data.values()
-                if wm.is_online(domain) and (eligible is None or eligible(wm.worker))
+                if self._is_online(wm, domain)
+                and (eligible is None or eligible(wm.worker))
             ]
             if not candidates:
                 return None, 0, 0
@@ -259,6 +295,7 @@ class WorkerMetricsCollection:
     def is_topology_stable(self, stable_time: float) -> bool:
         """Whether no worker went online or offline (and the broker did not start) within stable_time seconds."""
         with self._lock:
+            self._refresh_topology()
             return self.clock() - self._last_topology_change >= stable_time
 
     def compute_rebalance_hints(
@@ -281,7 +318,12 @@ class WorkerMetricsCollection:
             if not self.is_topology_stable(stable_time):
                 return {}
 
-            online = [wm.worker for wm in self.data.values() if wm.is_online()]
+            online = [
+                wm.worker
+                for wm in self.data.values()
+                if self._is_online(wm)
+                and any(self._is_online(wm, d) for d in wm.domain_data)
+            ]
             if len(online) < 2:
                 return {}
             targets = self._targets(online)
@@ -295,8 +337,8 @@ class WorkerMetricsCollection:
                 hint_domains = [
                     d
                     for d in domains
-                    if self.data[w].is_online(d)
-                    and any(self.data[u].is_online(d) for u in underloaded)
+                    if self._is_online(self.data[w], d)
+                    and any(self._is_online(self.data[u], d) for u in underloaded)
                 ]
                 if hint_domains:
                     hints[w] = RebalanceHint(excess=int(excess), domains=hint_domains)

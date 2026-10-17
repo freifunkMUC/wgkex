@@ -72,6 +72,18 @@ class AppTest(unittest.TestCase):
             app.main()
             connect_mock.assert_called()
 
+    @mock.patch.object(app.signal, "signal")
+    @mock.patch.object(app.config, "get_config")
+    @mock.patch.object(app.mqtt, "connect", autospec=True)
+    def test_main_handles_sigterm(self, connect_mock, config_mock, signal_mock):
+        """SIGTERM (docker stop) shuts down gracefully like SIGINT."""
+        config_mock.return_value = _get_config_mock()
+        with mock.patch.object(app, "flush_workers", return_value=None):
+            app.main()
+        handlers = {c.args[0]: c.args[1] for c in signal_mock.call_args_list}
+        self.assertIn(app.signal.SIGTERM, handlers)
+        self.assertIs(handlers[app.signal.SIGTERM], handlers[app.signal.SIGINT])
+
     @mock.patch.object(app.config, "get_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)
     def test_main_fails_no_domain(self, connect_mock, config_mock):

@@ -77,6 +77,7 @@ _load_balancing_cfg = config.get_config().load_balancing
 worker_metrics = WorkerMetricsCollection(
     pending_ttl=_load_balancing_cfg.pending_assignment_ttl,
     pending_settle_time=_load_balancing_cfg.pending_assignment_settle_time,
+    metrics_max_age=_load_balancing_cfg.metrics_max_age,
 )
 worker_data: dict[tuple[str, str], dict] = {}
 
@@ -111,7 +112,7 @@ def wg_api_v1_key_exchange() -> tuple[Response | dict, int]:
     gateway = "all"
     logger.info(f"wg_api_v1_key_exchange: Domain: {domain}, Key:{key}")
 
-    mqtt.publish(f"wireguard/{domain}/{gateway}", key)
+    mqtt.publish(f"wireguard/{domain}/{gateway}", key, qos=1)
     return {"Message": "OK"}, 200
 
 
@@ -140,7 +141,7 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
     gateway = "all"
     logger.info(f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}")
 
-    mqtt.publish(f"wireguard/{domain}/{gateway}", key)
+    mqtt.publish(f"wireguard/{domain}/{gateway}", key, qos=1)
 
     # Only consider workers whose endpoint data we know, so we can always answer with a valid endpoint
     best_worker, diff, current_peers = worker_metrics.get_best_worker(
@@ -197,9 +198,13 @@ def handle_mqtt_message_metrics(
 ) -> None:
     """Processes published metrics from workers."""
     logger.debug(
-        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+        f"MQTT message received on {message.topic}: {_decode_payload(message.payload)}"
     )
-    _, domain, worker, metric = message.topic.split("/", 3)
+    try:
+        _, domain, worker, metric = message.topic.split("/", 3)
+    except ValueError:
+        logger.error(f"Ignored MQTT message on unexpected topic {message.topic}")
+        return
     if not is_valid_domain(domain):
         logger.error(f"Domain {domain} not in configured domains")
         return
@@ -208,9 +213,15 @@ def handle_mqtt_message_metrics(
         logger.error("Ignored MQTT message with empty worker or metrics label")
         return
 
-    data = int(message.payload)
+    try:
+        data = int(message.payload)
+    except ValueError:
+        logger.error(
+            f"Ignored invalid metric on {message.topic}: {_decode_payload(message.payload)}"
+        )
+        return
 
-    logger.info(f"Update worker metrics: {metric} on {worker}/{domain} = {data}")
+    logger.debug(f"Update worker metrics: {metric} on {worker}/{domain} = {data}")
     worker_metrics.update(worker, domain, metric, data)
 
 
@@ -221,7 +232,13 @@ def handle_mqtt_message_status(
     """Processes status messages from workers."""
     _, worker, _ = message.topic.split("/", 2)
 
-    status = int(message.payload)
+    try:
+        status = int(message.payload)
+    except ValueError:
+        logger.error(
+            f"Ignored invalid status on {message.topic}: {_decode_payload(message.payload)}"
+        )
+        return
     if status < 1 and worker_metrics.get(worker).is_online():
         logger.warning(f"Marking worker as offline: {worker}")
         worker_metrics.set_offline(worker)
@@ -242,7 +259,16 @@ def handle_mqtt_message_data(
         logger.error(f"Domain {domain} not in configured domains.")
         return
 
-    data = json.loads(message.payload)
+    try:
+        data = json.loads(message.payload)
+    except ValueError:
+        logger.error(
+            "Invalid worker data received for %s/%s: %s",
+            worker,
+            domain,
+            _decode_payload(message.payload),
+        )
+        return
     if not isinstance(data, dict):
         logger.error("Invalid worker data received for %s/%s: %s", worker, domain, data)
         return
@@ -257,8 +283,13 @@ def handle_mqtt_message(
 ) -> None:
     """Prints message contents."""
     logger.debug(
-        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+        f"MQTT message received on {message.topic}: {_decode_payload(message.payload)}"
     )
+
+
+def _decode_payload(payload: bytes) -> str:
+    """Decodes an MQTT payload for logging, never raising on invalid data."""
+    return payload.decode("utf-8", errors="replace")
 
 
 def publish_rebalance_hints() -> None:

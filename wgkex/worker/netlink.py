@@ -195,10 +195,8 @@ def find_stale_wireguard_clients(wg_interface: str) -> list:
     with pyroute2.WireGuard() as wg:
         all_peers = []
         msgs = wg.info(wg_interface)
-        logger.debug("Got infos for stale peers: %s.", msgs)
         for msg in msgs:
             peers = msg.get_attr("WGDEVICE_A_PEERS")
-            logger.debug("Got clients: %s.", peers)
             if peers:
                 all_peers.extend(peers)
         ret = [
@@ -223,7 +221,7 @@ def get_connected_peers(wg_interface: str) -> list[str]:
         NetlinkDumpInterrupted if the interface data has changed while it was being returned by netlink
     """
     three_mins_ago_in_secs = int((datetime.now(UTC) - timedelta(minutes=3)).timestamp())
-    logger.info("Collecting connected wireguard peers for interface %s.", wg_interface)
+    logger.debug("Collecting connected wireguard peers for interface %s.", wg_interface)
     with pyroute2.WireGuard() as wg:
         try:
             msgs = wg.info(wg_interface)
@@ -233,11 +231,9 @@ def get_connected_peers(wg_interface: str) -> list[str]:
             # See https://github.com/svinota/pyroute2/issues/874
             msgs = wg.info(wg_interface)
 
-        logger.debug("Got infos for connected peers: %s.", msgs)
         connected = []
         for msg in msgs:
             peers = msg.get_attr("WGDEVICE_A_PEERS")
-            logger.debug("Got clients: %s.", peers)
             if peers:
                 for peer in peers:
                     if (
@@ -249,6 +245,7 @@ def get_connected_peers(wg_interface: str) -> list[str]:
                             peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
                         )
 
+        logger.debug("Found %d connected peers on %s.", len(connected), wg_interface)
         return connected
 
 
@@ -279,7 +276,6 @@ def get_device_data(wg_interface: str) -> tuple[int, str, str]:
     logger.info("Reading data from interface %s.", wg_interface)
     with pyroute2.WireGuard() as wg, pyroute2.IPRoute() as ipr:
         msgs = wg.info(wg_interface)
-        logger.debug("Got infos for interface data: %s.", msgs)
         if len(msgs) > 1:
             logger.warning(
                 "Got multiple messages from netlink, expected one. Using only first one."

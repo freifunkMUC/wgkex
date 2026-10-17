@@ -78,7 +78,7 @@ class MQTTTest(unittest.TestCase):
 
         mqtt_client_mock.assert_has_calls(
             [
-                mock.call().subscribe("wireguard/_ffmuc_domain.one/+"),
+                mock.call().subscribe("wireguard/_ffmuc_domain.one/+", qos=1),
                 mock.call().publish(
                     f"wireguard-worker/{hostname}/_ffmuc_domain.one/data",
                     f'{{"ExternalAddress": "{hostname}", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}}',

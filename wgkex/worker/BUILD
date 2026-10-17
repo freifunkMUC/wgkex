@@ -7,7 +7,6 @@ py_library(
     srcs = ["netlink.py"],
     visibility = ["//visibility:public"],
     deps = [
-       requirement("NetLink"),
        requirement("paho-mqtt"),
        requirement("pyroute2"),
        "//wgkex/common:utils",
@@ -22,7 +21,6 @@ py_test(
     srcs = ["netlink_test.py"],
     deps = [
        "//wgkex/worker:netlink",
-       requirement("mock"),
        requirement("pyroute2"),
     ],
     size="small",
@@ -33,7 +31,6 @@ py_library(
     srcs = ["mqtt.py"],
     visibility = ["//visibility:public"],
     deps = [
-       requirement("NetLink"),
        requirement("paho-mqtt"),
        requirement("pyroute2"),
        "//wgkex/common:logger",
@@ -52,7 +49,6 @@ py_test(
     deps = [
        "//wgkex/worker:mqtt",
        "//wgkex/worker:msg_queue",
-       requirement("mock"),
     ],
     size="small",
 )
@@ -74,7 +70,6 @@ py_test(
     deps = [
        "//wgkex/worker:app",
        "//wgkex/worker:msg_queue",
-       requirement("mock"),
     ],
     size="small",
 )

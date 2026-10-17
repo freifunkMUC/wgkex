@@ -78,7 +78,7 @@ class BrokerAppTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertDictEqual(resp.get_json(), {"Message": "OK"})
         self.app.mqtt.publish.assert_called_once_with(
-            f"wireguard/{_DOMAIN}/all", _PUBKEY
+            f"wireguard/{_DOMAIN}/all", _PUBKEY, qos=1
         )
 
     def test_v2_response_shape(self):
@@ -102,7 +102,7 @@ class BrokerAppTest(unittest.TestCase):
         self.assertIsInstance(endpoint["AllowedIPs"], list)
         # The key must still be published to all workers
         self.app.mqtt.publish.assert_called_once_with(
-            f"wireguard/{_DOMAIN}/all", _PUBKEY
+            f"wireguard/{_DOMAIN}/all", _PUBKEY, qos=1
         )
 
     def test_v2_records_pending_assignment(self):
@@ -135,10 +135,54 @@ class BrokerAppTest(unittest.TestCase):
             resp = self.post(version, {"domain": _DOMAIN, "public_key": "invalid"})
             self.assertEqual(resp.status_code, 400)
 
+    def test_stale_metrics_worker_not_chosen(self):
+        """Workers without recent metrics for the domain are treated as offline for it."""
+        clock = self.app.worker_metrics.clock
+        with mock.patch.object(self.app.worker_metrics, "clock") as clock_mock:
+            clock_mock.return_value = clock()
+            self.add_worker("gw1", 0)
+            clock_mock.return_value = clock() + 1000
+            self.add_worker("gw2", 1000)
+            for _ in range(20):
+                resp = self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+                self.assertEqual(
+                    resp.get_json()["Endpoint"]["Address"], "gw2.ext.example.net"
+                )
+
+    def test_mqtt_handlers_survive_bad_payloads(self):
+        """Invalid payloads from MQTT are ignored without raising."""
+        self.add_worker("gw1", 10)
+
+        def msg(topic, payload):
+            m = mock.MagicMock()
+            m.topic = topic
+            m.payload = payload
+            return m
+
+        self.app.handle_mqtt_message_metrics(
+            None, None, msg(f"wireguard-metrics/{_DOMAIN}/gw1/connected_peers", b"x")
+        )
+        self.app.handle_mqtt_message_metrics(
+            None, None, msg("wireguard-metrics/short", b"1")
+        )
+        self.app.handle_mqtt_message_status(
+            None, None, msg("wireguard-worker/gw1/status", b"\xff")
+        )
+        self.app.handle_mqtt_message_data(
+            None, None, msg(f"wireguard-worker/gw1/{_DOMAIN}/data", b"{not json")
+        )
+        self.app.handle_mqtt_message(None, None, msg("foo", b"\xff\xfe"))
+        self.assertEqual(self.app.worker_metrics.get("gw1").get_peer_count(), 10)
+        self.assertTrue(self.app.worker_metrics.get("gw1").is_online())
+        self.assertIn(("gw1", _DOMAIN), self.app.worker_data)
+
     def test_publish_rebalance_hints(self):
         """Hints are published as JSON to the new per-worker rebalance topic."""
         clock = self.app.worker_metrics.clock
-        with mock.patch.object(self.app.worker_metrics, "clock") as clock_mock:
+        with (
+            mock.patch.object(self.app.worker_metrics, "clock") as clock_mock,
+            mock.patch.object(self.app.worker_metrics, "metrics_max_age", 0),
+        ):
             clock_mock.return_value = clock()
             self.add_worker("gw1", 0)
             self.add_worker("gw2", 600)

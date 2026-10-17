@@ -13,7 +13,8 @@ domain_prefixes:
   - ffmuc_
   - ffdon_
   - ffwert_
-# [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution
+# [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution.
+# Workers missing here get the average configured weight (and a warning is logged).
 workers:
   gw04.in.ffmuc.net:
     weight: 30
@@ -30,6 +31,9 @@ load_balancing:
   pending_assignment_ttl: 300
   # [broker] Minimum seconds an assignment is kept before a metric update may supersede it
   pending_assignment_settle_time: 60
+  # [broker] Seconds without a connected peers metric (workers send it every 60s) after which
+  # a worker is treated as offline for that domain. 0 disables the check.
+  metrics_max_age: 180
   # Active rebalancing: overloaded workers slowly evict peers so they reconnect to underloaded workers,
   # e.g. after a gateway reboot. Must be enabled on the broker and on the workers to have any effect.
   rebalancing:
@@ -61,7 +65,10 @@ mqtt:
 broker_listen:
   host: 0.0.0.0
   port: 5000
-# [broker, worker]
+# [broker, worker] Log level of the root logger (DEBUG, INFO, WARNING, ERROR, CRITICAL), defaults to INFO.
+# Overrides the root level of logging_config.
+log_level: INFO
+# [broker, worker] Optional: a full Python logging configuration (dictConfig format)
 logging_config:
   formatters:
     standard:
