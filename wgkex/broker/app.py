@@ -99,7 +99,8 @@ def _fetch_app_config() -> Flask_app:
 
 
 app = _fetch_app_config()
-mqtt = Mqtt(app)
+# Connected via init_app() at the end of this module, after all handlers are registered.
+mqtt = Mqtt()
 _load_balancing_cfg = config.get_config().load_balancing
 worker_metrics = WorkerMetricsCollection(
     pending_ttl=_load_balancing_cfg.pending_assignment_ttl,
@@ -397,8 +398,10 @@ def _previous_workers(previous: Assignment, domain: str, worker: str) -> list[st
 def handle_mqtt_connect(
     client: mqtt_client.Client, userdata: bytes, flags: Any, rc: Any
 ) -> None:
-    """Prints status of connect message."""
-    # TODO(ruairi): Clarify current usage of this function.
+    """Subscribes to all broker topics.
+
+    Runs on every (re)connect, so subscriptions are restored after a reconnect.
+    """
     logger.debug(
         "MQTT connected to {}:{}".format(
             app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
@@ -617,6 +620,11 @@ def join_host_port(host: str, port: str) -> str:
     if host.find(":") >= 0:
         return "[" + host + "]:" + port
     return host + ":" + port
+
+
+# Connect only now: the paho network loop starts here, and a CONNACK received before
+# handle_mqtt_connect was registered would leave the broker without subscriptions.
+mqtt.init_app(app)
 
 
 if __name__ == "__main__":
