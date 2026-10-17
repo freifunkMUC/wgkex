@@ -558,7 +558,14 @@ def table(rows: list[dict]) -> str:
         ),
         ("api p95 ms", lambda r: g(r, "reconnects", "api_ms", "p95")),
         ("v1 fallbacks", lambda r: g(r, "reconnects", "api_v1")),
-        ("rate limited", lambda r: g(r, "broker_requests", "rate_limited")),
+        (
+            "rate limited",
+            lambda r: (
+                None
+                if r.get("broker_requests") is None
+                else int(r["broker_requests"].get("rate_limited", 0))
+            ),
+        ),
         ("peers/gw", lambda r: _avg([v["peers"] for v in g(r, "bum").values()])),
         ("fdb/gw", lambda r: _avg([v["fdb"] for v in g(r, "bum").values()])),
         (
