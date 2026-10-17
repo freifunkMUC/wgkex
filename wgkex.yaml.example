@@ -17,16 +17,39 @@ domain_prefixes:
 # Workers missing here get the average configured weight (and a warning is logged).
 # Optional: a location per worker, preferred for clients sending the same "location" in their
 # /api/v2 request (see load_balancing.location_tolerance).
+# Optional: a PoP (Point of Presence) per worker for Parker multi-tunnel support: /api/v3 clients
+# get one worker per PoP.
 workers:
   gw04.in.ffmuc.net:
+    # A unique, static ID for this worker. In Parker mode it is the concentrator ID sent to
+    # nodes, identifying the tunnel on the node, so it must never change for a given worker.
+    # If omitted it defaults to the position in this map.
+    id: 1
     weight: 30
     location: muc
+    pop: vie01
+    # In Parker mode: the hostname handed to nodes as the concentrator endpoint,
+    # instead of the address this worker announces over MQTT. The port is kept.
+    # Omit it to hand out the announced address.
+    endpoint_name: gw04.ext.ffmuc.net
   gw05.in.ffmuc.net:
+    id: 2
     weight: 30
+    pop: vie01
   gw06.in.ffmuc.net:
+    id: 3
     weight: 20
+    pop: muc01
   gw07.in.ffmuc.net:
+    id: 4
     weight: 20
+    pop: muc01
+# [broker] how much peers above the target value a worker may have (in percent rel. to the target value) to let clients stick to their current worker.
+# Default: 10
+# Example: with a value of '10', an active peer count 170 and target of 150 of 'Worker A',
+# a requesting client who is currently connected to 'Worker A' will get redirected to a new worker with lower peer count.
+# 10% * 150 = 15 -> (170-150) > 15
+sticky_worker_tolerance: 15
 # [broker, worker] Optional: load balancing of peers across the workers. All values below are the defaults.
 load_balancing:
   # [broker] Seconds a peer assigned via /api/v2 counts towards the load of the chosen worker
@@ -74,12 +97,20 @@ load_balancing:
     eviction_cooldown: 3600
     # [broker] Share of its peers a draining worker is asked to evict per interval (see "Planned reboot")
     drain_rate: 0.1
-# [worker] Optional: removal of peers without recent handshake. All values below are the defaults.
+# [worker] Optional: removal of peers without recent handshake. All values below are the defaults
+# and must be positive. The section was called "cleanup" in early Parker versions, which is still
+# accepted (with legacy_stale_timeout as stale_timeout); peer_cleanup takes precedence.
 peer_cleanup:
-  # Seconds without a handshake after which a peer is removed
+  # Seconds without a handshake after which a (non-Parker) peer is removed
   stale_timeout: 1800
   # Seconds between two cleanup runs
   interval: 300
+  # Parker: a peer with an earlier last handshake is stale. The default allows multiple 120s
+  # config retries and the 180s WireGuard tunnel timeout.
+  parker_stale_timeout: 300
+  # Parker: never-handshaked peers are retained this long after provisioning or worker startup,
+  # then treated as abandoned.
+  initial_handshake_grace: 600
 # [worker] Optional: drain mode for planned maintenance. Draining is also started with SIGUSR1
 # and stopped with SIGUSR2. The worker is draining while the file exists, use a non-persistent
 # location (e.g. /run) so that it does not stay draining after the reboot.
@@ -133,6 +164,52 @@ key_lists:
   reload_interval: 60
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
+# [broker, worker]
+parker:
+  # Enable Parker support. The broker will still handle non-Parker in the same instance, the worker however will disable non-Parker support in this case.
+  enabled: False
+  # only 464xlat=True is currently properly supported
+  464xlat: True
+  # The retry interval in seconds for nodes to recontact the broker to check for new configuration.
+  retry_interval: 120
+  # The keepalive interval in seconds the nodes should set for the WireGuard tunnel.
+  wg_keepalive: 25
+  # ipam must be either of json or netbox
+  ipam: netbox
+  prefixes:
+    ipv4:
+      # Specify either length and netbox_filter if 464xlat=False, or clat_subnet if 464xlat=True
+      length: 22
+      clat_subnet: 10.80.96.0/22
+      # A mapping of filters for Netbox to find the parent prefix to allocate node prefixes from if 464xlat=False.
+      # Needs to match one and only one IPv4 prefix.
+      # Prefix is loaded only once on startup, so if you want to switch the prefix, you need to restart wgkex.
+      # E.g. {id: 9999} or {prefix: '10.80.0.0/16'} or {description: Freifunk, role: NodePrefixes} or {cf_my_custom_field: 'Some Value'}
+      # See https://demo.netbox.dev/api/schema/swagger-ui/#/ipam/ipam_prefixes_list and https://netboxlabs.com/docs/netbox/reference/filtering/ for filtering syntax
+      netbox_filter:
+        role: freifunk-net
+      # Optionally specify additional NetBox data to add to new prefixes, like tags or a role.
+      # See the POST request body scheme at https://demo.netbox.dev/api/schema/swagger-ui/#/ipam/ipam_prefixes_available_prefixes_create for supported fields.
+      netbox_additional_data:
+        tags:
+          - 123 # ID of a tag
+          - slug: node-prefix # another tag uniquely identified through its slug
+    ipv6:
+      # This should normally be 64 if 464xlat=False, or 63 if 464xlat=True
+      length: 63
+      # See parker.prefixes.ipv4.netbox_filter
+      netbox_filter: {}
+      # See parker.prefixes.ipv4.netbox_additional_data
+      netbox_additional_data: {}
+
+# [broker]
+broker_signing_key: ''
+# [broker] netbox connection details
+# Note: you can restrict the user for wgkex to "IPAM > Prefix" object types
+netbox:
+  # URL for your NetBox instance, without the "/api" path
+  url: http://localhost:8000
+  api_key: SECRET
 # [broker, worker] MQTT connection informations
 mqtt:
   broker_url: broker.hivemq.com

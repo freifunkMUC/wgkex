@@ -2,14 +2,17 @@
 
 import dataclasses
 import json
+import random
 import re
 import socket
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import paho.mqtt.client as mqtt_client
+import paho.mqtt.enums
 from flask import Flask, Response, abort, render_template, request
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
@@ -18,7 +21,10 @@ from waitress import serve
 
 from wgkex.broker import observability
 from wgkex.broker.assignments import Assignment, AssignmentHistory
-from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.broker.ipam import ParkerIPAM
+from wgkex.broker.ipam_json import JSONFileIPAM
+from wgkex.broker.ipam_netbox import NetboxIPAM
+from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
 from wgkex.broker.observability import (
     ASSIGNMENTS,
     KEY_EXCHANGE_REQUESTS,
@@ -27,7 +33,9 @@ from wgkex.broker.observability import (
     REBALANCE_HINTS,
     SHARED_ASSIGNMENTS,
 )
+from wgkex.broker.parker import ParkerQuery, ParkerResponse
 from wgkex.broker.ratelimit import RateLimiter, client_address
+from wgkex.broker.signer import sign_response
 from wgkex.common import logger
 from wgkex.common.keylist import KeyList
 from wgkex.common.mqtt import (
@@ -39,11 +47,15 @@ from wgkex.common.mqtt import (
     TOPIC_WORKER_STATUS,
     TOPIC_WORKER_WG_DATA,
     WG_KEY_ALL_WORKERS,
+    MQTTTopics,
 )
-from wgkex.common.utils import is_valid_domain
+from wgkex.common.utils import (
+    WG_PUBKEY_PATTERN,  # noqa: F401 re-exported for compatibility
+    is_valid_domain,
+    is_valid_wg_pubkey,
+)
 from wgkex.config import config
 
-WG_PUBKEY_PATTERN = re.compile(r"^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$")
 LOCATION_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 
 
@@ -98,6 +110,34 @@ def _fetch_app_config() -> Flask_app:
     return app
 
 
+def _load_parker_ipam() -> ParkerIPAM | None:
+    if not config.get_config().parker.enabled:
+        return None
+
+    ipam: ParkerIPAM
+    ipam_type = config.get_config().parker.ipam
+
+    match ipam_type:
+        case config.Parker.IPAM.JSON:
+            ipam = JSONFileIPAM()
+        case config.Parker.IPAM.NETBOX:
+            netbox_cfg = config.get_config().netbox
+            if netbox_cfg is None:
+                raise ValueError(
+                    "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
+                )
+
+            ipam = NetboxIPAM(
+                api_url=netbox_cfg.url,
+                token=netbox_cfg.api_key,
+                xlat=config.get_config().parker.xlat,
+            )
+        case _:
+            raise NotImplementedError(f"Invalid IPAM type {ipam_type}")
+
+    return ipam
+
+
 app = _fetch_app_config()
 # Connected via init_app() at the end of this module, after all handlers are registered.
 mqtt = Mqtt()
@@ -108,6 +148,12 @@ worker_metrics = WorkerMetricsCollection(
     metrics_max_age=_load_balancing_cfg.metrics_max_age,
 )
 worker_data: dict[tuple[str, str], dict] = {}
+parker_worker_metrics = WorkerMetricsCollection(
+    pending_ttl=_load_balancing_cfg.pending_assignment_ttl,
+    pending_settle_time=_load_balancing_cfg.pending_assignment_settle_time,
+    metrics_max_age=_load_balancing_cfg.metrics_max_age,
+)
+parker_worker_data: dict[str, dict] = {}
 assignment_history = AssignmentHistory(
     ttl=_load_balancing_cfg.previous_assignment_ttl,
     max_entries=_load_balancing_cfg.previous_assignment_max_entries,
@@ -155,6 +201,7 @@ def _create_blocklist() -> KeyList:
 
 rate_limiter = _create_rate_limiter()
 blocklist = _create_blocklist()
+ipam: ParkerIPAM | None = _load_parker_ipam()
 
 
 def _blocked_response(api: str, key: str) -> tuple[dict, int]:
@@ -394,6 +441,241 @@ def _previous_workers(previous: Assignment, domain: str, worker: str) -> list[st
     return [w for w in candidates if not (w == worker and previous.domain == domain)]
 
 
+@app.route("/api/v3/wg/key/exchange", methods=["GET"])
+@app.route("/api/v3/config", methods=["GET"])
+@app.route("/config", methods=["GET"])
+def wg_api_v3_key_exchange() -> tuple[Response | dict, int]:
+    if not config.get_config().parker.enabled or ipam is None:
+        KEY_EXCHANGE_REQUESTS.labels("v3", "disabled").inc()
+        return {
+            "error": {"message": "Parker support is not enabled on this broker"}
+        }, 400
+
+    try:
+        req_data = ParkerQuery.from_dict(request.args)
+    except Exception as ex:  # noqa: BLE001
+        logger.warning(
+            "Couldn't parse client query in /api/v3/wg/key/exchange: %s",
+            ex,
+            exc_info=True,
+        )
+        KEY_EXCHANGE_REQUESTS.labels("v3", "invalid").inc()
+        return {
+            "error": {
+                "message": "Invalid data received. Please check your request and try again."
+            }
+        }, 400
+
+    address = _client_address()
+    logger.info(
+        f"wg_api_v3_key_exchange: Key:{req_data.pubkey}{_client_log_suffix(address)}"
+    )
+    if req_data.pubkey in blocklist:
+        return _blocked_response("v3", req_data.pubkey)
+    # Parker nodes have no older API to fall back to and poll this endpoint
+    # periodically, so a rate-limited request is simply rejected and retried later.
+    if _is_rate_limited("v3", req_data.pubkey, address):
+        return {"error": {"message": "too many requests"}}, 429
+
+    try:
+        _, full_range6, old_selected_concentrators = ipam.get_or_allocate_prefix(
+            req_data.pubkey,
+            not config.get_config().parker.xlat,
+            True,
+            config.get_config().parker.prefixes.ipv4.length or 0,
+            config.get_config().parker.prefixes.ipv6.length,
+        )
+    except Exception as ex:  # noqa: BLE001
+        logger.error(
+            "Exception occurred while fetching/allocating IPv6 prefix for public key %s: %s",
+            req_data.pubkey,
+            ex,
+            exc_info=True,
+        )
+        KEY_EXCHANGE_REQUESTS.labels("v3", "ipam_error").inc()
+        return {
+            "error": {
+                "message": "Internal error while allocating IP range. Please try again later."
+            }
+        }, 500
+
+    if full_range6 is None:
+        KEY_EXCHANGE_REQUESTS.labels("v3", "ipam_error").inc()
+        return {
+            "error": {
+                "message": "No IPv6 range available for this public key. Please try again later."
+            }
+        }, 500
+    if full_range6.prefixlen > 63:
+        logger.error(
+            "Allocated IPv6 range %s is too small for Parker's two /64 networks",
+            full_range6,
+        )
+        KEY_EXCHANGE_REQUESTS.labels("v3", "ipam_error").inc()
+        return {
+            "error": {
+                "message": "Allocated IPv6 range is invalid. Please try again later."
+            }
+        }, 500
+    expected_length = config.get_config().parker.prefixes.ipv6.length
+    if full_range6.prefixlen != expected_length:
+        logger.warning(
+            "IPv6 prefix %s for public key %s has length /%s, but /%s is configured. "
+            "Fix or delete the prefix in the IPAM.",
+            full_range6,
+            req_data.pubkey,
+            full_range6.prefixlen,
+            expected_length,
+        )
+    ranges = full_range6.subnets(new_prefix=64)
+    range6 = next(ranges)
+    xlat_range6 = next(ranges)
+
+    domain = "parker"
+
+    selected_workers = parker_worker_metrics.get_best_workers(
+        domain, old_selected_concentrators, require_configured=True
+    )
+
+    if len(selected_workers) == 0:
+        logger.error("No worker online for Parker network")
+        fallback_candidates = [
+            name
+            for name in parker_worker_data
+            if config.get_config().workers.get(name) is not None
+            and parker_worker_metrics.get(name).online
+        ]
+        if fallback_candidates:
+            fallback_name = random.choice(fallback_candidates)
+            fallback_cfg = config.get_config().workers.get(fallback_name)
+            selected_workers.append(
+                WorkerResult(
+                    name=fallback_name,
+                    id=fallback_cfg.id,
+                    diff=0,
+                    peers=0,
+                    target=0,
+                )
+            )
+        else:
+            KEY_EXCHANGE_REQUESTS.labels("v3", "no_worker").inc()
+            return {
+                "error": {"message": "no gateway online, please try again later"}
+            }, 400
+
+    concentrators = []
+
+    for worker in selected_workers:
+        # Count newly selected concentrators as pending until the worker metrics reflect them,
+        # like v2 assignments. Not for re-confirmed ones, so periodic polls don't inflate the load.
+        # The pending key includes the PoP, because a node has one concentrator per PoP.
+        if worker.name not in old_selected_concentrators:
+            worker_cfg = config.get_config().workers.get(worker.name)
+            pop = worker_cfg.pop if worker_cfg is not None else ""
+            parker_worker_metrics.record_assignment(
+                worker.name, domain, f"{pop}/{req_data.pubkey}"
+            )
+            ASSIGNMENTS.labels(worker.name, domain).inc()
+        logger.debug(
+            f"Chose worker {worker.name} with {worker.peers} connected clients ({worker.diff})"
+        )
+
+        w_data = parker_worker_data.get(worker.name, None)
+        if w_data is None:
+            logger.error(f"Couldn't get worker endpoint data for {worker.name}")
+            KEY_EXCHANGE_REQUESTS.labels("v3", "no_worker_data").inc()
+            return {"error": {"message": "could not get gateway data"}}, 500
+
+        # An endpoint_name in the config replaces the address the worker announced,
+        # leaving it to the nodes to resolve the concentrator's name.
+        worker_cfg = config.get_config().workers.get(worker.name)
+        endpoint_host = str(w_data.get("ExternalAddress"))
+        if worker_cfg is not None and worker_cfg.endpoint_name:
+            endpoint_host = worker_cfg.endpoint_name
+
+        concentrators.append(
+            {
+                "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
+                "address6": w_data.get("LinkAddress"),
+                "endpoint": join_host_port(endpoint_host, str(w_data.get("Port"))),
+                "pubkey": w_data.get("PublicKey"),  # type: ignore
+                "id": worker.id,
+            }
+        )
+
+    # Provision the peer only on the workers this node was assigned to. A
+    # broadcast here would (re-)install the peer and its prefix routes on
+    # every worker, and any worker that then announces the prefix without
+    # holding a live session blackholes part of the ECMP flows.
+    mqtt_data = {
+        "PublicKey": req_data.pubkey,
+        "Range6": str(full_range6),
+        "Keepalive": None,  # TODO make configurable
+    }
+    for worker in selected_workers:
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=worker.name),
+            json.dumps(mqtt_data).encode("utf-8"),
+            qos=1,
+        )
+
+    # A de-selected worker would keep the node's peer and prefix route until
+    # its stale-peer sweep runs, up to a full cleanup interval. Tell it to
+    # drop the peer right away instead. A worker that predates the Remove
+    # flag reads this as the re-provisioning it always received - no worse
+    # than before.
+    selected_names = {worker.name for worker in selected_workers}
+    for previous_name in old_selected_concentrators:
+        if previous_name in selected_names:
+            continue
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=previous_name),
+            json.dumps({**mqtt_data, "Remove": True}).encode("utf-8"),
+            qos=1,
+        )
+
+    ipam.update_prefix(
+        req_data.pubkey,
+        not config.get_config().parker.xlat,
+        True,
+        [w.name for w in selected_workers],
+    )
+
+    response = ParkerResponse(
+        nonce=req_data.nonce,
+        time=int(datetime.now(tz=timezone.utc).timestamp()),
+        id=req_data.pubkey,
+        mtu=min(req_data.v6mtu, 1375),
+        range6=str(range6),
+        xlat_range6=str(xlat_range6),
+        address6=str(range6.network_address + 1),
+        concentrators=concentrators,
+    )
+
+    data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + b"\n"
+    if config.get_config().broker_signing_key is None:
+        logger.error(
+            "Parker is enabled, but no broker_signing_key is set in the config file. Can't respond to key exchange."
+        )
+        KEY_EXCHANGE_REQUESTS.labels("v3", "signing_error").inc()
+        return {
+            "error": {"message": "Internal signature error. Please try again later."}
+        }, 500
+
+    signature: bytes = sign_response(data)
+
+    full_response: bytes = data + signature
+
+    KEY_EXCHANGE_REQUESTS.labels("v3", "ok").inc()
+    return (
+        Response(
+            response=full_response,
+            mimetype="text/plain",
+        ),
+        200,
+    )
+
+
 @mqtt.on_connect()
 def handle_mqtt_connect(
     client: mqtt_client.Client, userdata: bytes, flags: Any, rc: Any
@@ -402,16 +684,26 @@ def handle_mqtt_connect(
 
     Runs on every (re)connect, so subscriptions are restored after a reconnect.
     """
-    logger.debug(
-        "MQTT connected to {}:{}".format(
-            app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
+    broker = (app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"])
+    if rc != paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED:
+        logger.error(
+            "MQTT connection to %s:%s failed with return code %s (%s)",
+            *broker,
+            rc,
+            paho.mqtt.enums.ConnackCode(rc).name,
         )
-    )
+        return
+    logger.debug("MQTT connected to %s:%s", *broker)
     mqtt.subscribe("wireguard-metrics/#")
     mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
     mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
     if config.get_config().load_balancing.share_pending_assignments:
         mqtt.subscribe(TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
+    if config.get_config().parker.enabled:
+        logger.debug("Parker mode is enabled, subscribing to parker topics")
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"))
 
 
 @mqtt.on_topic("wireguard-metrics/#")
@@ -438,7 +730,7 @@ def handle_mqtt_message_metrics(
 
     try:
         data = int(message.payload)
-    except ValueError:
+    except (TypeError, ValueError):
         logger.error(
             f"Ignored invalid metric on {message.topic}: {_decode_payload(message.payload)}"
         )
@@ -449,7 +741,33 @@ def handle_mqtt_message_metrics(
     worker_metrics.update(worker, domain, metric, data)
 
 
-@mqtt.on_topic(TOPIC_WORKER_STATUS.format(worker="+"))
+@mqtt.on_topic("parker/wireguard-metrics/#")
+def handle_mqtt_message_parker_metrics(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes published metrics from workers."""
+    logger.debug(
+        f"MQTT message received on {message.topic}: {message.payload.decode()}"
+    )
+    _, _, worker, metric = message.topic.split("/", 3)
+
+    if not worker or not metric:
+        logger.error("Ignored MQTT message with empty worker or metrics label")
+        return
+
+    try:
+        data = int(message.payload)
+    except (TypeError, ValueError):
+        logger.error(
+            "Invalid metrics payload for %s/%s: %s", worker, metric, message.payload
+        )
+        return
+
+    logger.info(f"Update Parker worker metrics: {metric} on {worker} = {data}")
+    parker_worker_metrics.update(worker, "parker", metric, data)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
 def handle_mqtt_message_status(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -458,7 +776,7 @@ def handle_mqtt_message_status(
 
     try:
         status = int(message.payload)
-    except ValueError:
+    except (TypeError, ValueError):
         logger.error(
             f"Ignored invalid status on {message.topic}: {_decode_payload(message.payload)}"
         )
@@ -481,7 +799,37 @@ def handle_mqtt_message_status(
         worker_metrics.set_draining(worker, draining)
 
 
-@mqtt.on_topic(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
+def handle_mqtt_message_parker_status(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes status messages from workers."""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    try:
+        status = int(message.payload)
+    except (TypeError, ValueError):
+        logger.error(
+            "Invalid worker status payload for %s: %s", worker, message.payload
+        )
+        return
+    if status < 1:
+        if parker_worker_metrics.get(worker).is_online():
+            logger.warning(f"Marking Parker worker as offline: {worker}")
+            parker_worker_metrics.set_offline(worker)
+        return
+    if not parker_worker_metrics.get(worker).is_online():
+        logger.warning(f"Marking Parker worker as online: {worker}")
+        parker_worker_metrics.set_online(worker)
+    draining = status == STATUS_DRAINING
+    if draining != parker_worker_metrics.is_draining(worker):
+        logger.warning(
+            f"Parker worker {worker} is {'draining' if draining else 'no longer draining'}"
+        )
+        parker_worker_metrics.set_draining(worker, draining)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
 def handle_mqtt_message_data(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
@@ -490,7 +838,7 @@ def handle_mqtt_message_data(
     Stores them in a local dict"""
     _, worker, domain, _ = message.topic.split("/", 3)
     if not is_valid_domain(domain):
-        logger.error(f"Domain {domain} not in configured domains.")
+        logger.debug(f"Domain {domain} not in configured domains.")
         return
 
     try:
@@ -538,6 +886,24 @@ def handle_mqtt_message_assignment(
     worker_metrics.record_assignment(worker, domain, key)
     assignment_history.record(key, domain, worker)
     SHARED_ASSIGNMENTS.inc()
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+", domain="+"))
+def handle_mqtt_message_parker_data(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Processes data messages from workers.
+
+    Stores them in a local dict"""
+    _, _, worker, _ = message.topic.split("/", 3)
+
+    data = json.loads(message.payload)
+    if not isinstance(data, dict):
+        logger.error("Invalid worker data received for %s: %s", worker, data)
+        return
+
+    logger.info("Worker data received for %s: %s", worker, data)
+    parker_worker_data[worker] = data
 
 
 @mqtt.on_message()
@@ -589,24 +955,6 @@ def rebalance_loop() -> None:
         except Exception as e:  # noqa: BLE001
             # Don't crash the thread when an exception is encountered
             logger.error("Exception during rebalancing task: %s", e, exc_info=True)
-
-
-def is_valid_wg_pubkey(pubkey: str) -> str:
-    """Verifies if key is a valid WireGuard public key or not.
-
-    Arguments:
-        pubkey: The key to verify.
-
-    Raises:
-        ValueError: If the Wireguard Key is invalid.
-
-    Returns:
-        The public key.
-    """
-    # TODO(ruairi): Refactor to return bool.
-    if WG_PUBKEY_PATTERN.match(pubkey) is None:
-        raise ValueError(f"Not a valid Wireguard public key: {pubkey}.")
-    return pubkey
 
 
 def join_host_port(host: str, port: str) -> str:

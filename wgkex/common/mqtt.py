@@ -25,3 +25,26 @@ TOPIC_WORKER_REMOVE_PEER = "wireguard-worker/{worker}/{domain}/remove"
 # "domain": str, "key": str}), not retained. Only used if share_pending_assignments is enabled, so
 # that multiple broker instances count each other's pending assignments. Ignored by older brokers.
 TOPIC_BROKER_ASSIGNMENT = "wireguard-broker/{broker}/assignment"
+
+# Parker (/api/v3) topics. Parker workers serve a single wg-nodes interface without domains.
+TOPIC_PARKER_WORKER_WG_DATA = "parker/wireguard-worker/{worker}/data"
+TOPIC_PARKER_WORKER_STATUS = "parker/" + TOPIC_WORKER_STATUS
+TOPIC_PARKER_CONNECTED_PEERS = (
+    "parker/wireguard-metrics/{worker}/" + CONNECTED_PEERS_METRIC
+)
+# Broker -> worker: Parker peer updates (JSON), addressed to a worker hostname or "all".
+TOPIC_PARKER_WG_PEER = "parker/wireguard/{worker}"
+
+
+class MQTTTopics:
+    """Namespace for the topic templates above."""
+
+    TOPIC_WORKER_WG_DATA = TOPIC_WORKER_WG_DATA
+    TOPIC_WORKER_STATUS = TOPIC_WORKER_STATUS
+    CONNECTED_PEERS_METRIC = CONNECTED_PEERS_METRIC
+    TOPIC_CONNECTED_PEERS = TOPIC_CONNECTED_PEERS
+
+    TOPIC_PARKER_WORKER_WG_DATA = TOPIC_PARKER_WORKER_WG_DATA
+    TOPIC_PARKER_WORKER_STATUS = TOPIC_PARKER_WORKER_STATUS
+    TOPIC_PARKER_CONNECTED_PEERS = TOPIC_PARKER_CONNECTED_PEERS
+    TOPIC_PARKER_WG_PEER = TOPIC_PARKER_WG_PEER
