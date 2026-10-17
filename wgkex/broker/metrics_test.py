@@ -462,6 +462,64 @@ class TestLoadBalancing(unittest.TestCase):
             wm.record_assignment("2", "d", f"key{i}")
         self.assertEqual(self.hints(wm)["2"].excess, 50)
 
+    def test_draining_worker_gets_no_new_peers(self):
+        """Draining workers are skipped while another worker is online, even if underloaded."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 0)
+        self.add_worker(wm, "2", 500)
+        wm.set_draining("1", True)
+        for seed in range(20):
+            wm.rng = random.Random(seed)
+            self.assertEqual(wm.get_best_worker("d")[0], "2")
+
+    def test_all_draining_still_returns_worker(self):
+        """If all workers are draining, a client still gets an endpoint."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 10)
+        wm.set_draining("1", True)
+        self.assertEqual(wm.get_best_worker("d")[0], "1")
+
+    def test_offline_resets_draining(self):
+        wm = self.collection()
+        self.add_worker(wm, "1", 10)
+        wm.set_draining("1", True)
+        wm.set_offline("1")
+        self.assertFalse(wm.is_draining("1"))
+
+    def test_drain_hints(self):
+        """Draining workers are asked to shed all peers at the drain rate, without waiting for stability."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 100, domains=("a", "b"))
+        self.add_worker(wm, "2", 50, domains=("a",))
+        wm.set_draining("1", True)
+        self.assertDictEqual(self.hints(wm), {})
+        hints = self.hints(wm, domains=["a", "b"], drain_rate=0.2)
+        self.assertSetEqual(set(hints), {"1"})
+        # Only domain a has somewhere else to go
+        self.assertDictEqual(
+            hints["1"].to_dict(),
+            {"excess": 100, "domains": ["a"], "max_evictions_ratio": 0.2},
+        )
+
+    def test_drain_hints_need_active_worker(self):
+        wm = self.collection()
+        self.add_worker(wm, "1", 100)
+        self.add_worker(wm, "2", 100)
+        wm.set_draining("1", True)
+        wm.set_draining("2", True)
+        self.assertDictEqual(self.hints(wm, drain_rate=0.2), {})
+
+    def test_rebalance_ignores_draining_workers(self):
+        """Normal rebalancing is computed among the workers which are not draining."""
+        wm = self.collection()
+        self.add_worker(wm, "1", 100)
+        self.add_worker(wm, "2", 100)
+        self.add_worker(wm, "3", 0)
+        wm.set_draining("3", True)
+        self.clock.now += 600
+        self.assertDictEqual(self.hints(wm), {})
+        self.assertSetEqual(set(self.hints(wm, drain_rate=0.1)), set())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -37,10 +37,30 @@ py_library(
        "//wgkex/common:mqtt",
        "//wgkex/common:utils",
        "//wgkex/config:config",
+       ":drain",
        ":msg_queue",
        ":netlink",
        ":rebalance",
     ],
+)
+
+py_library(
+    name = "drain",
+    srcs = ["drain.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+       "//wgkex/common:mqtt",
+    ],
+)
+
+py_test(
+    name = "drain_test",
+    srcs = ["drain_test.py"],
+    deps = [
+       ":drain",
+    ],
+    size="small",
 )
 
 py_test(
@@ -57,6 +77,7 @@ py_binary(
     name = "app",
     srcs = ["app.py"],
     deps = [
+       ":drain",
        ":mqtt",
        ":msg_queue",
        ":rebalance",

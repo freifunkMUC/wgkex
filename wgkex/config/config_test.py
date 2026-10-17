@@ -97,6 +97,16 @@ class TestConfig(unittest.TestCase):
             config.PeerCleanup(60, 10),
         )
 
+    def test_drain(self):
+        """Drain options are parsed with defaults, the drain rate is clamped."""
+        self.assertEqual(config.Drain.from_dict({}), config.Drain(None, 5))
+        self.assertEqual(
+            config.Drain.from_dict({"file": "/run/wgkex/drain", "check_interval": 0}),
+            config.Drain("/run/wgkex/drain", 1),
+        )
+        self.assertEqual(config.Rebalancing.from_dict({}).drain_rate, 0.1)
+        self.assertEqual(config.Rebalancing.from_dict({"drain_rate": 3}).drain_rate, 1)
+
     def test_relative_worker_weight_unknown_worker(self):
         """Workers missing from the config get the average weight."""
         workers = config.Workers.from_dict({"a": {"weight": 10}, "b": {"weight": 30}})

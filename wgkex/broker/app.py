@@ -17,6 +17,7 @@ from wgkex.broker.assignments import Assignment, AssignmentHistory
 from wgkex.broker.metrics import WorkerMetricsCollection
 from wgkex.common import logger
 from wgkex.common.mqtt import (
+    STATUS_DRAINING,
     TOPIC_WG_KEY,
     TOPIC_WORKER_REBALANCE,
     TOPIC_WORKER_REMOVE_PEER,
@@ -275,12 +276,21 @@ def handle_mqtt_message_status(
             f"Ignored invalid status on {message.topic}: {_decode_payload(message.payload)}"
         )
         return
-    if status < 1 and worker_metrics.get(worker).is_online():
-        logger.warning(f"Marking worker as offline: {worker}")
-        worker_metrics.set_offline(worker)
-    elif status >= 1 and not worker_metrics.get(worker).is_online():
+    if status < 1:
+        if worker_metrics.get(worker).is_online():
+            logger.warning(f"Marking worker as offline: {worker}")
+            worker_metrics.set_offline(worker)
+        return
+    if not worker_metrics.get(worker).is_online():
         logger.warning(f"Marking worker as online: {worker}")
         worker_metrics.set_online(worker)
+    # Status 2: draining, higher values are treated as online for forward compatibility
+    draining = status == STATUS_DRAINING
+    if draining != worker_metrics.is_draining(worker):
+        logger.warning(
+            f"Worker {worker} is {'draining' if draining else 'no longer draining'}"
+        )
+        worker_metrics.set_draining(worker, draining)
 
 
 @mqtt.on_topic(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
@@ -337,6 +347,7 @@ def publish_rebalance_hints() -> None:
         tolerance=rebalancing.tolerance,
         min_excess=rebalancing.min_excess_peers,
         stable_time=rebalancing.stable_time,
+        drain_rate=rebalancing.drain_rate,
     )
     for worker, hint in hints.items():
         logger.info(f"Asking worker {worker} to shed peers: {hint}")

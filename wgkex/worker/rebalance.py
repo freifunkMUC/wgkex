@@ -55,6 +55,8 @@ class _Instruction:
     excess: int
     domains: list[str]
     received_at: float
+    # Overrides the configured max_evictions_ratio, sent by the broker while this worker is draining
+    max_evictions_ratio: float | None = None
 
 
 class Rebalancer:
@@ -98,15 +100,24 @@ class Rebalancer:
             data = json.loads(payload)
             excess = int(data["excess"])
             domains = [d for d in data["domains"] if d in self._domains]
-        except (ValueError, TypeError, KeyError) as e:
+            ratio = data.get("max_evictions_ratio")
+            if ratio is not None:
+                ratio = min(max(float(ratio), 0.0), 1.0)
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
             logger.error("Ignoring invalid rebalancing hint %r: %s", payload, e)
             return
         with self._lock:
             self._instruction = _Instruction(
-                excess=excess, domains=domains, received_at=self._clock()
+                excess=excess,
+                domains=domains,
+                received_at=self._clock(),
+                max_evictions_ratio=ratio,
             )
         logger.info(
-            "Received rebalancing hint: %d excess peers, domains %s", excess, domains
+            "Received rebalancing hint: %d excess peers, domains %s%s",
+            excess,
+            domains,
+            f", drain rate {ratio}" if ratio is not None else "",
         )
 
     def run_once(self) -> list[str]:
@@ -145,9 +156,14 @@ class Rebalancer:
                     (iface, key) for key in peers if key not in evicted_recently
                 )
 
+        ratio = (
+            instruction.max_evictions_ratio
+            if instruction.max_evictions_ratio is not None
+            else self._cfg.max_evictions_ratio
+        )
         budget = min(
             instruction.excess,
-            max(1, int(total_connected * self._cfg.max_evictions_ratio)),
+            max(1, int(total_connected * ratio)),
             len(candidates),
         )
         if budget <= 0:

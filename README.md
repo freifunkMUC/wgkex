@@ -150,6 +150,34 @@ thread keeps its netlink sockets and interface indexes open instead of reconnect
 reopened and recreated interfaces looked up again automatically. WireGuard peers are still added one per netlink
 message, as pyroute2's `WireGuard.set()` accepts only a single peer.
 
+#### Drain mode and planned reboots
+
+A worker can be put into drain mode before planned maintenance:
+
+- `kill -USR1 <pid>` (or `docker kill -s USR1 <container>`) starts draining, `kill -USR2 <pid>` stops it.
+- Alternatively configure `drain.file` (e.g. `/run/wgkex/drain`): the worker is draining while that file exists,
+  checked every `drain.check_interval` seconds (default 5). Use a non-persistent location like `/run`, so the worker
+  does not come back up draining after the reboot. SIGUSR2 does not override an existing drain file.
+
+A draining worker publishes status `2`. The broker then stops assigning new v2 clients to it (unless every worker of a
+domain is draining, clients always get an endpoint). If active rebalancing is enabled on broker and worker, the broker
+also asks the draining worker to evict its connected peers at `load_balancing.rebalancing.drain_rate` (default 10%)
+of its peers per `interval`, without waiting for `stable_time`, and only in domains where another worker which is not
+draining is online. Evicted nodes notice the broken tunnel within about 1-2 minutes and redo the key exchange, which
+assigns them to another worker. Brokers from before drain mode treat status `2` like `1`.
+
+Planned reboot runbook:
+
+1. Start draining: `docker kill -s USR1 <worker container>` or `touch /run/wgkex/drain`. The worker logs
+   `Worker is draining, published status 2`.
+2. Wait until the connected peers metric (`wireguard-metrics/{domain}/{worker}/connected_peers`) is close to 0.
+   With the defaults (`interval: 60`, `drain_rate: 0.1`) roughly 90% of the peers are gone after 20 minutes. Without
+   rebalancing, peers stay until the reboot, but no new ones arrive.
+3. Reboot. On shutdown (SIGTERM) the worker publishes status `0`, the LWT does the same if it is killed.
+4. After the boot the worker publishes status `1` once its WireGuard interfaces are ready (drain file in `/run` is
+   gone, signals are not persisted). If a drain file in a persistent location was used, delete it.
+5. Normal rebalancing (if enabled) moves peers back to the rebooted worker after `stable_time`.
+
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
 
@@ -306,9 +334,11 @@ print(f'Key push was: {push_key.json().get("Message")}')
 - Removing peers broker->worker (when a key moved to another worker): `wireguard-worker/{worker}/{domain}/remove`,
   payload is the public key
 - Publishing metrics worker->broker: `wireguard-metrics/{domain}/{worker}/connected_peers`
-- Publishing worker status: `wireguard-worker/{worker}/status`
+- Publishing worker status: `wireguard-worker/{worker}/status`, retained, `0` offline, `1` online, `2` draining
+  (brokers from before drain mode treat any value >= 1 as online)
 - Publishing worker data: `wireguard-worker/{worker}/{domain}/data`
-- Rebalancing hints broker->worker (only if rebalancing is enabled): `wireguard-worker/{worker}/rebalance`
+- Rebalancing hints broker->worker (only if rebalancing is enabled): `wireguard-worker/{worker}/rebalance`,
+  JSON `{"excess": int, "domains": [...]}`, plus `"max_evictions_ratio": float` for draining workers
 
 ## Contact
 

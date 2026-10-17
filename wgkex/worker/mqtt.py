@@ -13,6 +13,7 @@ import pyroute2.netlink.exceptions
 
 from wgkex.common import logger
 from wgkex.common.mqtt import (
+    STATUS_DRAINING,
     TOPIC_CONNECTED_PEERS,
     TOPIC_WG_KEY,
     TOPIC_WORKER_REBALANCE,
@@ -22,6 +23,7 @@ from wgkex.common.mqtt import (
     WG_KEY_ALL_WORKERS,
 )
 from wgkex.config.config import get_config
+from wgkex.worker import drain
 from wgkex.worker.msg_queue import PeerOp, q
 from wgkex.worker.netlink import (
     get_connected_peers_count,
@@ -37,6 +39,9 @@ _ANNOUNCE_RETRY_INTERVAL = 10
 _rebalancer: Rebalancer | None = None
 _announce_retry_lock = threading.Lock()
 _announce_retry_running = False
+# Status last published while the worker was ready (None while not announced)
+_status_lock = threading.Lock()
+_published_status: int | None = None
 
 
 def _rebalancing_enabled() -> bool:
@@ -102,6 +107,24 @@ def connect(exit_event: threading.Event) -> None:
     )
     mark_offline_on_exit_thread.start()
 
+    drain_cfg = get_config().drain
+    drain.drain_state.configure(
+        drain_cfg.file if isinstance(drain_cfg.file, str) else None
+    )
+    threading.Thread(
+        target=drain.watch,
+        args=(
+            exit_event,
+            lambda status: publish_status(client, status),
+            (
+                drain_cfg.check_interval
+                if isinstance(drain_cfg.check_interval, int)
+                else 5
+            ),
+        ),
+        daemon=True,
+    ).start()
+
     for domain in domains:
         # Schedule repeated metrics publishing
         metrics_thread = threading.Thread(
@@ -136,6 +159,10 @@ def on_disconnect(client: mqtt.Client, userdata: Any, rc):
                     was unexpected, such as might be caused by a network error.
     """
     logger.debug("Disconnected with result code " + str(rc))
+    global _published_status
+    with _status_lock:
+        # The broker reset the status via the LWT, it is published again after the next announce
+        _published_status = None
 
 
 # The callback for when the client receives a CONNACK response from the server.
@@ -217,8 +244,38 @@ def publish_worker_data_and_status(client: mqtt.Client) -> bool:
     if not ready:
         return False
 
-    # Mark worker as online
-    client.publish(TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), 1, qos=1, retain=True)
+    # Mark worker as online (or draining)
+    global _published_status
+    with _status_lock:
+        status = drain.drain_state.status()
+        client.publish(
+            TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), status, qos=1, retain=True
+        )
+        _published_status = status
+    logger.info("Published worker status %d", status)
+    return True
+
+
+def publish_status(client: mqtt.Client, status: int) -> bool:
+    """Publishes a changed worker status (online/draining), once the worker has been announced.
+
+    Returns:
+        False if the worker is not announced yet, the status is then published by the announcement.
+    """
+    global _published_status
+    with _status_lock:
+        if _published_status is None:
+            return False
+        if _published_status == status:
+            return True
+        client.publish(
+            TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), status, qos=1, retain=True
+        )
+        _published_status = status
+    if status == STATUS_DRAINING:
+        logger.warning("Worker is draining, published status %d", status)
+    else:
+        logger.warning("Worker stopped draining, published status %d", status)
     return True
 
 

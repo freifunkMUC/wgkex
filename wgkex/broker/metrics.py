@@ -18,6 +18,8 @@ class WorkerMetrics:
     #            domain -> [metric name -> metric data]
     domain_data: dict[str, dict[str, Any]] = dataclasses.field(default_factory=dict)
     online: bool = False
+    # Draining workers (status 2) get no new peers and shed their existing ones
+    draining: bool = False
     #            domain -> time the connected peers metric was last received
     updated_at: dict[str, float] = dataclasses.field(default_factory=dict)
 
@@ -80,9 +82,14 @@ class RebalanceHint:
 
     excess: int
     domains: list[str]
+    # Only set for draining workers, overrides the eviction rate configured on the worker
+    max_evictions_ratio: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"excess": self.excess, "domains": self.domains}
+        d: dict[str, Any] = {"excess": self.excess, "domains": self.domains}
+        if self.max_evictions_ratio is not None:
+            d["max_evictions_ratio"] = self.max_evictions_ratio
+        return d
 
 
 @dataclasses.dataclass
@@ -185,10 +192,17 @@ class WorkerMetricsCollection:
             self.data[worker].online = True
             self._refresh_topology()
 
+    def set_draining(self, worker: str, draining: bool) -> None:
+        with self._lock:
+            if worker not in self.data:
+                self.data[worker] = WorkerMetrics(worker)
+            self.data[worker].draining = draining
+
     def set_offline(self, worker: str) -> None:
         with self._lock:
             if worker in self.data and self.data[worker].online:
                 self.data[worker].online = False
+                self.data[worker].draining = False
                 self._refresh_topology()
                 self._prune_pending(lambda p: p.worker == worker)
 
@@ -256,6 +270,8 @@ class WorkerMetricsCollection:
         """Determines the worker that a new client should connect to.
 
         Only workers which are online for the domain (and accepted by `eligible`) are considered.
+        Draining workers are only used if all of them are draining, so that a client always gets an
+        endpoint while any worker is online.
         Load is measured as connected peers over all domains plus pending assignments.
         The worker is chosen randomly with a probability proportional to the number of peers it is
         missing to its weighted target, so that concurrent requests and multiple broker instances
@@ -275,6 +291,9 @@ class WorkerMetricsCollection:
             ]
             if not candidates:
                 return None, 0, 0
+            not_draining = [w for w in candidates if not self.data[w].draining]
+            if not_draining:
+                candidates = not_draining
 
             targets = self._targets(candidates)
             for w, (load, target) in targets.items():
@@ -304,6 +323,7 @@ class WorkerMetricsCollection:
         tolerance: float,
         min_excess: int,
         stable_time: float,
+        drain_rate: float | None = None,
     ) -> dict[str, RebalanceHint]:
         """Computes which workers should shed peers to approach their weighted target.
 
@@ -311,25 +331,29 @@ class WorkerMetricsCollection:
         for workers whose excess exceeds max(min_excess, tolerance * target), and only for domains in
         which another worker below its target is online, so that evicted peers have somewhere to go.
 
+        If drain_rate is given, draining workers are asked to shed all their peers at that rate,
+        regardless of stability, in domains where a worker which is not draining is online.
+
         Returns:
             A dict mapping worker names to rebalance hints.
         """
         with self._lock:
-            if not self.is_topology_stable(stable_time):
-                return {}
-
             online = [
                 wm.worker
                 for wm in self.data.values()
                 if self._is_online(wm)
                 and any(self._is_online(wm, d) for d in wm.domain_data)
             ]
-            if len(online) < 2:
-                return {}
-            targets = self._targets(online)
+            active = [w for w in online if not self.data[w].draining]
+            hints = {}
+            if drain_rate is not None:
+                hints.update(self._drain_hints(domains, online, active, drain_rate))
+
+            if len(active) < 2 or not self.is_topology_stable(stable_time):
+                return hints
+            targets = self._targets(active)
             underloaded = {w for w, (load, target) in targets.items() if load < target}
 
-            hints = {}
             for w, (load, target) in targets.items():
                 excess = load - target
                 if excess <= max(min_excess, tolerance * target):
@@ -343,3 +367,31 @@ class WorkerMetricsCollection:
                 if hint_domains:
                     hints[w] = RebalanceHint(excess=int(excess), domains=hint_domains)
             return hints
+
+    def _drain_hints(
+        self, domains: list[str], online: list[str], active: list[str], rate: float
+    ) -> dict[str, RebalanceHint]:
+        hints = {}
+        for w in online:
+            wm = self.data[w]
+            if not wm.draining:
+                continue
+            hint_domains = [
+                d
+                for d in domains
+                if self._is_online(wm, d)
+                and any(self._is_online(self.data[a], d) for a in active)
+            ]
+            peers = sum(
+                max(wm.get_domain_metrics(d).get(CONNECTED_PEERS_METRIC, 0), 0)
+                for d in hint_domains
+            )
+            if hint_domains and peers > 0:
+                hints[w] = RebalanceHint(
+                    excess=peers, domains=hint_domains, max_evictions_ratio=rate
+                )
+        return hints
+
+    def is_draining(self, worker: str) -> bool:
+        with self._lock:
+            return worker in self.data and self.data[worker].draining

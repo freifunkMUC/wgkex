@@ -106,6 +106,7 @@ class Rebalancing:
         stable_time: [broker] Seconds without any worker going online/offline before rebalancing.
         max_evictions_ratio: [worker] Max share of connected peers evicted per interval (at least 1).
         eviction_cooldown: [worker] Seconds during which a peer is not evicted again.
+        drain_rate: [broker] Share of its peers a draining worker is asked to evict per interval.
     """
 
     enabled: bool = False
@@ -115,6 +116,7 @@ class Rebalancing:
     stable_time: int = 600
     max_evictions_ratio: float = 0.01
     eviction_cooldown: int = 3600
+    drain_rate: float = 0.1
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Rebalancing":
@@ -128,6 +130,31 @@ class Rebalancing:
                 cfg.get("max_evictions_ratio", cls.max_evictions_ratio)
             ),
             eviction_cooldown=int(cfg.get("eviction_cooldown", cls.eviction_cooldown)),
+            drain_rate=min(max(float(cfg.get("drain_rate", cls.drain_rate)), 0.0), 1.0),
+        )
+
+
+@dataclasses.dataclass
+class Drain:
+    """A representation of the 'drain' key in the configuration file (worker-only).
+
+    A draining worker publishes status 2: new brokers stop assigning new peers to it and, with
+    rebalancing enabled, ask it to shed its peers. Draining is started with SIGUSR1 (stopped with
+    SIGUSR2) or while the configured file exists.
+
+    Attributes:
+        file: Optional path of a file, the worker is draining while it exists.
+        check_interval: Seconds between checks of the drain file.
+    """
+
+    file: str | None = None
+    check_interval: int = 5
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Drain":
+        return cls(
+            file=cfg.get("file") or None,
+            check_interval=max(int(cfg.get("check_interval", cls.check_interval)), 1),
         )
 
 
@@ -277,6 +304,7 @@ class Config:
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
         load_balancing: Load balancing and rebalancing configuration.
         peer_cleanup: Stale peer cleanup configuration (worker-only).
+        drain: Drain mode configuration (worker-only).
     """
 
     raw: dict[str, Any]
@@ -288,6 +316,7 @@ class Config:
     external_name: str | None
     load_balancing: LoadBalancing = dataclasses.field(default_factory=LoadBalancing)
     peer_cleanup: PeerCleanup = dataclasses.field(default_factory=PeerCleanup)
+    drain: Drain = dataclasses.field(default_factory=Drain)
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
@@ -310,6 +339,7 @@ class Config:
             external_name=cfg.get("externalName"),
             load_balancing=LoadBalancing.from_dict(cfg.get("load_balancing") or {}),
             peer_cleanup=PeerCleanup.from_dict(cfg.get("peer_cleanup") or {}),
+            drain=Drain.from_dict(cfg.get("drain") or {}),
         )
 
     def get(self, key: str) -> Any:
