@@ -3,6 +3,7 @@
 The Gluon package ffmuc-mesh-vpn-wireguard-vxlan relies on the exact response shapes asserted here.
 """
 
+import importlib
 import ipaddress
 import json
 import sys
@@ -625,6 +626,85 @@ class BrokerSharedAssignmentsTest(BrokerTestCase):
                 json.dumps({"worker": "gw1", "domain": _DOMAIN, "key": "x"}).encode(),
             )
             self.assertEqual(self.app.worker_metrics.get_pending_count("gw1"), 2)
+
+
+class MqttConnectTestCase(unittest.TestCase):
+    """Regression test for subscriptions being lost when the CONNACK arrives early."""
+
+    _EXPECTED_TOPICS = (
+        "wireguard-metrics/#",
+        "wireguard-worker/+/status",
+        "wireguard-worker/+/+/data",
+        "wireguard-broker/+/assignment",
+    )
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        config._parsed_config = config.Config.from_dict(
+            {
+                "domains": [_DOMAIN],
+                "domain_prefixes": ["ffmuc_"],
+                "workers": {},
+                "mqtt": {"broker_url": "", "username": "", "password": ""},
+                "load_balancing": {"share_pending_assignments": True},
+            }
+        )
+        mqtt_mock = mock.MagicMock()
+        cls.mqtt_mock = mqtt_mock
+        cls.connect_handler = None
+        cls.subscribed_on_connect: list[str] = []
+
+        def on_connect():
+            def decorator(f):
+                cls.connect_handler = f
+                return f
+
+            return decorator
+
+        def init_app(app):
+            # Deliver the CONNACK immediately, as a fast broker would.
+            if cls.connect_handler is not None:
+                cls.connect_handler(None, None, {}, 0)
+            cls.subscribed_on_connect = [
+                c.args[0] for c in mqtt_mock.subscribe.call_args_list
+            ]
+
+        mqtt_mock.on_connect.side_effect = on_connect
+        mqtt_mock.on_topic.side_effect = _decorator_factory
+        mqtt_mock.on_message.side_effect = _decorator_factory
+        mqtt_mock.init_app.side_effect = init_app
+        cls.mqtt_patcher = mock.patch("flask_mqtt.Mqtt", return_value=mqtt_mock)
+        mqtt_class = cls.mqtt_patcher.start()
+        sys.modules.pop("wgkex.broker.app", None)
+        cls.app = importlib.import_module("wgkex.broker.app")
+        cls.mqtt_class = mqtt_class
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.mqtt_patcher.stop()
+        sys.modules.pop("wgkex.broker.app", None)
+        config._parsed_config = None
+
+    def test_connects_after_handlers_are_registered(self):
+        self.mqtt_class.assert_called_once_with()
+        self.mqtt_mock.init_app.assert_called_once_with(self.app.app)
+        names = [c[0] for c in self.mqtt_mock.mock_calls]
+        init_index = names.index("init_app")
+        for decorator in ("on_connect", "on_topic", "on_message"):
+            self.assertIn(decorator, names)
+            last = len(names) - 1 - names[::-1].index(decorator)
+            self.assertLess(last, init_index, decorator)
+
+    def test_subscribes_on_immediate_connect(self):
+        self.assertEqual(self.subscribed_on_connect, list(self._EXPECTED_TOPICS))
+
+    def test_resubscribes_on_reconnect(self):
+        self.mqtt_mock.subscribe.reset_mock()
+        self.app.handle_mqtt_connect(None, None, {}, 0)
+        self.assertEqual(
+            [c.args[0] for c in self.mqtt_mock.subscribe.call_args_list],
+            list(self._EXPECTED_TOPICS),
+        )
 
 
 if __name__ == "__main__":
