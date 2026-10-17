@@ -211,6 +211,24 @@ is set (bind address `metrics.worker_host`, default `0.0.0.0`):
 | `wgkex_worker_netlink_reconnects_total` | | Netlink sockets reopened after an error |
 | `wgkex_worker_evictions_total` | `kind` (`rebalance`, `drain`) | Peers evicted on request of the broker |
 
+#### Grafana dashboards
+
+[contrib/grafana](contrib/grafana) contains example dashboards with the same panels for two setups:
+
+- [wgkex-prometheus.json](contrib/grafana/wgkex-prometheus.json): for a Prometheus datasource scraping the broker and
+  worker `/metrics` endpoints.
+- [wgkex-influxdb.json](contrib/grafana/wgkex-influxdb.json): for an InfluxDB (1.x, InfluxQL) datasource, filled by
+  Telegraf's `inputs.prometheus` plugin with `metric_version = 2` (measurement `prometheus`). See
+  [telegraf-wgkex.conf](contrib/grafana/telegraf-wgkex.conf); the dashboard expects the tag `wgkex_role = "worker"` on
+  the worker inputs. Histograms can't be aggregated into percentiles in InfluxQL, so netlink latency is shown as mean.
+
+Import them via *Dashboards → New → Import* and choose the datasource for the `DS` variable. The `worker` and `domain`
+variables filter the broker panels; `instance` (Prometheus) / `url` (InfluxDB) filters the worker panels.
+Panels cover effective peers against the weighted target, connected peers per domain, pending assignments,
+online/draining state, assignments per worker, rebalancing hints and evictions, request rates and errors, rate limited and
+blocked requests, worker queue depth, peer operations and netlink latency/reconnects. Rate limited and blocked requests
+are only reported by brokers that support rate limiting and blocklists.
+
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
 

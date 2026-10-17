@@ -1,0 +1,1159 @@
+{
+  "title": "wgkex (InfluxDB)",
+  "uid": "wgkex-influx",
+  "description": "wgkex broker load balancing and worker metrics, see https://github.com/freifunkMUC/wgkex",
+  "tags": [
+    "wgkex",
+    "freifunk"
+  ],
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "annotations": {
+    "list": []
+  },
+  "links": [],
+  "templating": {
+    "list": [
+      {
+        "type": "datasource",
+        "name": "DS",
+        "label": "Data source",
+        "query": "influxdb",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": ""
+      },
+      {
+        "type": "query",
+        "name": "worker",
+        "label": "Worker",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${DS}"
+        },
+        "query": "SHOW TAG VALUES FROM \"prometheus\" WITH KEY = \"worker\"",
+        "definition": "SHOW TAG VALUES FROM \"prometheus\" WITH KEY = \"worker\"",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "type": "query",
+        "name": "domain",
+        "label": "Domain",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${DS}"
+        },
+        "query": "SHOW TAG VALUES FROM \"prometheus\" WITH KEY = \"domain\"",
+        "definition": "SHOW TAG VALUES FROM \"prometheus\" WITH KEY = \"domain\"",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      },
+      {
+        "type": "query",
+        "name": "instance",
+        "label": "Worker metrics URL",
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${DS}"
+        },
+        "query": "SHOW TAG VALUES FROM \"prometheus\" WITH KEY = \"url\" WHERE \"wgkex_role\" = 'worker'",
+        "definition": "SHOW TAG VALUES FROM \"prometheus\" WITH KEY = \"url\" WHERE \"wgkex_role\" = 'worker'",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Load distribution",
+      "id": 1,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Effective peers vs. weighted target",
+      "id": 2,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* target$"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT last(\"wgkex_broker_worker_effective_peers\") FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND $timeFilter GROUP BY time($__interval), \"worker\" fill(previous)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker effective"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT last(\"wgkex_broker_worker_target_peers\") FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND $timeFilter GROUP BY time($__interval), \"worker\" fill(previous)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker target"
+        }
+      ],
+      "description": "Effective peers (connected + pending assignments) per worker and its share of all peers according to the configured weight. Dashed: target."
+    },
+    {
+      "type": "timeseries",
+      "title": "Connected peers per worker and domain",
+      "id": 3,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT last(\"wgkex_broker_worker_domain_connected_peers\") FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND \"domain\" =~ /^$domain$/ AND $timeFilter GROUP BY time($__interval), \"worker\", \"domain\" fill(previous)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker $tag_domain"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Pending assignments",
+      "id": 4,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT last(\"wgkex_broker_worker_pending_assignments\") FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND $timeFilter GROUP BY time($__interval), \"worker\" fill(previous)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker"
+        }
+      ],
+      "description": "Peers assigned by the v2 API which are not yet reflected in the metrics of the worker."
+    },
+    {
+      "type": "state-timeline",
+      "title": "Worker state",
+      "id": 5,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "offline",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "online",
+                  "color": "green",
+                  "index": 1
+                },
+                "2": {
+                  "text": "draining",
+                  "color": "orange",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT last(\"wgkex_broker_worker_online\") + last(\"wgkex_broker_worker_draining\") FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND $timeFilter GROUP BY time($__interval), \"worker\" fill(previous)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker"
+        }
+      ]
+    },
+    {
+      "type": "state-timeline",
+      "title": "Worker online per domain",
+      "id": 6,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "offline",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "online",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              },
+              {
+                "color": "orange",
+                "value": 2
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "rowHeight": 0.9,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT last(\"wgkex_broker_worker_domain_online\") FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND \"domain\" =~ /^$domain$/ AND $timeFilter GROUP BY time($__interval), \"worker\", \"domain\" fill(previous)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker $tag_domain"
+        }
+      ],
+      "description": "Online with fresh connected peers metrics for the domain (load_balancing.metrics_max_age)."
+    },
+    {
+      "type": "timeseries",
+      "title": "Assignments per worker (per minute)",
+      "id": 7,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_broker_assignments_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND \"domain\" =~ /^$domain$/ AND $timeFilter GROUP BY time($__interval), \"domain\", \"host\", \"worker\") WHERE $timeFilter GROUP BY time($__interval), \"worker\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Rebalancing",
+      "id": 8,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Rebalancing hints (per minute)",
+      "id": 9,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_broker_rebalance_hints_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND $timeFilter GROUP BY time($__interval), \"host\", \"kind\", \"worker\") WHERE $timeFilter GROUP BY time($__interval), \"worker\", \"kind\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker $tag_kind"
+        }
+      ],
+      "description": "Hints published by the broker asking overloaded (kind=rebalance) or draining (kind=drain) workers to shed peers."
+    },
+    {
+      "type": "timeseries",
+      "title": "Excess peers in hints (per minute)",
+      "id": 10,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_broker_rebalance_hint_excess_peers_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"worker\" =~ /^$worker$/ AND $timeFilter GROUP BY time($__interval), \"host\", \"kind\", \"worker\") WHERE $timeFilter GROUP BY time($__interval), \"worker\", \"kind\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_worker $tag_kind"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Evictions (per minute)",
+      "id": 11,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_worker_evictions_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"url\" =~ /^$instance$/ AND $timeFilter GROUP BY time($__interval), \"kind\", \"url\") WHERE $timeFilter GROUP BY time($__interval), \"url\", \"kind\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_url $tag_kind"
+        }
+      ],
+      "description": "Peers removed by workers on request of the broker (worker metrics, requires metrics.worker_port)."
+    },
+    {
+      "type": "row",
+      "title": "Key exchange API",
+      "id": 12,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests (per second)",
+      "id": 13,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_broker_key_exchange_requests_total\"), 1s) AS \"r\" FROM \"prometheus\" WHERE $timeFilter GROUP BY time($__interval), \"api\", \"host\", \"result\") WHERE $timeFilter GROUP BY time($__interval), \"api\", \"result\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_api $tag_result"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Failed requests (per minute)",
+      "id": 14,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_broker_key_exchange_requests_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"result\" =~ /^(invalid|no_worker|no_worker_data)$/ AND $timeFilter GROUP BY time($__interval), \"api\", \"host\", \"result\") WHERE $timeFilter GROUP BY time($__interval), \"api\", \"result\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_api $tag_result"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_broker_mqtt_message_errors_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE $timeFilter GROUP BY time($__interval), \"handler\", \"host\") WHERE $timeFilter GROUP BY time($__interval), \"handler\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "MQTT $tag_handler"
+        }
+      ],
+      "description": "Invalid requests, no worker online or no worker data, and invalid MQTT messages received by the broker."
+    },
+    {
+      "type": "timeseries",
+      "title": "Rate limited and blocked requests (per minute)",
+      "id": 15,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 59
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_broker_key_exchange_requests_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"result\" =~ /^(rate_limited|blocked)$/ AND $timeFilter GROUP BY time($__interval), \"api\", \"host\", \"result\") WHERE $timeFilter GROUP BY time($__interval), \"api\", \"result\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_api $tag_result"
+        }
+      ],
+      "description": "Rate limited requests still get a normal response but the key is not published again; blocked keys are rejected."
+    },
+    {
+      "type": "row",
+      "title": "Workers",
+      "id": 16,
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Queue depth",
+      "id": 17,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT last(\"wgkex_worker_queue_depth\") FROM \"prometheus\" WHERE \"url\" =~ /^$instance$/ AND $timeFilter GROUP BY time($__interval), \"url\" fill(previous)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_url"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Peer operations (per minute)",
+      "id": 18,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 68
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_worker_peer_operations_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"url\" =~ /^$instance$/ AND $timeFilter GROUP BY time($__interval), \"op\", \"result\", \"url\") WHERE $timeFilter GROUP BY time($__interval), \"url\", \"op\", \"result\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_url $tag_op $tag_result"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Netlink operation latency",
+      "id": 19,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 76
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT non_negative_derivative(last(\"wgkex_worker_netlink_operation_seconds_sum\"), 1m) / non_negative_derivative(last(\"wgkex_worker_netlink_operation_seconds_count\"), 1m) FROM \"prometheus\" WHERE \"url\" =~ /^$instance$/ AND $timeFilter GROUP BY time($__interval), \"url\", \"op\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_url $tag_op mean"
+        }
+      ],
+      "description": "Prometheus: 95th percentile from the histogram. InfluxDB: mean (sum / count)."
+    },
+    {
+      "type": "timeseries",
+      "title": "Netlink reconnects (per minute)",
+      "id": 20,
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 76
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS}"
+          },
+          "query": "SELECT sum(\"r\") FROM (SELECT non_negative_derivative(last(\"wgkex_worker_netlink_reconnects_total\"), 1m) AS \"r\" FROM \"prometheus\" WHERE \"url\" =~ /^$instance$/ AND $timeFilter GROUP BY time($__interval), \"url\") WHERE $timeFilter GROUP BY time($__interval), \"url\" fill(null)",
+          "rawQuery": true,
+          "resultFormat": "time_series",
+          "alias": "$tag_url"
+        }
+      ]
+    }
+  ]
+}
