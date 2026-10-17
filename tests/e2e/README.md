@@ -42,6 +42,12 @@ broker 10.0.0.1:5000        wan 10.0.0.(10+K)                  wan 10.1.x.y
 * Underlay MTU (1450 on the VXLAN wan) is not adjusted; test traffic uses small packets only.
 * A hard reboot is: wan down, SIGKILL the worker, delete `wg-welt`/`vx-welt`, wait, recreate, start
   the worker. The killed worker never publishes status 0, as with a real power loss.
+* All simulated nodes reach the broker from one IP, so the rig sets
+  `rate_limit.per_client_requests: 0`; the global limit stays at its default.
+* The broker can miss its MQTT subscriptions if flask_mqtt connects before the `on_connect`
+  handler is registered (then every v2 request gets "No worker online"). The rig checks the
+  mosquitto subscribe log after starting the broker and restarts it if needed (`broker_restart`
+  mark, shown under **warnings**).
 
 ## Usage
 
@@ -55,7 +61,7 @@ NODES=50 ./run.sh local smoke
 # multi host: on every gateway/node host first
 sudo ./run.sh agent <CTL_IP>
 # then on the broker host (one IP per gateway; repeat an IP to stack gateways on one host)
-sudo ./run.sh controller "<GW1_IP> <GW2_IP> <GW3_IP> <GW4_IP>" <NODES_IP> stack
+sudo ./run.sh controller "<GW1_IP> <GW2_IP> <GW3_IP> <GW4_IP>" <NODES_IP> compare
 # or in the background: ./run.sh controller-bg ... and poll ./run.sh status
 ```
 
@@ -80,10 +86,14 @@ Scenarios:
 * **keys/s peak**: MQTT key publishes per second; **processed/s** per gateway from
   `Processing queue for key` log lines; **lag**: publish → processed.
 * **max dev / converge**: max relative deviation of connected peers per gateway from the weighted
-  target; time after the gateway comes back until it stays within 10 %; rebooted gateway's share
-  after 5/15/30/60 min.
+  target; time after the gateway comes back until it stays within 10 % (20 %), `n/c` if it never
+  does; rebooted gateway's share after 5/15/30/60 min.
 * **reconnects / outages**: checkuplink reconnects after warm-up, outage = last good check →
   reconnected (includes the 1 min check interval), split by cause (reboot / rebalance eviction).
 * **BUM**: per gateway, configured peers, FDB flood entries, `wg-welt` tx pps and tx drops
   (replication to configured-but-absent peers) in the steady window.
 * **CPU**: per process (broker, mosquitto, workers) and host softirq.
+* **rate limited**: `wgkex_broker_key_exchange_requests_total{result="rate_limited"}` from the
+  broker's `/metrics` at the end of the run (brokers with #299 and later).
+* **warnings**: broker restarts, "No worker online" answers, v1 fallbacks and node simulator
+  errors. A run with warnings does not show wgkex's normal behaviour.

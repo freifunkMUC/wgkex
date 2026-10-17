@@ -8,7 +8,7 @@
 #
 # GW_IPS has one address per gateway (4 gateways: weights 30,30,20,20), e.g. "10.1.0.5 10.1.0.6
 # 10.1.0.7 10.1.0.8"; addresses may repeat to put several gateways on one host. PLAN is a file in
-# plans/ (default: $PLAN or stack). Sources to test are expected in src/<name>/ (wgkex repo trees).
+# plans/ (default: $PLAN or compare). Sources to test are expected in src/<name>/ (wgkex repo trees).
 # Results: results/<run>/..., results/summary.{json,md}, results/*/timeline.png
 set -euo pipefail
 # The node simulator runs ~3 fds per concurrent reconnect
@@ -51,7 +51,7 @@ agent_addr() {
 }
 
 plan_file() {
-	local p=${1:-${PLAN:-stack}}
+	local p=${1:-${PLAN:-compare}}
 	[ -f "$p" ] || p="plans/$p.txt"
 	echo "$p"
 }
