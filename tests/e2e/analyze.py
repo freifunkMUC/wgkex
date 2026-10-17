@@ -136,17 +136,18 @@ class Run:
             res["final_up"] = last["up"]
             res["final_max_dev"] = rnd(self.deviation(last["by_gw"], all_gw), 3)
         if back:
-            # Converged = within 10% of the weighted target from then on until the end
-            conv = None
-            for t, dev in series:
-                if t < back:
-                    continue
-                if dev is not None and dev <= 0.10:
-                    if conv is None:
-                        conv = t
-                else:
-                    conv = None
-            res["converge_s"] = rnd(conv - back) if conv else None
+            # Converged = within 10% (20%) of the weighted target from then on until the end
+            for key, limit in (("converge_s", 0.10), ("converge_20_s", 0.20)):
+                conv = None
+                for t, dev in series:
+                    if t < back:
+                        continue
+                    if dev is not None and dev <= limit:
+                        if conv is None:
+                            conv = t
+                    else:
+                        conv = None
+                res[key] = rnd(conv - back) if conv else None
             res["observed_s"] = rnd(end - back)
             res["dev_at_back"] = rnd(
                 next((d for t, d in series if t >= back and d is not None), None), 3
@@ -382,8 +383,56 @@ class Run:
 
     # --- output ------------------------------------------------------------------------------
 
+    def broker_requests(self) -> dict | None:
+        """wgkex_broker_key_exchange_requests_total by result, from the end of the run."""
+        try:
+            f = open(os.path.join(self.path, "broker-metrics.prom"))
+        except FileNotFoundError:
+            return None
+        res: dict[str, float] = {}
+        with f:
+            for line in f:
+                m = re.match(
+                    r"wgkex_broker_key_exchange_requests_total\{(.*)\} (\S+)", line
+                )
+                if m:
+                    result = re.search(r'result="([^"]*)"', m[1])
+                    key = result[1] if result else "?"
+                    res[key] = res.get(key, 0) + float(m[2])
+        return res
+
+    def warnings(self) -> list[str]:
+        """Things that make a run unrepresentative of wgkex itself."""
+        res = []
+        for m in self.marks:
+            if m["mark"] == "broker_restart":
+                res.append(f"broker restarted ({m.get('reason')})")
+        online = self.mark("workers_online") or 0
+        no_worker = sum(
+            1
+            for t, line in log_lines(
+                os.path.join(self.path, "ctl", "logs", "broker.log")
+            )
+            if t >= online and "No worker online" in line
+        )
+        if no_worker:
+            res.append(f"broker answered 'No worker online' {no_worker}x")
+        v1 = sum(
+            1
+            for e in self.events
+            if e.get("ev") == "reconnect" and e.get("api") == "v1"
+        )
+        if v1:
+            res.append(f"{v1} v1 fallbacks")
+        sim = sum(1 for e in self.events if e.get("ev") == "sim_error")
+        if sim:
+            res.append(f"{sim} node simulator errors")
+        return res
+
     def summary(self) -> dict:
         return {
+            "warnings": self.warnings(),
+            "broker_requests": self.broker_requests(),
             "run": self.name,
             "label": self.meta.get("label"),
             "commit": self.meta.get("commit"),
@@ -491,9 +540,10 @@ def table(rows: list[dict]) -> str:
                 (v["peak_per_s"] for v in g(r, "keys", "per_gw").values()), default=None
             ),
         ),
-        ("lag p95 s", lambda r: g(r, "keys", "lag_s", "p95")),
+        ("lag p95 ms", lambda r: _ms(g(r, "keys", "lag_s", "p95"))),
         ("final max dev", lambda r: g(r, "distribution", "final_max_dev")),
-        ("converge s", lambda r: g(r, "distribution", "converge_s")),
+        ("converge ≤10% s", lambda r: _conv(g(r, "distribution"), "converge_s")),
+        ("converge ≤20% s", lambda r: _conv(g(r, "distribution"), "converge_20_s")),
         ("gw1 share 30m", lambda r: g(r, "distribution", "rebooted_gw_share_30m")),
         ("reconnects*", lambda r: g(r, "reconnects", "after_warm")),
         ("nodes*", lambda r: g(r, "reconnects", "after_warm_nodes")),
@@ -508,6 +558,7 @@ def table(rows: list[dict]) -> str:
         ),
         ("api p95 ms", lambda r: g(r, "reconnects", "api_ms", "p95")),
         ("v1 fallbacks", lambda r: g(r, "reconnects", "api_v1")),
+        ("rate limited", lambda r: g(r, "broker_requests", "rate_limited")),
         ("peers/gw", lambda r: _avg([v["peers"] for v in g(r, "bum").values()])),
         ("fdb/gw", lambda r: _avg([v["fdb"] for v in g(r, "bum").values()])),
         (
@@ -529,6 +580,7 @@ def table(rows: list[dict]) -> str:
             ),
         ),
         ("broker CPU %", lambda r: g(r, "cpu", "proc_pct", "broker", "steady_avg")),
+        ("warnings", lambda r: "; ".join(r.get("warnings") or []) or None),
     ]
     lines = [
         "| " + " | ".join(c for c, _ in cols) + " |",
@@ -546,9 +598,22 @@ def table(rows: list[dict]) -> str:
     lines.append(
         "\\* after warm-up (bring-up excluded). Outage = last good check → reconnected "
         "(includes checkuplink's 1 min check interval). BUM columns: steady window before "
-        "any reboot/drain."
+        "any reboot/drain. n/c = not converged within the observation window. Runs with "
+        "warnings are not representative."
     )
     return "\n".join(lines)
+
+
+def _ms(v):
+    return None if v is None else max(0, round(v * 1000))
+
+
+def _conv(dist, key):
+    if not dist or "observed_s" not in dist:
+        return None
+    if dist.get(key) is not None:
+        return dist[key]
+    return f"n/c in {dist['observed_s']} (final dev {dist.get('final_max_dev')})"
 
 
 def _pp(s):

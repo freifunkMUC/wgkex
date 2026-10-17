@@ -29,6 +29,7 @@ import sys
 import tarfile
 import threading
 import time
+import urllib.request
 
 import paho.mqtt.client as mqtt
 import yaml
@@ -156,6 +157,9 @@ class Rig:
             "load_balancing": {
                 "rebalancing": {"enabled": self.args.rebalancing == "on"}
             },
+            # All simulated nodes share the node host's IP; keep only the global limit (#300).
+            # Older brokers ignore the key.
+            "rate_limit": {"per_client_requests": 0},
         }
         if worker is not None:
             cfg["externalName"] = f"10.0.0.{10 + worker}"
@@ -234,12 +238,23 @@ class Rig:
         self.nodes.net("underlay_fdb", str(a.nodes))
         self.mark("setup_done", nodes_create_s=round(time.time() - t, 1))
 
+    def start_broker(self, attempts: int = 5) -> None:
+        # The broker registers its on_connect handler (which subscribes) after flask_mqtt has
+        # already connected; if the CONNACK wins the race it never subscribes and every v2
+        # request fails with "No worker online". Restart until it subscribed.
+        for attempt in range(attempts):
+            self.ctl.start_broker(self.config())
+            wait_port(HOST_IP, 5000)
+            if self.ctl.broker_subscribed():
+                return
+            self.mark("broker_restart", reason="not_subscribed", attempt=attempt + 1)
+        raise RuntimeError("broker never subscribed to its MQTT topics")
+
     def start_services(self) -> None:
         a = self.args
         self.ctl.start_mosquitto()
         wait_port(HOST_IP, 1883)
-        self.ctl.start_broker(self.config())
-        wait_port(HOST_IP, 5000)
+        self.start_broker()
         for k, h in self.gw_of.items():
             h.start_gateway(k, self.config(k), a.bum_pps)
         self.ctl.start_collector([], HOST_IP)
@@ -325,6 +340,19 @@ class Rig:
             self.drain_reboot(1)
             self.sleep(a.observe)
         self.mark("end")
+        self.save_broker_metrics()
+
+    def save_broker_metrics(self) -> None:
+        # Brokers before #299 have no /metrics endpoint
+        try:
+            with urllib.request.urlopen(
+                f"http://{HOST_IP}:5000/metrics", timeout=10
+            ) as r:
+                data = r.read()
+        except OSError:
+            return
+        with open(os.path.join(self.run_dir, "broker-metrics.prom"), "wb") as f:
+            f.write(data)
 
     def shutdown(self) -> None:
         log("shutting down")

@@ -24,6 +24,7 @@ import asyncio
 import json
 import os
 import random
+import resource
 import signal
 import socket
 import time
@@ -131,6 +132,9 @@ class Fleet:
                 last_ok=node.last_ok or None,
             )
             await self.reconnect(node)
+        except OSError as e:
+            # Recorded so analyze can flag runs where the simulator itself was the bottleneck
+            self.event(ev="sim_error", node=node.idx, error=repr(e))
         finally:
             node.busy = False
 
@@ -263,7 +267,16 @@ async def amain(args: argparse.Namespace) -> None:
     fleet.event(ev="stop")
 
 
+def raise_nofile() -> None:
+    # Every reconnect holds a subprocess with pipes; the default 1024 soft limit caps a burst at ~300
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    want = 1 << 20 if hard == resource.RLIM_INFINITY else hard
+    if soft < want:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+
+
 def main() -> None:
+    raise_nofile()
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--nodes", type=int, required=True)
     p.add_argument("--state", default=os.environ.get("E2E_STATE", "/run/wgkex-e2e"))

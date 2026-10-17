@@ -11,6 +11,8 @@
 # plans/ (default: $PLAN or stack). Sources to test are expected in src/<name>/ (wgkex repo trees).
 # Results: results/<run>/..., results/summary.{json,md}, results/*/timeline.png
 set -euo pipefail
+# The node simulator runs ~3 fds per concurrent reconnect
+ulimit -n 1048576 2>/dev/null || true
 [ "$(id -u)" = 0 ] || exec sudo -E "$0" "$@"
 HERE=$(cd "$(dirname "$0")" && pwd)
 cd "$HERE"
@@ -66,7 +68,7 @@ agent)
 	systemctl stop "$unit" 2>/dev/null || true
 	systemctl reset-failed "$unit" 2>/dev/null || true
 	mkdir -p "$RESULTS"
-	systemd-run --unit "$unit" --working-directory "$HERE" \
+	systemd-run --unit "$unit" --working-directory "$HERE" -p LimitNOFILE=1048576 \
 		-p StandardOutput=append:"$RESULTS/agent.log" -p StandardError=append:"$RESULTS/agent.log" \
 		"$PY" rigops.py agent --base "$RESULTS" --allow "$ctl" --port "${AGENT_PORT:-7700}"
 	sleep 2
@@ -100,7 +102,7 @@ controller-bg)
 	systemctl stop wgkex-e2e-ctl 2>/dev/null || true
 	systemctl reset-failed wgkex-e2e-ctl 2>/dev/null || true
 	rm -f "$RESULTS/exit_code"
-	systemd-run --unit wgkex-e2e-ctl --working-directory "$HERE" -E RESULTS_DIR="$RESULTS" \
+	systemd-run --unit wgkex-e2e-ctl --working-directory "$HERE" -p LimitNOFILE=1048576 -E RESULTS_DIR="$RESULTS" \
 		${NODES:+-E NODES="$NODES"} -p StandardOutput=append:"$RESULTS/run.log" \
 		-p StandardError=append:"$RESULTS/run.log" \
 		bash -c '"$0" controller "$1" "$2" "$3"; echo $? >"$4/exit_code"' \
