@@ -21,10 +21,6 @@ def _get_config_mock(domains=None):
 class AppTest(unittest.TestCase):
     """unittest.TestCase class"""
 
-    def setUp(self) -> None:
-        """set up unittests"""
-        app._CLEANUP_TIME = 0
-
     def test_unique_domains_success(self):
         """Ensure domain suffixes are unique."""
         test_prefixes = ["TEST_PREFIX_", "TEST_PREFIX2_"]
@@ -103,10 +99,11 @@ class AppTest(unittest.TestCase):
             app.main()
         connect_mock.assert_not_called()
 
-    @mock.patch.object(app, "_CLEANUP_TIME", 1)
+    @mock.patch.object(app.config, "get_config")
     @mock.patch.object(app, "wg_flush_stale_peers")
-    def test_flush_workers_doesnt_throw(self, wg_flush_mock):
+    def test_flush_workers_doesnt_throw(self, wg_flush_mock, config_mock):
         """Ensure the flush_workers thread doesn't throw and exit if it encounters an exception."""
+        config_mock.return_value.peer_cleanup = app.config.PeerCleanup(interval=0)
         wg_flush_mock.side_effect = AttributeError(
             "'NoneType' object has no attribute 'get'"
         )
@@ -125,6 +122,30 @@ class AppTest(unittest.TestCase):
         # Assert that the thread hasn't crashed and is still running
         self.assertTrue(thread.is_alive())
         # If Python would allow it without writing custom signalling, this would be the place to stop the thread again
+
+    @mock.patch.object(app.config, "get_config")
+    @mock.patch.object(app, "wg_flush_stale_peers")
+    def test_flush_workers_keeps_recently_added_peers(self, wg_flush_mock, config_mock):
+        """Peers recently added by the key exchange are not removed as stale."""
+        config_mock.return_value.peer_cleanup = app.config.PeerCleanup(
+            stale_timeout=600, interval=0
+        )
+        done = threading.Event()
+
+        def flush(domain, timeout, keep):
+            self.assertEqual(domain, "cleanup_domain")
+            self.assertEqual(timeout, 600)
+            self.assertTrue(keep("RECENT_KEY"))
+            self.assertFalse(keep("OTHER_KEY"))
+            done.set()
+            return []
+
+        wg_flush_mock.side_effect = flush
+        app.peer_add_tracker.note_added("wg-cleanup_domain", "RECENT_KEY")
+        threading.Thread(
+            target=app.flush_workers, args=("cleanup_domain",), daemon=True
+        ).start()
+        self.assertTrue(done.wait(2))
 
 
 if __name__ == "__main__":

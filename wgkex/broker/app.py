@@ -13,12 +13,16 @@ from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
 from waitress import serve
 
+from wgkex.broker.assignments import Assignment, AssignmentHistory
 from wgkex.broker.metrics import WorkerMetricsCollection
 from wgkex.common import logger
 from wgkex.common.mqtt import (
+    TOPIC_WG_KEY,
     TOPIC_WORKER_REBALANCE,
+    TOPIC_WORKER_REMOVE_PEER,
     TOPIC_WORKER_STATUS,
     TOPIC_WORKER_WG_DATA,
+    WG_KEY_ALL_WORKERS,
 )
 from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
@@ -80,6 +84,10 @@ worker_metrics = WorkerMetricsCollection(
     metrics_max_age=_load_balancing_cfg.metrics_max_age,
 )
 worker_data: dict[tuple[str, str], dict] = {}
+assignment_history = AssignmentHistory(
+    ttl=_load_balancing_cfg.previous_assignment_ttl,
+    max_entries=_load_balancing_cfg.previous_assignment_max_entries,
+)
 
 
 @app.route("/", methods=["GET"])
@@ -108,11 +116,10 @@ def wg_api_v1_key_exchange() -> tuple[Response | dict, int]:
 
     key = data.public_key
     domain = data.domain
-    # in case we want to decide here later we want to publish it only to dedicated gateways
-    gateway = "all"
     logger.info(f"wg_api_v1_key_exchange: Domain: {domain}, Key:{key}")
 
-    mqtt.publish(f"wireguard/{domain}/{gateway}", key, qos=1)
+    # v1 clients pick a random gateway themselves, so every worker needs the key
+    publish_key(domain, key, WG_KEY_ALL_WORKERS)
     return {"Message": "OK"}, 200
 
 
@@ -137,11 +144,7 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
 
     key = data.public_key
     domain = data.domain
-    # in case we want to decide here later we want to publish it only to dedicated gateways
-    gateway = "all"
     logger.info(f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}")
-
-    mqtt.publish(f"wireguard/{domain}/{gateway}", key, qos=1)
 
     # Only consider workers whose endpoint data we know, so we can always answer with a valid endpoint
     best_worker, diff, current_peers = worker_metrics.get_best_worker(
@@ -149,22 +152,29 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
     )
     if best_worker is None:
         logger.warning(f"No worker online for domain {domain}")
+        # Like before, so the key is present on every worker once the client falls back to v1
+        publish_key(domain, key, WG_KEY_ALL_WORKERS)
         return {
             "error": {
                 "message": "no gateway online for this domain, please check the domain value and try again later"
             }
         }, 400
 
+    w_data = worker_data.get((best_worker, domain), None)
+    if w_data is None:
+        logger.error(f"Couldn't get worker endpoint data for {best_worker}/{domain}")
+        publish_key(domain, key, WG_KEY_ALL_WORKERS)
+        return {"error": {"message": "could not get gateway data"}}, 500
+
     # Count the peer for this worker until the worker metrics reflect it
     worker_metrics.record_assignment(best_worker, domain, key)
     logger.debug(
         f"Chose worker {best_worker} with {current_peers} effective peers ({diff:.1f} to target)"
     )
-
-    w_data = worker_data.get((best_worker, domain), None)
-    if w_data is None:
-        logger.error(f"Couldn't get worker endpoint data for {best_worker}/{domain}")
-        return {"error": {"message": "could not get gateway data"}}, 500
+    if config.get_config().load_balancing.targeted_publish:
+        publish_key(domain, key, best_worker)
+    else:
+        publish_key(domain, key, WG_KEY_ALL_WORKERS)
 
     endpoint = {
         "Address": w_data.get("ExternalAddress"),
@@ -174,6 +184,32 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
     }
 
     return {"Endpoint": endpoint}, 200
+
+
+def publish_key(domain: str, key: str, worker: str) -> None:
+    """Publishes a key to a worker (or all workers) and removes it from its previous worker(s)."""
+    mqtt.publish(TOPIC_WG_KEY.format(domain=domain, worker=worker), key, qos=1)
+    previous = assignment_history.record(key, domain, worker)
+    if worker == WG_KEY_ALL_WORKERS or previous is None:
+        return
+    for prev_worker in _previous_workers(previous, domain, worker):
+        logger.info(
+            f"Key {key} moved to {worker}/{domain}, removing it from {prev_worker}/{previous.domain}"
+        )
+        mqtt.publish(
+            TOPIC_WORKER_REMOVE_PEER.format(worker=prev_worker, domain=previous.domain),
+            key,
+            qos=1,
+        )
+
+
+def _previous_workers(previous: Assignment, domain: str, worker: str) -> list[str]:
+    """Returns the workers a key has to be removed from, after it was assigned to worker/domain."""
+    if previous.worker == WG_KEY_ALL_WORKERS:
+        candidates = sorted(w for (w, d) in list(worker_data) if d == previous.domain)
+    else:
+        candidates = [previous.worker]
+    return [w for w in candidates if not (w == worker and previous.domain == domain)]
 
 
 @mqtt.on_connect()

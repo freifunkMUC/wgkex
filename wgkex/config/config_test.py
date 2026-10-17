@@ -79,6 +79,24 @@ class TestConfig(unittest.TestCase):
             ),
         )
 
+    def test_targeted_publish_and_peer_cleanup(self):
+        """Targeted publishing and peer cleanup options are parsed with defaults."""
+        cfg = config.LoadBalancing.from_dict({})
+        self.assertTrue(cfg.targeted_publish)
+        self.assertEqual(cfg.previous_assignment_ttl, 21600)
+        cfg = config.LoadBalancing.from_dict(
+            {"targeted_publish": False, "previous_assignment_max_entries": 5}
+        )
+        self.assertFalse(cfg.targeted_publish)
+        self.assertEqual(cfg.previous_assignment_max_entries, 5)
+        self.assertEqual(
+            config.PeerCleanup.from_dict({}), config.PeerCleanup(1800, 300)
+        )
+        self.assertEqual(
+            config.PeerCleanup.from_dict({"stale_timeout": 60, "interval": 10}),
+            config.PeerCleanup(60, 10),
+        )
+
     def test_relative_worker_weight_unknown_worker(self):
         """Workers missing from the config get the average weight."""
         workers = config.Workers.from_dict({"a": {"weight": 10}, "b": {"weight": 30}})

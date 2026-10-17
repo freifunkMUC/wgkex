@@ -78,7 +78,9 @@ class MQTTTest(unittest.TestCase):
 
         mqtt_client_mock.assert_has_calls(
             [
-                mock.call().subscribe("wireguard/_ffmuc_domain.one/+", qos=1),
+                mock.call().subscribe("wireguard/_ffmuc_domain.one/all", qos=1),
+                mock.call().subscribe(f"wireguard/_ffmuc_domain.one/{hostname}", qos=1),
+                mock.call().subscribe(f"wireguard-worker/{hostname}/+/remove", qos=1),
                 mock.call().publish(
                     f"wireguard-worker/{hostname}/_ffmuc_domain.one/data",
                     f'{{"ExternalAddress": "{hostname}", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}}',
@@ -265,12 +267,55 @@ class MQTTTest(unittest.TestCase):
         # Tests on_message for success.
         config_mock.return_value = _get_config_mock()
         mqtt_msg = mock.patch.object(mqtt.mqtt, "MQTTMessage")
-        mqtt_msg.topic = "wireguard/_ffmuc_domain1/gateway"
+        mqtt_msg.topic = "wireguard/_ffmuc_domain1/all"
         mqtt_msg.payload = b"PUB_KEY"
         mqtt.on_message_wireguard(None, None, mqtt_msg)
         self.assertTrue(mqtt.q.qsize() > 0)
         item = mqtt.q.get_nowait()
-        self.assertEqual(item, ("domain1", "PUB_KEY"))
+        self.assertEqual(item, mqtt.PeerOp("domain1", "PUB_KEY"))
+
+    @mock.patch.object(mqtt, "get_config")
+    def test_on_message_wireguard_targeted(self, config_mock):
+        """Keys sent to this worker are added, keys sent to other workers are ignored."""
+        config_mock.return_value = _get_config_mock()
+        msg = mock.MagicMock()
+        msg.payload = b"PUB_KEY"
+        msg.topic = "wireguard/_ffmuc_domain1/some-other-gateway"
+        mqtt.on_message_wireguard(None, None, msg)
+        self.assertEqual(mqtt.q.qsize(), 0)
+        msg.topic = f"wireguard/_ffmuc_domain1/{mqtt._HOSTNAME}"
+        mqtt.on_message_wireguard(None, None, msg)
+        self.assertEqual(mqtt.q.get_nowait(), mqtt.PeerOp("domain1", "PUB_KEY"))
+
+    @mock.patch.object(mqtt, "get_config")
+    def test_on_message_remove_peer(self, config_mock):
+        """Remove messages queue a peer removal, cancelling a queued add."""
+        config_mock.return_value = _get_config_mock()
+        mqtt.q.put(mqtt.PeerOp("domain1", "PUB_KEY"))
+        msg = mock.MagicMock()
+        msg.topic = f"wireguard-worker/{mqtt._HOSTNAME}/_ffmuc_domain1/remove"
+        msg.payload = b"PUB_KEY"
+        mqtt.on_message_remove_peer(None, None, msg)
+        self.assertEqual(mqtt.q.qsize(), 1)
+        self.assertEqual(
+            mqtt.q.get_nowait(), mqtt.PeerOp("domain1", "PUB_KEY", remove=True)
+        )
+        msg.topic = "wireguard-worker/x/unknowndomain/remove"
+        mqtt.on_message_remove_peer(None, None, msg)
+        self.assertEqual(mqtt.q.qsize(), 0)
+
+    @mock.patch.object(mqtt, "get_config")
+    def test_on_connect_subscriptions(self, config_mock):
+        """Workers subscribe to keys for all workers and for themselves, and to removals."""
+        config_mock.return_value = _get_config_mock()
+        client = mock.MagicMock()
+        with mock.patch.object(mqtt, "publish_worker_data_and_status"):
+            mqtt.on_connect(client, None, None, 0)
+        topics = [c.args[0] for c in client.subscribe.call_args_list]
+        self.assertIn("wireguard/_ffmuc_domain.one/all", topics)
+        self.assertIn(f"wireguard/_ffmuc_domain.one/{mqtt._HOSTNAME}", topics)
+        self.assertIn(f"wireguard-worker/{mqtt._HOSTNAME}/+/remove", topics)
+        self.assertNotIn("wireguard/_ffmuc_domain.one/+", topics)
 
 
 """ @mock.patch.object(msg_queue, "link_handler")

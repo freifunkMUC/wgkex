@@ -78,6 +78,33 @@ class NetlinkTest(unittest.TestCase):
             netlink.find_stale_wireguard_clients("some_interface"),
         )
 
+    def test_find_stale_wireguard_clients_custom_timeout(self):
+        """The stale timeout is configurable."""
+        _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY",
+            int((datetime.now(UTC) - timedelta(seconds=120)).timestamp()),
+        )
+        self.assertListEqual(
+            [], netlink.find_stale_wireguard_clients("some_interface", 300)
+        )
+        self.assertListEqual(
+            ["WGPEER_A_PUBLIC_KEY"],
+            netlink.find_stale_wireguard_clients("some_interface", 60),
+        )
+
+    def test_wg_flush_stale_peers_keep(self):
+        """Peers matched by keep are not removed."""
+        _get_wg_mock(
+            "WGPEER_A_PUBLIC_KEY_STALE",
+            int((datetime.now(UTC) - timedelta(hours=5)).timestamp()),
+        )
+        self.assertListEqual(
+            [],
+            netlink.wg_flush_stale_peers(
+                "domain", keep=lambda k: k == "WGPEER_A_PUBLIC_KEY_STALE"
+            ),
+        )
+
     def test_route_handler_add_success(self):
         """Test route_handler for normal add operation."""
         self.route_info_mock.route.return_value = {"key": "value"}

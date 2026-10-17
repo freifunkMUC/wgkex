@@ -21,6 +21,21 @@ py_test(
     size="small",
 )
 
+py_library(
+    name = "assignments",
+    srcs = ["assignments.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name="assignments_test",
+    srcs=["assignments_test.py"],
+    deps = [
+       "//wgkex/broker:assignments",
+    ],
+    size="small",
+)
+
 py_binary(
     name="app",
     srcs=["app.py"],
@@ -34,7 +49,8 @@ py_binary(
         "//wgkex/common:logger",
         "//wgkex/common:mqtt",
         "//wgkex/common:utils",
-        ":metrics"
+        ":assignments",
+        ":metrics",
     ],
 )
 

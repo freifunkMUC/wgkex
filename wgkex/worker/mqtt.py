@@ -14,12 +14,15 @@ import pyroute2.netlink.exceptions
 from wgkex.common import logger
 from wgkex.common.mqtt import (
     TOPIC_CONNECTED_PEERS,
+    TOPIC_WG_KEY,
     TOPIC_WORKER_REBALANCE,
+    TOPIC_WORKER_REMOVE_PEER,
     TOPIC_WORKER_STATUS,
     TOPIC_WORKER_WG_DATA,
+    WG_KEY_ALL_WORKERS,
 )
 from wgkex.config.config import get_config
-from wgkex.worker.msg_queue import q
+from wgkex.worker.msg_queue import PeerOp, q
 from wgkex.worker.netlink import (
     get_connected_peers_count,
     get_device_data,
@@ -64,6 +67,10 @@ def connect(exit_event: threading.Event) -> None:
     client.on_disconnect = on_disconnect
     client.on_message = on_message
     client.message_callback_add("wireguard/#", on_message_wireguard)
+    client.message_callback_add(
+        TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"),
+        on_message_remove_peer,
+    )
 
     global _rebalancer
     if _rebalancing_enabled():
@@ -147,9 +154,14 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     for domain in domains:
         # Subscribing in on_connect() means that if we lose the connection and
         # reconnect then subscriptions will be renewed.
-        topic = f"wireguard/{domain}/+"
-        logger.info(f"Subscribing to topic {topic}")
-        client.subscribe(topic, qos=1)
+        # Keys from the v1 API are sent to all workers, keys from the v2 API only to the chosen one.
+        for worker in (WG_KEY_ALL_WORKERS, _HOSTNAME):
+            topic = TOPIC_WG_KEY.format(domain=domain, worker=worker)
+            logger.info(f"Subscribing to topic {topic}")
+            client.subscribe(topic, qos=1)
+    client.subscribe(
+        TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"), qos=1
+    )
 
     if _rebalancer is not None:
         client.subscribe(TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME))
@@ -258,6 +270,10 @@ def on_message_wireguard(
     """
     # TODO(ruairi): Check bounds and raise exception here.
     logger.debug("Got message on %s from MQTT", message.topic)
+    target = message.topic.rsplit("/", 1)[-1]
+    if target not in (WG_KEY_ALL_WORKERS, _HOSTNAME):
+        logger.debug("Ignoring key for worker %s on %s", target, message.topic)
+        return
 
     domain_prefixes = get_config().domain_prefixes
     domain = None
@@ -275,7 +291,30 @@ def on_message_wireguard(
     logger.info(
         f"Received create message for key {message.payload.decode('utf-8')!s} on domain {domain} adding to queue"
     )
-    q.put((domain, str(message.payload.decode("utf-8"))))
+    q.put(PeerOp(domain, str(message.payload.decode("utf-8"))))
+
+
+def on_message_remove_peer(
+    client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
+) -> None:
+    """Removes a peer which the broker assigned to another worker.
+
+    Arguments:
+        client: the client instance for this callback.
+        userdata: the private user data.
+        message: The MQTT message.
+    """
+    try:
+        _, _, domain, _ = message.topic.split("/", 3)
+        interface = wg_interface_name(domain)
+        public_key = message.payload.decode("utf-8")
+    except ValueError as e:
+        logger.error(f"Ignored invalid remove message on {message.topic}: {e}")
+        return
+    logger.info(
+        f"Received remove message for key {public_key} on domain {domain} adding to queue"
+    )
+    q.put(PeerOp(interface.removeprefix("wg-"), public_key, remove=True))
 
 
 def on_message_rebalance(
