@@ -1,0 +1,3 @@
+# Phase B and later: publish v2 keys to wireguard/<domain>/all like main does
+load_balancing:
+  targeted_publish: false

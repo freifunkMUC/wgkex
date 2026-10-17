@@ -1,0 +1,13 @@
+# run-name  source  scenario-args...   (see scenario.py --help; times in seconds)
+# Baselines: key herd at bring-up, steady state, BUM replication with all vs targeted publishing
+main-baseline            main     --scenario baseline --steady 600
+phase-b-baseline         phase-b  --scenario baseline --steady 600
+phase-c-baseline         phase-c  --scenario baseline --steady 600
+phase-c-baseline-all     phase-c  --scenario baseline --steady 600 --config-overlay overlays/publish-all.yaml
+# Hard reboot of gw1 (weight 30) for 2 minutes, rebalancing off and on
+main-reboot-off          main     --scenario reboot --rebalancing off --observe 1200
+main-reboot-on           main     --scenario reboot --rebalancing on --observe 3000
+phase-d-reboot-off       phase-d  --scenario reboot --rebalancing off --observe 1200
+phase-d-reboot-on        phase-d  --scenario reboot --rebalancing on --observe 3000
+# Phase D: drain gw1 (SIGUSR1, default drain_rate 0.1), planned reboot after 20 min
+phase-d-drain-reboot     phase-d  --scenario drain-reboot --rebalancing on --drain-wait 1200 --observe 1800

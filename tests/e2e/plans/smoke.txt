@@ -1,0 +1,3 @@
+# run-name  source  scenario-args...   (see scenario.py --help; times in seconds)
+smoke-baseline  main  --scenario baseline --steady 120 --warmup-max 300
+smoke-reboot    main  --scenario reboot --rebalancing on --settle 60 --downtime 30 --observe 180 --warmup-max 300
