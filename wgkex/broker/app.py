@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
 """wgkex broker"""
 
 import dataclasses
 import json
 import re
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import paho.mqtt.client as mqtt_client
 from flask import Flask, Response, render_template, request
@@ -73,7 +72,7 @@ def _fetch_app_config() -> Flask_app:
 app = _fetch_app_config()
 mqtt = Mqtt(app)
 worker_metrics = WorkerMetricsCollection()
-worker_data: Dict[Tuple[str, str], Dict] = {}
+worker_data: dict[tuple[str, str], dict] = {}
 
 
 @app.route("/", methods=["GET"])
@@ -83,14 +82,14 @@ def index() -> str:
 
 
 @app.route("/api/v1/wg/key/exchange", methods=["POST"])
-def wg_api_v1_key_exchange() -> Tuple[Response | Dict, int]:
+def wg_api_v1_key_exchange() -> tuple[Response | dict, int]:
     """Retrieves a new key and validates.
     Returns:
         Status message.
     """
     try:
         data = KeyExchange.from_dict(request.get_json(force=True))
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         logger.error(
             "Exception occurred in /api/v1/wg/key/exchange: %s", ex, exc_info=True
         )
@@ -111,7 +110,7 @@ def wg_api_v1_key_exchange() -> Tuple[Response | Dict, int]:
 
 
 @app.route("/api/v2/wg/key/exchange", methods=["POST"])
-def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
+def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
     """Retrieves a new key, validates it and responds with a worker/gateway the client should connect to.
 
     Returns:
@@ -119,7 +118,7 @@ def wg_api_v2_key_exchange() -> Tuple[Response | Dict, int]:
     """
     try:
         data = KeyExchange.from_dict(request.get_json(force=True))
-    except Exception as ex:
+    except Exception as ex:  # noqa: BLE001
         logger.error(
             "Exception occurred in /api/v2/wg/key/exchange: %s", ex, exc_info=True
         )

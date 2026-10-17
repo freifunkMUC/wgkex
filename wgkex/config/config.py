@@ -4,7 +4,7 @@ import dataclasses
 import logging
 import os
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
@@ -32,7 +32,7 @@ class Worker:
     weight: int
 
     @classmethod
-    def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
+    def from_dict(cls, worker_cfg: dict[str, Any]) -> "Worker":
         return cls(
             weight=int(worker_cfg["weight"]) if worker_cfg["weight"] else 1,
         )
@@ -47,10 +47,10 @@ class Workers:
     """
 
     total_weight: int
-    _workers: Dict[str, Worker]
+    _workers: dict[str, Worker]
 
     @classmethod
-    def from_dict(cls, workers_cfg: Dict[str, Dict[str, Any]]) -> "Workers":
+    def from_dict(cls, workers_cfg: dict[str, dict[str, Any]]) -> "Workers":
         d = {key: Worker.from_dict(value) for (key, value) in workers_cfg.items()}
 
         total = 0
@@ -60,7 +60,7 @@ class Workers:
 
         return cls(total_weight=total, _workers=d)
 
-    def get(self, worker: str) -> Optional[Worker]:
+    def get(self, worker: str) -> Worker | None:
         return self._workers.get(worker)
 
     def relative_worker_weight(self, worker_name: str) -> float:
@@ -79,11 +79,11 @@ class BrokerListen:
         port: The port the broker should listen to for the HTTP API.
     """
 
-    host: Optional[str]
-    port: Optional[int]
+    host: str | None
+    port: int | None
 
     @classmethod
-    def from_dict(cls, broker_listen: Dict[str, Any]) -> "BrokerListen":
+    def from_dict(cls, broker_listen: dict[str, Any]) -> "BrokerListen":
         return cls(
             host=broker_listen.get("host"),
             port=broker_listen.get("port"),
@@ -111,7 +111,7 @@ class MQTT:
     keepalive: int = 5
 
     @classmethod
-    def from_dict(cls, mqtt_cfg: Dict[str, str]) -> "MQTT":
+    def from_dict(cls, mqtt_cfg: dict[str, str]) -> "MQTT":
         """seems to generate a mqtt config object from dictionary
 
         Args:
@@ -142,16 +142,16 @@ class Config:
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
     """
 
-    raw: Dict[str, Any]
-    domains: List[str]
-    domain_prefixes: List[str]
+    raw: dict[str, Any]
+    domains: list[str]
+    domain_prefixes: list[str]
     broker_listen: BrokerListen
     mqtt: MQTT
     workers: Workers
-    external_name: Optional[str]
+    external_name: str | None
 
     @classmethod
-    def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
+    def from_dict(cls, cfg: dict[str, Any]) -> "Config":
         """Creates a Config object from a configuration file.
         Arguments:
             cfg: The configuration file as a dict.
@@ -176,7 +176,7 @@ class Config:
         return self.raw.get(key)
 
 
-_parsed_config: Optional[Config] = None
+_parsed_config: Config | None = None
 
 
 def get_config() -> Config:
@@ -193,12 +193,12 @@ def get_config() -> Config:
         try:
             config = yaml.safe_load(cfg_contents)
         except yaml.YAMLError as e:
-            print("Failed to load YAML file: %s" % e)
+            print(f"Failed to load YAML file: {e}")
             sys.exit(1)
         try:
             config = Config.from_dict(config)
         except (KeyError, TypeError, AttributeError) as e:
-            print("Failed to lint file: %s" % e)
+            print(f"Failed to lint file: {e}")
             sys.exit(2)
         _parsed_config = config
     return _parsed_config
@@ -213,7 +213,7 @@ def fetch_config_from_disk() -> str:
         The file contents as string.
     """
     config_file = os.environ.get(WG_CONFIG_OS_ENV, WG_CONFIG_DEFAULT_LOCATION)
-    logging.debug("getting config_file: %s", repr(config_file))
+    logging.debug("getting config_file: %s", repr(config_file))  # noqa: LOG015
     try:
         with open(config_file, "r") as stream:
             return stream.read()

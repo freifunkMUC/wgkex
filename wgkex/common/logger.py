@@ -1,10 +1,7 @@
 import os.path
-from logging import config
-from logging import critical as critical
-from logging import debug as debug
-from logging import error as error
-from logging import info as info
-from logging import warning as warning
+from logging import config, critical, debug, error, info, warning
+
+__all__ = ["critical", "debug", "error", "info", "warning"]
 
 import yaml
 
@@ -36,7 +33,7 @@ def fetch_logging_configuration():
     Returns:
         Logging configuration.
     """
-    logging_cfg = dict()
+    logging_cfg = {}
     if os.path.isfile(WG_CONFIG_DEFAULT_LOCATION):
         with open(WG_CONFIG_DEFAULT_LOCATION) as cfg_file:
             logging_cfg = yaml.load(cfg_file, Loader=yaml.FullLoader)
@@ -47,4 +44,4 @@ def fetch_logging_configuration():
 
 cfg = fetch_logging_configuration()
 config.dictConfig(cfg)
-info("Initialised logger, using configuration: %s", cfg)
+info("Initialised logger, using configuration: %s", cfg)  # noqa: LOG015
