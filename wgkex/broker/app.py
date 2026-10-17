@@ -162,13 +162,21 @@ def _blocked_response(api: str, key: str) -> tuple[dict, int]:
     return {"error": {"message": "key is blocked"}}, 403
 
 
-def _is_rate_limited(api: str, key: str) -> bool:
-    """Takes a rate limit token for the current request, returns True if the request is limited."""
-    address = client_address(
+def _client_address() -> str | None:
+    """The client address of the current request, honoring trusted reverse proxies."""
+    return client_address(
         request.remote_addr,
         request.headers.get("X-Forwarded-For"),
-        config.get_config().rate_limit.trusted_proxy_hops,
+        config.get_config().broker.trusted_proxies,
     )
+
+
+def _client_log_suffix(address: str | None) -> str:
+    return f", Client: {address}" if config.get_config().broker.log_client_ip else ""
+
+
+def _is_rate_limited(api: str, key: str, address: str | None) -> bool:
+    """Takes a rate limit token for the current request, returns True if the request is limited."""
     allowed, limit = rate_limiter.allow(address)
     if allowed:
         return False
@@ -216,10 +224,13 @@ def wg_api_v1_key_exchange() -> tuple[Response | dict, int]:
 
     key = data.public_key
     domain = data.domain
-    logger.info(f"wg_api_v1_key_exchange: Domain: {domain}, Key:{key}")
+    address = _client_address()
+    logger.info(
+        f"wg_api_v1_key_exchange: Domain: {domain}, Key:{key}{_client_log_suffix(address)}"
+    )
     if key in blocklist:
         return _blocked_response("v1", key)
-    if _is_rate_limited("v1", key):
+    if _is_rate_limited("v1", key, address):
         # Same response as usual, but don't publish the key (again)
         return {"Message": "OK"}, 200
 
@@ -251,12 +262,14 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
 
     key = data.public_key
     domain = data.domain
+    address = _client_address()
     logger.info(
         f"wg_api_v2_key_exchange: Domain: {domain}, Key:{key}, Location: {data.location}"
+        f"{_client_log_suffix(address)}"
     )
     if key in blocklist:
         return _blocked_response("v2", key)
-    limited = _is_rate_limited("v2", key)
+    limited = _is_rate_limited("v2", key, address)
 
     # Only consider workers whose endpoint data we know, so we can always answer with a valid endpoint
     def eligible(worker: str) -> bool:

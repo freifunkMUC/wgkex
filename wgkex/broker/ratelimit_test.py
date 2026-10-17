@@ -1,5 +1,6 @@
 """Tests for the key exchange rate limiter."""
 
+import ipaddress
 import unittest
 
 from wgkex.broker.ratelimit import RateLimiter, client_address
@@ -72,16 +73,60 @@ class RateLimiterTest(unittest.TestCase):
         rl.allow("198.51.100.1")
         self.assertEqual(rl.tracked_clients(), 1)
 
-    def test_client_address(self):
-        self.assertEqual(client_address("10.0.0.1", "192.0.2.1", 0), "10.0.0.1")
+    def test_client_address_without_trusted_proxies(self):
+        """Without trusted proxies the header is ignored, it can be spoofed by anyone."""
+        for trusted in (0, []):
+            self.assertEqual(
+                client_address("198.51.100.7", "192.0.2.1", trusted), "198.51.100.7"
+            )
         self.assertEqual(client_address("10.0.0.1", None, 1), "10.0.0.1")
+
+    def test_client_address_hop_count(self):
+        # Single proxy: the client may have sent a spoofed entry, only the rightmost is trusted
+        self.assertEqual(client_address("10.0.0.1", "192.0.2.1", 1), "192.0.2.1")
         self.assertEqual(
             client_address("10.0.0.1", "spoofed, 192.0.2.1", 1), "192.0.2.1"
         )
+        # Two proxies
         self.assertEqual(
-            client_address("10.0.0.1", "spoofed, 192.0.2.1, 10.0.0.2", 2), "192.0.2.1"
+            client_address("10.0.0.2", "spoofed, 192.0.2.1, 10.0.0.1", 2), "192.0.2.1"
         )
-        self.assertEqual(client_address("10.0.0.1", "192.0.2.1", 3), "192.0.2.1")
+        # Fewer entries than proxies: the header can't be trusted
+        self.assertEqual(client_address("10.0.0.1", "192.0.2.1", 3), "10.0.0.1")
+
+    def test_client_address_trusted_networks(self):
+        trusted = [
+            ipaddress.ip_network("10.0.0.0/24"),
+            ipaddress.ip_network("2001:db8::/64"),
+        ]
+        # Spoofed header from an untrusted peer is ignored
+        self.assertEqual(
+            client_address("198.51.100.7", "192.0.2.1", trusted), "198.51.100.7"
+        )
+        # Single hop
+        self.assertEqual(client_address("10.0.0.1", "192.0.2.1", trusted), "192.0.2.1")
+        self.assertEqual(
+            client_address("2001:db8::1", "2001:db8:1::5", trusted), "2001:db8:1::5"
+        )
+        self.assertEqual(
+            client_address("::ffff:10.0.0.1", "192.0.2.1", trusted), "192.0.2.1"
+        )
+        # Multiple hops, spoofed entries left of the client are ignored
+        self.assertEqual(
+            client_address("10.0.0.1", "spoofed, 192.0.2.1, 10.0.0.2", trusted),
+            "192.0.2.1",
+        )
+        self.assertEqual(
+            client_address("10.0.0.1", "203.0.113.9, 192.0.2.1, 10.0.0.2", trusted),
+            "192.0.2.1",
+        )
+        # Only proxies in the header: the leftmost one is the best guess
+        self.assertEqual(client_address("10.0.0.1", "10.0.0.3", trusted), "10.0.0.3")
+        # Garbage appended right of the proxies: stop at the last verified address
+        self.assertEqual(
+            client_address("10.0.0.1", "192.0.2.1, garbage", trusted), "10.0.0.1"
+        )
+        self.assertEqual(client_address("10.0.0.1", " , ", trusted), "10.0.0.1")
 
 
 if __name__ == "__main__":

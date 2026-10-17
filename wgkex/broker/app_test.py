@@ -3,6 +3,7 @@
 The Gluon package ffmuc-mesh-vpn-wireguard-vxlan relies on the exact response shapes asserted here.
 """
 
+import ipaddress
 import json
 import sys
 import unittest
@@ -458,18 +459,57 @@ class BrokerRateLimitTest(BrokerTestCase):
             before + 1,
         )
 
+    def post_from(self, version: str, forwarded_for: str, remote: str = "127.0.0.1"):
+        return self.client.post(
+            f"/api/{version}/wg/key/exchange",
+            data=json.dumps({"domain": _DOMAIN, "public_key": _PUBKEY}),
+            headers={"X-Forwarded-For": forwarded_for},
+            environ_base={"REMOTE_ADDR": remote},
+        )
+
     def test_forwarded_for_with_trusted_proxy(self):
+        """Behind a trusted proxy, clients are limited by their own address."""
         self.limit()
-        body = json.dumps({"domain": _DOMAIN, "public_key": _PUBKEY})
-        with mock.patch.object(config.get_config().rate_limit, "trusted_proxy_hops", 1):
-            for client in ("192.0.2.1", "192.0.2.2"):
-                self.app.mqtt.reset_mock()
-                self.client.post(
-                    "/api/v1/wg/key/exchange",
-                    data=body,
-                    headers={"X-Forwarded-For": f"10.0.0.1, {client}"},
-                )
-                self.app.mqtt.publish.assert_called_once()
+        for trusted in (1, [ipaddress.ip_network("127.0.0.0/8")]):
+            with mock.patch.object(
+                config.get_config().broker, "trusted_proxies", trusted
+            ):
+                for client in ("192.0.2.1", "192.0.2.2"):
+                    self.app.mqtt.reset_mock()
+                    self.post_from("v1", f"10.9.9.9, {client}")
+                    self.app.mqtt.publish.assert_called_once()
+            self.limit()
+
+    def test_forwarded_for_spoofed_from_untrusted_peer(self):
+        """A spoofed header from a peer that isn't a trusted proxy doesn't evade the limit."""
+        self.limit()
+        trusted = [ipaddress.ip_network("10.0.0.0/8")]
+        with mock.patch.object(config.get_config().broker, "trusted_proxies", trusted):
+            self.post_from("v1", "192.0.2.1", remote="198.51.100.7")
+            self.app.mqtt.reset_mock()
+            resp = self.post_from("v1", "192.0.2.2", remote="198.51.100.7")
+        self.assertEqual(resp.status_code, 200)
+        self.app.mqtt.publish.assert_not_called()
+
+    def test_log_client_ip(self):
+        self.add_worker("gw1", 10)
+        broker_cfg = config.get_config().broker
+        with mock.patch.object(broker_cfg, "trusted_proxies", 1):
+            for version in ("v1", "v2"):
+                with self.assertLogs(level="INFO") as logs:
+                    self.post_from(version, "192.0.2.1")
+                line = next(m for m in logs.output if "_key_exchange: Domain" in m)
+                self.assertNotIn("Client:", line)
+
+                with (
+                    mock.patch.object(broker_cfg, "log_client_ip", True),
+                    self.assertLogs(level="INFO") as logs,
+                ):
+                    resp = self.post_from(version, "spoofed, 192.0.2.1")
+                line = next(m for m in logs.output if "_key_exchange: Domain" in m)
+                self.assertIn(f"Domain: {_DOMAIN}, Key:{_PUBKEY}", line)
+                self.assertTrue(line.endswith("Client: 192.0.2.1"), line)
+                self.assertEqual(resp.status_code, 200)
 
 
 class BrokerBlocklistTest(BrokerTestCase):

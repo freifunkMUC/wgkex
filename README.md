@@ -120,8 +120,22 @@ as clients like the Gluon package `ffmuc-mesh-vpn-wireguard-vxlan` rely on them.
 Both endpoints are rate limited per client address (IPv6 per /64 by default) and globally (`rate_limit` config).
 A limited request still gets the normal `200` response, because Gluon clients fall back to `/api/v1` and a random
 gateway on errors. The key is just not published again, and `/api/v2` answers with the worker the key was already
-assigned to (if it is still online), so repeated requests are a no-op. Behind a reverse proxy, set
-`rate_limit.trusted_proxy_hops` so the client address is taken from `X-Forwarded-For`.
+assigned to (if it is still online), so repeated requests are a no-op.
+
+#### Client address behind a reverse proxy
+
+By default, the client address is the TCP peer address. Behind a reverse proxy that would be the proxy for every
+request, so set `broker.trusted_proxies` to take it from `X-Forwarded-For`. The header can be spoofed by any client, so
+it is only used from trusted proxies:
+
+- A list of proxy addresses/networks (e.g. `["127.0.0.1/32", "::1/128"]`): the header is only used if the TCP peer is
+  in one of them. It is evaluated from the right, skipping trusted proxies, and the first other address is the
+  client. Entries further left were sent by the client and are ignored.
+- A number `n` of proxies every request passes through: the `n`-th entry from the right is used, like werkzeug's
+  `ProxyFix(x_for=n)`. Only use this if the broker can't be reached without passing the proxies.
+
+The resolved address is used for rate limiting and, with `broker.log_client_ip: true` (off by default), it is logged
+at INFO level with the domain and key of every key exchange request (`..., Client: 192.0.2.1`).
 
 Keys on the blocklist (`key_lists.blocklist` / `blocklist_file`) are rejected with `403` and never published; keys newly
 added to the file are also removed from all workers. Keys on the allowlist (`key_lists.allowlist` / `allowlist_file`,

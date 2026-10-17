@@ -1,6 +1,7 @@
 """Configuration handling class."""
 
 import dataclasses
+import ipaddress
 import logging
 import os
 import sys
@@ -284,8 +285,6 @@ class RateLimit:
         global_requests: Requests allowed over all clients per global_period.
         global_period: Seconds in which global_requests are allowed.
         ipv6_prefix_length: IPv6 clients are limited per prefix of this length.
-        trusted_proxy_hops: Number of reverse proxies in front of the broker; the client address is
-            then taken from the X-Forwarded-For header. 0 uses the TCP peer address.
         max_tracked_clients: Maximum number of client addresses tracked at once.
     """
 
@@ -294,7 +293,6 @@ class RateLimit:
     global_requests: int = 6000
     global_period: int = 60
     ipv6_prefix_length: int = 64
-    trusted_proxy_hops: int = 0
     max_tracked_clients: int = 100000
 
     @classmethod
@@ -308,8 +306,39 @@ class RateLimit:
             global_requests=get("global_requests", 0),
             global_period=get("global_period", 1),
             ipv6_prefix_length=min(get("ipv6_prefix_length", 0), 128),
-            trusted_proxy_hops=get("trusted_proxy_hops", 0),
             max_tracked_clients=get("max_tracked_clients", 1),
+        )
+
+
+@dataclasses.dataclass
+class Broker:
+    """A representation of the 'broker' key in the configuration file (broker-only).
+
+    Attributes:
+        trusted_proxies: Reverse proxies whose X-Forwarded-For header is trusted to determine the
+            client address (used for rate limiting and log_client_ip). Either a number of proxies
+            every request passes through, or a list of proxy networks (CIDR) checked against the
+            TCP peer address. 0 or empty: always use the TCP peer address.
+        log_client_ip: Log the client address together with domain and key of each key exchange.
+    """
+
+    trusted_proxies: int | list[ipaddress.IPv4Network | ipaddress.IPv6Network] = 0
+    log_client_ip: bool = False
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Broker":
+        proxies = cfg.get("trusted_proxies") or 0
+        if isinstance(proxies, str):
+            proxies = [proxies]
+        if isinstance(proxies, list):
+            trusted: int | list = [
+                ipaddress.ip_network(str(p).strip(), strict=False) for p in proxies
+            ]
+        else:
+            trusted = max(int(proxies), 0)
+        return cls(
+            trusted_proxies=trusted,
+            log_client_ip=bool(cfg.get("log_client_ip", False)),
         )
 
 
@@ -443,6 +472,7 @@ class Config:
         metrics: Prometheus metrics configuration.
         rate_limit: Key exchange rate limiting (broker-only).
         key_lists: Key block- and allowlists.
+        broker: Client address handling of the broker.
     """
 
     raw: dict[str, Any]
@@ -458,6 +488,7 @@ class Config:
     metrics: Metrics = dataclasses.field(default_factory=Metrics)
     rate_limit: RateLimit = dataclasses.field(default_factory=RateLimit)
     key_lists: KeyLists = dataclasses.field(default_factory=KeyLists)
+    broker: Broker = dataclasses.field(default_factory=Broker)
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
@@ -484,6 +515,7 @@ class Config:
             metrics=Metrics.from_dict(cfg.get("metrics") or {}),
             rate_limit=RateLimit.from_dict(cfg.get("rate_limit") or {}),
             key_lists=KeyLists.from_dict(cfg.get("key_lists") or {}),
+            broker=Broker.from_dict(cfg.get("broker") or {}),
         )
 
     def get(self, key: str) -> Any:

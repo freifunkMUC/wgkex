@@ -107,9 +107,18 @@ rate_limit:
   global_requests: 6000
   global_period: 60
   ipv6_prefix_length: 64
-  # Number of reverse proxies in front of the broker which append to X-Forwarded-For
-  trusted_proxy_hops: 0
   max_tracked_clients: 100000
+# [broker] Optional: client address handling
+broker:
+  # Reverse proxies whose X-Forwarded-For header is trusted for the client address (used by the rate
+  # limiter and log_client_ip). The header can be spoofed by anyone, so it is ignored by default (0)
+  # and the TCP peer address is used. Either the number of proxies every request passes through
+  # (only safe if the broker can't be reached directly), or a list of proxy addresses/networks which
+  # the TCP peer must be in; the header is then evaluated from the right, skipping trusted proxies.
+  trusted_proxies: 0
+  # trusted_proxies: ["127.0.0.1/32", "::1/128"]
+  # Log the client address with domain and key of every key exchange request at INFO level
+  log_client_ip: false
 # [broker, worker] Optional: key block- and allowlists. Files contain one key per line ('#' starts a
 # comment) and are reloaded within reload_interval seconds after being modified. If a file is deleted
 # or unreadable, its previous keys stay active: empty it instead.

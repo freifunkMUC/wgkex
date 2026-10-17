@@ -4,7 +4,7 @@ import ipaddress
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 
 class TokenBucket:
@@ -128,17 +128,60 @@ class RateLimiter:
             del self._clients[key]
 
 
-def client_address(
-    remote_addr: str | None, forwarded_for: str | None, trusted_proxy_hops: int
-) -> str | None:
-    """Determines the client address, taking trusted reverse proxies into account.
+TrustedProxies = int | Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network]
 
-    With n trusted proxies, the client address is the n-th entry from the right in the
-    X-Forwarded-For header (each proxy appends the address it received the request from).
+
+def _parse_address(
+    value: str,
+) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        addr = ipaddress.ip_address(value.strip().strip("[]"))
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped:
+        return addr.ipv4_mapped
+    return addr
+
+
+def client_address(
+    remote_addr: str | None, forwarded_for: str | None, trusted_proxies: TrustedProxies
+) -> str | None:
+    """Determines the client address, only trusting X-Forwarded-For from trusted reverse proxies.
+
+    Each proxy appends the address it received the request from to X-Forwarded-For, so the header
+    is evaluated from the right and anything left of the trusted part may be spoofed by the client.
+
+    trusted_proxies is either
+    - a number n of proxies which every request passes: the client address is the n-th entry from
+      the right (like werkzeug's ProxyFix(x_for=n)). If the header has fewer entries, the TCP peer
+      address is used.
+    - a list of networks: if the TCP peer is in one of them, the header is walked from the right,
+      skipping addresses in trusted networks, and the first other address is the client. The header
+      is ignored for requests from untrusted peers.
     """
-    if trusted_proxy_hops <= 0 or not forwarded_for:
+    if not forwarded_for or not trusted_proxies:
         return remote_addr
     hops = [h.strip() for h in forwarded_for.split(",") if h.strip()]
-    if len(hops) < trusted_proxy_hops:
-        return hops[0] if hops else remote_addr
-    return hops[-trusted_proxy_hops]
+    if isinstance(trusted_proxies, int):
+        if trusted_proxies < 0 or len(hops) < trusted_proxies:
+            return remote_addr
+        return hops[-trusted_proxies]
+
+    def trusted(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+        return any(
+            addr.version == net.version and addr in net for net in trusted_proxies
+        )
+
+    peer = _parse_address(remote_addr or "")
+    if peer is None or not trusted(peer):
+        return remote_addr
+    client = remote_addr
+    for hop in reversed(hops):
+        addr = _parse_address(hop)
+        if addr is None:
+            # Garbage in the header, stop at the last proxy that could be verified
+            return client
+        client = str(addr)
+        if not trusted(addr):
+            return client
+    return client
