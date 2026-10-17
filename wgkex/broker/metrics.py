@@ -173,6 +173,12 @@ class WorkerMetricsCollection:
         with self._lock:
             return self.data.get(worker, WorkerMetrics(worker=worker))
 
+    def is_online(self, worker: str, domain: str = "") -> bool:
+        """Whether a worker is online (for a domain, taking the metrics age into account)."""
+        with self._lock:
+            wm = self.data.get(worker)
+            return wm is not None and self._is_online(wm, domain)
+
     def set(self, worker: str, metrics: WorkerMetrics) -> None:
         with self._lock:
             self.data[worker] = metrics
@@ -228,6 +234,13 @@ class WorkerMetricsCollection:
                 worker=worker, assigned_at=self.clock()
             )
 
+    def get_pending_worker(self, domain: str, public_key: str) -> str | None:
+        """Returns the worker a key is pending on in a domain, if any."""
+        with self._lock:
+            self._prune_expired()
+            p = self._pending.get(domain, {}).get(public_key)
+            return p.worker if p is not None else None
+
     def get_pending_count(self, worker: str) -> int:
         """Returns the number of pending assignments of a worker over all domains."""
         with self._lock:
@@ -280,7 +293,12 @@ class WorkerMetricsCollection:
         return {w: (loads[w], weights[w] / total_weight * total_load) for w in workers}
 
     def get_best_worker(
-        self, domain: str, eligible: Callable[[str], bool] | None = None
+        self,
+        domain: str,
+        eligible: Callable[[str], bool] | None = None,
+        location: str | None = None,
+        location_tolerance: float = 0.1,
+        location_min_excess: int = 10,
     ) -> tuple[str | None, float, int]:
         """Determines the worker that a new client should connect to.
 
@@ -292,6 +310,11 @@ class WorkerMetricsCollection:
         missing to its weighted target, so that concurrent requests and multiple broker instances
         spread clients instead of all choosing the same worker. If no worker is below its target,
         the worker is chosen randomly according to its weight.
+
+        If a location is given, workers configured with that location are preferred as long as
+        their effective peers (including the new one) stay within
+        target + max(location_min_excess, location_tolerance * target). Among those, the worker is
+        chosen randomly proportional to the remaining room. Otherwise the normal selection applies.
 
         Returns:
             A 3-tuple containing the worker name, difference to target peers, number of effective peers.
@@ -316,6 +339,18 @@ class WorkerMetricsCollection:
                     f"Worker candidate {w}: effective peers {load}, target {target:.1f}, diff {load - target:.1f}"
                 )
 
+            if location:
+                local = self._pick_local(
+                    candidates,
+                    targets,
+                    location,
+                    location_tolerance,
+                    location_min_excess,
+                )
+                if local is not None:
+                    load, target = targets[local]
+                    return local, load - target, load
+
             deficits = [max(target - load, 0.0) for load, target in targets.values()]
             if sum(deficits) > 0:
                 chances = deficits
@@ -325,6 +360,27 @@ class WorkerMetricsCollection:
             chosen = self.rng.choices(candidates, weights=chances, k=1)[0]
             load, target = targets[chosen]
             return chosen, load - target, load
+
+    def _pick_local(
+        self,
+        candidates: list[str],
+        targets: dict[str, tuple[int, float]],
+        location: str,
+        tolerance: float,
+        min_excess: int,
+    ) -> str | None:
+        worker_cfg = config.get_config().workers
+        room = {}
+        for w in candidates:
+            if worker_cfg.location(w) != location:
+                continue
+            load, target = targets[w]
+            allowed = target + max(min_excess, tolerance * target)
+            if load + 1 <= allowed:
+                room[w] = allowed - load
+        if not room:
+            return None
+        return self.rng.choices(list(room), weights=list(room.values()), k=1)[0]
 
     def is_topology_stable(self, stable_time: float) -> bool:
         """Whether no worker went online or offline (and the broker did not start) within stable_time seconds."""

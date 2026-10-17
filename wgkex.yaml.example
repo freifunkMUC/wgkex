@@ -15,9 +15,12 @@ domain_prefixes:
   - ffwert_
 # [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution.
 # Workers missing here get the average configured weight (and a warning is logged).
+# Optional: a location per worker, preferred for clients sending the same "location" in their
+# /api/v2 request (see load_balancing.location_tolerance).
 workers:
   gw04.in.ffmuc.net:
     weight: 30
+    location: muc
   gw05.in.ffmuc.net:
     weight: 30
   gw06.in.ffmuc.net:
@@ -41,6 +44,17 @@ load_balancing:
   # [broker] Seconds / number of keys for which the last assignment of a key is remembered
   previous_assignment_ttl: 21600
   previous_assignment_max_entries: 100000
+  # [broker] Workers in the location requested by a client are preferred while their effective peers
+  # stay within target + max(location_min_excess_peers, location_tolerance * target). Otherwise (and
+  # for clients without or with an unknown location) the normal selection is used. Should not be
+  # larger than rebalancing.tolerance, or rebalancing would move these peers away again.
+  location_tolerance: 0.1
+  location_min_excess_peers: 10
+  # [broker] For multiple broker instances: share assignments via MQTT
+  # (wireguard-broker/{broker_id}/assignment) so each broker counts the others' pending assignments.
+  share_pending_assignments: false
+  # [broker] Unique id of this broker instance, defaults to the hostname plus a random suffix
+  # broker_id: broker1
   # Active rebalancing: overloaded workers slowly evict peers so they reconnect to underloaded workers,
   # e.g. after a gateway reboot. Must be enabled on the broker and on the workers to have any effect.
   rebalancing:
@@ -81,6 +95,33 @@ metrics:
   # worker_port: 9101
   # [worker] Address the worker metrics listener binds to (default 0.0.0.0)
   worker_host: 0.0.0.0
+# [broker] Optional: rate limiting of the key exchange endpoints. All values below are the defaults,
+# 0 disables a limit. Limited requests still get the normal response (so clients never fall back to
+# /api/v1), but the key is not published again; /api/v2 answers with the worker the key was already
+# assigned to.
+rate_limit:
+  # Token bucket per client address (IPv6 per prefix of ipv6_prefix_length)
+  per_client_requests: 30
+  per_client_period: 60
+  # Token bucket over all clients
+  global_requests: 6000
+  global_period: 60
+  ipv6_prefix_length: 64
+  # Number of reverse proxies in front of the broker which append to X-Forwarded-For
+  trusted_proxy_hops: 0
+  max_tracked_clients: 100000
+# [broker, worker] Optional: key block- and allowlists. Files contain one key per line ('#' starts a
+# comment) and are reloaded within reload_interval seconds after being modified. If a file is deleted
+# or unreadable, its previous keys stay active: empty it instead.
+key_lists:
+  # [broker] Rejected by the key exchange (HTTP 403) and never published. Keys newly added to the
+  # file are also removed from all workers.
+  blocklist: []
+  # blocklist_file: /etc/wgkex/blocklist
+  # [worker] Never removed by the stale peer cleanup or evicted by rebalancing/draining.
+  allowlist: []
+  # allowlist_file: /etc/wgkex/allowlist
+  reload_interval: 60
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
 # [broker, worker] MQTT connection informations

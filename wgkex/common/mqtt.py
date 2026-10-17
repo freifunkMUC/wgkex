@@ -21,3 +21,7 @@ WG_KEY_ALL_WORKERS = "all"
 # Broker -> worker: remove the peer with this public key (payload), because it was assigned to
 # another worker. Not retained, ignored by older workers.
 TOPIC_WORKER_REMOVE_PEER = "wireguard-worker/{worker}/{domain}/remove"
+# Broker -> broker: a key was assigned to a worker by the v2 API (JSON: {"worker": str,
+# "domain": str, "key": str}), not retained. Only used if share_pending_assignments is enabled, so
+# that multiple broker instances count each other's pending assignments. Ignored by older brokers.
+TOPIC_BROKER_ASSIGNMENT = "wireguard-broker/{broker}/assignment"

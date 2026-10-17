@@ -47,12 +47,14 @@ py_binary(
         requirement("prometheus-client"),
         requirement("waitress"),
         "//wgkex/config:config",
+        "//wgkex/common:keylist",
         "//wgkex/common:logger",
         "//wgkex/common:mqtt",
         "//wgkex/common:utils",
         ":assignments",
         ":metrics",
         ":observability",
+        ":ratelimit",
     ],
 )
 
@@ -73,6 +75,21 @@ py_test(
         "//wgkex/broker:app",
         "//wgkex/common:mqtt",
         "//wgkex/config:config",
+    ],
+    size="small",
+)
+
+py_library(
+    name = "ratelimit",
+    srcs = ["ratelimit.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name="ratelimit_test",
+    srcs=["ratelimit_test.py"],
+    deps = [
+       "//wgkex/broker:ratelimit",
     ],
     size="small",
 )

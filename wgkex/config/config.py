@@ -27,14 +27,18 @@ class Worker:
 
     Attributes:
         weight: The relative weight of a worker, defaults to 1.
+        location: Optional location of the worker, preferred by clients requesting it.
     """
 
     weight: int
+    location: str | None = None
 
     @classmethod
     def from_dict(cls, worker_cfg: dict[str, Any]) -> "Worker":
+        location = worker_cfg.get("location")
         return cls(
-            weight=int(worker_cfg["weight"]) if worker_cfg["weight"] else 1,
+            weight=int(worker_cfg["weight"]) if worker_cfg.get("weight") else 1,
+            location=str(location) if location else None,
         )
 
 
@@ -78,6 +82,11 @@ class Workers:
                 )
             return self.average_weight() / self.total_weight
         return worker.weight / self.total_weight
+
+    def location(self, worker_name: str) -> str | None:
+        """Returns the configured location of a worker, if any."""
+        worker = self.get(worker_name)
+        return worker.location if worker is not None else None
 
     def average_weight(self) -> float:
         """Returns the average weight of the configured workers, 1 if none are configured."""
@@ -200,6 +209,14 @@ class LoadBalancing:
         previous_assignment_ttl: [broker] Seconds the broker remembers which worker a key was last
             assigned to, used for removing the peer from its previous worker.
         previous_assignment_max_entries: [broker] Maximum number of remembered assignments.
+        location_tolerance: [broker] Workers in the location requested by a client are preferred
+            while their effective peers exceed their weighted target by at most
+            max(location_min_excess_peers, location_tolerance * target).
+        location_min_excess_peers: [broker] See location_tolerance.
+        share_pending_assignments: [broker] Publish assignments to other broker instances and
+            count theirs as pending, for multiple brokers behind a load balancer.
+        broker_id: [broker] Unique name of this broker instance, used for sharing assignments.
+            Defaults to the hostname and a random suffix.
         rebalancing: Active rebalancing configuration.
     """
 
@@ -209,6 +226,10 @@ class LoadBalancing:
     targeted_publish: bool = True
     previous_assignment_ttl: int = 21600
     previous_assignment_max_entries: int = 100000
+    location_tolerance: float = 0.1
+    location_min_excess_peers: int = 10
+    share_pending_assignments: bool = False
+    broker_id: str | None = None
     rebalancing: Rebalancing = dataclasses.field(default_factory=Rebalancing)
 
     @classmethod
@@ -233,7 +254,96 @@ class LoadBalancing:
                     cls.previous_assignment_max_entries,
                 )
             ),
+            location_tolerance=max(
+                float(cfg.get("location_tolerance", cls.location_tolerance)), 0.0
+            ),
+            location_min_excess_peers=max(
+                int(
+                    cfg.get("location_min_excess_peers", cls.location_min_excess_peers)
+                ),
+                0,
+            ),
+            share_pending_assignments=bool(
+                cfg.get("share_pending_assignments", cls.share_pending_assignments)
+            ),
+            broker_id=str(cfg["broker_id"]) if cfg.get("broker_id") else None,
             rebalancing=Rebalancing.from_dict(cfg.get("rebalancing") or {}),
+        )
+
+
+@dataclasses.dataclass
+class RateLimit:
+    """A representation of the 'rate_limit' key in the configuration file (broker-only).
+
+    Rate-limited key exchange requests still get the normal response, but the key is not published
+    again, so clients never fall back to the v1 API. Limits of 0 disable the respective check.
+
+    Attributes:
+        per_client_requests: Requests allowed per client address and per_client_period.
+        per_client_period: Seconds in which per_client_requests are allowed (token bucket).
+        global_requests: Requests allowed over all clients per global_period.
+        global_period: Seconds in which global_requests are allowed.
+        ipv6_prefix_length: IPv6 clients are limited per prefix of this length.
+        trusted_proxy_hops: Number of reverse proxies in front of the broker; the client address is
+            then taken from the X-Forwarded-For header. 0 uses the TCP peer address.
+        max_tracked_clients: Maximum number of client addresses tracked at once.
+    """
+
+    per_client_requests: int = 30
+    per_client_period: int = 60
+    global_requests: int = 6000
+    global_period: int = 60
+    ipv6_prefix_length: int = 64
+    trusted_proxy_hops: int = 0
+    max_tracked_clients: int = 100000
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "RateLimit":
+        def get(name: str, minimum: int) -> int:
+            return max(int(cfg.get(name, getattr(cls, name))), minimum)
+
+        return cls(
+            per_client_requests=get("per_client_requests", 0),
+            per_client_period=get("per_client_period", 1),
+            global_requests=get("global_requests", 0),
+            global_period=get("global_period", 1),
+            ipv6_prefix_length=min(get("ipv6_prefix_length", 0), 128),
+            trusted_proxy_hops=get("trusted_proxy_hops", 0),
+            max_tracked_clients=get("max_tracked_clients", 1),
+        )
+
+
+@dataclasses.dataclass
+class KeyLists:
+    """A representation of the 'key_lists' key in the configuration file.
+
+    Files contain one public key per line ('#' starts a comment) and are reloaded when modified.
+
+    Attributes:
+        blocklist: [broker] Keys which are rejected by the key exchange and never published.
+        blocklist_file: [broker] Optional file with additional blocked keys.
+        allowlist: [worker] Keys which are never removed by the stale peer cleanup or evicted by
+            rebalancing/draining.
+        allowlist_file: [worker] Optional file with additional allowlisted keys.
+        reload_interval: Seconds between checks of the files for modifications.
+    """
+
+    blocklist: list[str] = dataclasses.field(default_factory=list)
+    blocklist_file: str | None = None
+    allowlist: list[str] = dataclasses.field(default_factory=list)
+    allowlist_file: str | None = None
+    reload_interval: int = 60
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "KeyLists":
+        return cls(
+            blocklist=[str(k) for k in cfg.get("blocklist") or []],
+            blocklist_file=cfg.get("blocklist_file") or None,
+            allowlist=[str(k) for k in cfg.get("allowlist") or []],
+            allowlist_file=cfg.get("allowlist_file") or None,
+            reload_interval=max(
+                int(cfg.get("reload_interval", cls.reload_interval)), 1
+            ),
         )
 
 
@@ -331,6 +441,8 @@ class Config:
         peer_cleanup: Stale peer cleanup configuration (worker-only).
         drain: Drain mode configuration (worker-only).
         metrics: Prometheus metrics configuration.
+        rate_limit: Key exchange rate limiting (broker-only).
+        key_lists: Key block- and allowlists.
     """
 
     raw: dict[str, Any]
@@ -344,6 +456,8 @@ class Config:
     peer_cleanup: PeerCleanup = dataclasses.field(default_factory=PeerCleanup)
     drain: Drain = dataclasses.field(default_factory=Drain)
     metrics: Metrics = dataclasses.field(default_factory=Metrics)
+    rate_limit: RateLimit = dataclasses.field(default_factory=RateLimit)
+    key_lists: KeyLists = dataclasses.field(default_factory=KeyLists)
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
@@ -368,6 +482,8 @@ class Config:
             peer_cleanup=PeerCleanup.from_dict(cfg.get("peer_cleanup") or {}),
             drain=Drain.from_dict(cfg.get("drain") or {}),
             metrics=Metrics.from_dict(cfg.get("metrics") or {}),
+            rate_limit=RateLimit.from_dict(cfg.get("rate_limit") or {}),
+            key_lists=KeyLists.from_dict(cfg.get("key_lists") or {}),
         )
 
     def get(self, key: str) -> Any:

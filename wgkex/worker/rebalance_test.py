@@ -55,6 +55,7 @@ class RebalancerTest(unittest.TestCase):
             "connected_peers": lambda iface: list(self.peers[iface]),
             "clock": self.clock,
             "rng": random.Random(0),
+            "protected": lambda key: False,
         }
         args.update(kwargs)
         return rebalance.Rebalancer(**args)
@@ -64,6 +65,17 @@ class RebalancerTest(unittest.TestCase):
         return json.dumps(
             {"excess": excess, "domains": domains if domains is not None else _DOMAINS}
         )
+
+    def test_protected_peers_not_evicted(self):
+        """Allowlisted peers are never evicted, even when draining."""
+        protected = {f"a{i}" for i in range(95)}
+        r = self.rebalancer(protected=lambda key: key in protected)
+        r.handle_instruction(
+            json.dumps({"excess": 100, "domains": _DOMAINS, "max_evictions_ratio": 1.0})
+        )
+        r.run_once()
+        self.assertTrue(self.evicted)
+        self.assertFalse(protected & {key for _, key in self.evicted})
 
     def test_no_hint_no_eviction(self):
         """Nothing is evicted without a hint from the broker."""

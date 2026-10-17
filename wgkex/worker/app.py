@@ -9,6 +9,7 @@ from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
 from wgkex.worker import drain, mqtt, observability
+from wgkex.worker.allowlist import is_allowlisted
 from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
 from wgkex.worker.rebalance import peer_add_tracker
@@ -39,7 +40,9 @@ def flush_workers(domain: str) -> None:
     cleanup_cfg = config.get_config().peer_cleanup
     wg_interface = f"wg-{domain}"
 
-    def recently_added(public_key: str) -> bool:
+    def keep(public_key: str) -> bool:
+        if is_allowlisted(public_key):
+            return True
         # Peers added by the key exchange may not have done their first handshake yet
         added_at = peer_add_tracker.added_at(wg_interface, public_key)
         return (
@@ -51,9 +54,7 @@ def flush_workers(domain: str) -> None:
         try:
             time.sleep(cleanup_cfg.interval)
             logger.info(f"Running cleanup task for {domain}")
-            removed = wg_flush_stale_peers(
-                domain, cleanup_cfg.stale_timeout, keep=recently_added
-            )
+            removed = wg_flush_stale_peers(domain, cleanup_cfg.stale_timeout, keep=keep)
             logger.info("Removed %d stale peers from %s", len(removed), domain)
             logger.debug("Cleanup results: %s", removed)
         except Exception as e:  # noqa: BLE001
