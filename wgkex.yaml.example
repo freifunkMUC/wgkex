@@ -97,12 +97,20 @@ load_balancing:
     eviction_cooldown: 3600
     # [broker] Share of its peers a draining worker is asked to evict per interval (see "Planned reboot")
     drain_rate: 0.1
-# [worker] Optional: removal of peers without recent handshake. All values below are the defaults.
+# [worker] Optional: removal of peers without recent handshake. All values below are the defaults
+# and must be positive. The section was called "cleanup" in early Parker versions, which is still
+# accepted (with legacy_stale_timeout as stale_timeout); peer_cleanup takes precedence.
 peer_cleanup:
-  # Seconds without a handshake after which a peer is removed
+  # Seconds without a handshake after which a (non-Parker) peer is removed
   stale_timeout: 1800
   # Seconds between two cleanup runs
   interval: 300
+  # Parker: a peer with an earlier last handshake is stale. The default allows multiple 120s
+  # config retries and the 180s WireGuard tunnel timeout.
+  parker_stale_timeout: 300
+  # Parker: never-handshaked peers are retained this long after provisioning or worker startup,
+  # then treated as abandoned.
+  initial_handshake_grace: 600
 # [worker] Optional: drain mode for planned maintenance. Draining is also started with SIGUSR1
 # and stopped with SIGUSR2. The worker is draining while the file exists, use a non-persistent
 # location (e.g. /run) so that it does not stay draining after the reboot.
@@ -156,18 +164,6 @@ key_lists:
   reload_interval: 60
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
-# [worker] Offline peer cleanup timing, in seconds. All values must be positive.
-cleanup:
-  # How often each WireGuard interface is scanned.
-  interval: 3600
-  # A Parker peer with an earlier last handshake is stale. The default allows
-  # multiple 120s config retries and the 180s WireGuard tunnel timeout.
-  parker_stale_timeout: 300
-  # Preserve the historical three-hour timeout for legacy peers.
-  legacy_stale_timeout: 10800
-  # Never-handshaked peers are retained this long after provisioning or worker
-  # startup, then treated as abandoned.
-  initial_handshake_grace: 600
 # [broker, worker]
 parker:
   # Enable Parker support. The broker will still handle non-Parker in the same instance, the worker however will disable non-Parker support in this case.

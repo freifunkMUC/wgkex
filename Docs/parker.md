@@ -19,8 +19,31 @@ For Parker the following configuration items are relevant in addition to the def
 - `sticky_worker_tolerance`
 - `broker_signing_key`
 - `parker` section
-- `cleanup` section
+- `peer_cleanup` section (`parker_stale_timeout`, `initial_handshake_grace`; the older `cleanup` section is still
+  accepted as an alias)
 - `netbox` section
+
+Parker uses the same broker protections as `/api/v2`: the key blocklist (`403`), rate limiting, `trusted_proxies` and
+`log_client_ip`, and the `wgkex_broker_key_exchange_requests{api="v3"}` and `wgkex_broker_assignments{domain="parker"}`
+metrics. Unlike v1/v2, rate limited v3 requests are answered with `429`, since Parker nodes have no older API to fall
+back to and simply retry after `retry_interval`. See [`openapi.yaml`](openapi.yaml) for the request and response
+format.
+
+## Interaction with the other worker features
+
+A Parker worker serves the single `wg-nodes` interface and no domains, so:
+
+- **MQTT:** the broker publishes a node's peer only to the concentrators chosen for it (`parker/wireguard/{worker}`,
+  QoS 1), and sends the same message with `"Remove": true` to concentrators the node was moved away from. Workers also
+  still accept messages addressed to `all`.
+- **Drain mode:** works like for the other workers (`SIGUSR1`/`SIGUSR2` or the drain file). A draining concentrator
+  (status `2`) is neither chosen nor kept as a sticky concentrator, unless all concentrators of the PoP are draining.
+  Nodes move away from it on their next config request.
+- **Rebalancing** (`load_balancing.rebalancing`) is not used for Parker workers, they get no rebalance hints. Load is
+  balanced by the concentrator selection on every config request instead.
+- **Stale peer cleanup:** Parker peers use `peer_cleanup.parker_stale_timeout` and `initial_handshake_grace` (see
+  below). The key allowlist also protects Parker peers from the cleanup.
+- **Netlink:** Parker uses the same long-lived netlink handles as the other workers.
 
 
 ## Design considerations
@@ -65,12 +88,12 @@ It can't be set too high because otherwise a node stays offline a long time when
 
 To reduce the amount of times that the selected concentrators change for a node, there is a stickyness feature. On every request, the selected concentrators are saved in the IPAM alongside the Prefix information. On following requests, we first consider the stored concentrators, and only when a concentrator is more than `sticky_worker_tolerance`% peers over its calculated target, a node is redirected to a new concentrator with the most free capacity ("missing peers").
 
-To make the peer counting work, the counts are interpolated between metric updates from the concentrators (same as with non-Parker /api/v2). The locally cached concentrator peer count is increased by 1 for each selected concentrator on each request.
-This is only done when a concentrator has changed compared to the previous value compared in the IPAM, so we don't inflate the peer counts when a node won't actually create a new connection.
+To make the peer counting work, newly selected concentrators are counted as pending assignments until the concentrator's metrics include them (same as with non-Parker /api/v2, see `load_balancing.pending_assignment_*`).
+This is only done when a concentrator has changed compared to the previous value stored in the IPAM, so we don't inflate the peer counts when a node won't actually create a new connection.
 
 **Possible improvements:**
 - Nodes send an indication whether they are currently offline or online. Then, interpolation could be further improved by bumping peer count if it was offline even if by chance the same concentrators have been selected, and decreasing peer count of the old gateway if it was online
 - Nodes do active connectivity checks across the active or even both tunnels, e.g. every 10s:
   - Quicker switchover to backup tunnels
   - Immediately fetch config when all tunnels are inactive. This would also allow increasing `retry_interval` a lot
-- ✅ ~~Improve interpolation by increasing by number of broker instances (needs e.g. brokers announcing themselves over MQTT)~~
+- Share Parker pending assignments between broker instances, like `load_balancing.share_pending_assignments` does for /api/v2
