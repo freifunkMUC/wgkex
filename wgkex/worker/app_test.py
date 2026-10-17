@@ -5,6 +5,7 @@ import unittest
 from time import sleep
 from unittest import mock
 
+from wgkex.config import config
 from wgkex.worker import app
 
 
@@ -79,6 +80,30 @@ class AppTest(unittest.TestCase):
         handlers = {c.args[0]: c.args[1] for c in signal_mock.call_args_list}
         self.assertIn(app.signal.SIGTERM, handlers)
         self.assertIs(handlers[app.signal.SIGTERM], handlers[app.signal.SIGINT])
+
+    @mock.patch.object(app.observability, "start_http_server")
+    @mock.patch.object(app.config, "get_config")
+    def test_metrics_server_opt_in(self, config_mock, start_mock):
+        """The metrics listener is only started if a port is configured."""
+        config_mock.return_value = config.Config.from_dict(
+            {
+                "domains": ["ffmuc_a"],
+                "domain_prefixes": ["ffmuc_"],
+                "mqtt": {"broker_url": "", "username": "", "password": ""},
+            }
+        )
+        app.start_metrics_server()
+        start_mock.assert_not_called()
+        config_mock.return_value = config.Config.from_dict(
+            {
+                "domains": ["ffmuc_a"],
+                "domain_prefixes": ["ffmuc_"],
+                "mqtt": {"broker_url": "", "username": "", "password": ""},
+                "metrics": {"worker_port": 9101, "worker_host": "::"},
+            }
+        )
+        app.start_metrics_server()
+        start_mock.assert_called_once_with(9101, "::")
 
     @mock.patch.object(app.config, "get_config")
     @mock.patch.object(app.mqtt, "connect", autospec=True)

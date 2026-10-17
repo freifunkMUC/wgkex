@@ -20,6 +20,7 @@ from collections.abc import Callable
 from wgkex.common import logger
 from wgkex.config.config import Rebalancing
 from wgkex.worker.netlink import WireGuardClient, get_connected_peers, link_handler
+from wgkex.worker.observability import EVICTIONS
 
 
 class PeerAddTracker:
@@ -161,6 +162,7 @@ class Rebalancer:
             if instruction.max_evictions_ratio is not None
             else self._cfg.max_evictions_ratio
         )
+        kind = "rebalance" if instruction.max_evictions_ratio is None else "drain"
         budget = min(
             instruction.excess,
             max(1, int(total_connected * ratio)),
@@ -185,6 +187,7 @@ class Rebalancer:
                 continue
             self._tracker.forget(iface, key)
             evicted.append(key)
+            EVICTIONS.labels(kind).inc()
 
         with self._lock:
             for key in evicted:

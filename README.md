@@ -178,6 +178,39 @@ Planned reboot runbook:
    gone, signals are not persisted). If a drain file in a persistent location was used, delete it.
 5. Normal rebalancing (if enabled) moves peers back to the rebooted worker after `stable_time`.
 
+### Prometheus metrics
+
+The broker serves metrics in the Prometheus text format at `GET /metrics` on its normal HTTP listener. Disable it with
+`metrics.broker_endpoint: false`, or keep the path from being reachable through your reverse proxy if the worker loads
+should not be public. It exports:
+
+| Metric | Labels | Description |
+|---|---|---|
+| `wgkex_broker_worker_online` | `worker` | 1 if the worker is online |
+| `wgkex_broker_worker_draining` | `worker` | 1 if the worker is draining |
+| `wgkex_broker_worker_connected_peers` | `worker` | Connected peers reported by the worker (all domains) |
+| `wgkex_broker_worker_pending_assignments` | `worker` | Assigned peers not yet reflected in the worker's metrics |
+| `wgkex_broker_worker_effective_peers` | `worker` | Connected peers plus pending assignments, used for selection |
+| `wgkex_broker_worker_target_peers` | `worker` | Weighted share of the effective peers of all online, non-draining workers |
+| `wgkex_broker_worker_domain_online` | `worker`, `domain` | 1 if the worker is online for the domain with fresh metrics |
+| `wgkex_broker_worker_domain_connected_peers` | `worker`, `domain` | Connected peers reported for the domain |
+| `wgkex_broker_key_exchange_requests_total` | `api` (`v1`, `v2`), `result` (`ok`, `invalid`, `no_worker`, `no_worker_data`) | Key exchange requests |
+| `wgkex_broker_assignments_total` | `worker`, `domain` | Peers assigned by the v2 key exchange |
+| `wgkex_broker_rebalance_hints_total` | `worker`, `kind` (`rebalance`, `drain`) | Published rebalancing hints |
+| `wgkex_broker_rebalance_hint_excess_peers_total` | `worker`, `kind` | Sum of the excess peers in published hints |
+| `wgkex_broker_mqtt_message_errors_total` | `handler` (`metrics`, `status`, `data`) | Ignored invalid MQTT messages |
+
+Workers can serve metrics on a separate HTTP listener (`GET /metrics`), which is disabled unless `metrics.worker_port`
+is set (bind address `metrics.worker_host`, default `0.0.0.0`):
+
+| Metric | Labels | Description |
+|---|---|---|
+| `wgkex_worker_queue_depth` | | Peer operations waiting in the queue |
+| `wgkex_worker_peer_operations_total` | `op` (`add`, `remove`), `result` (`ok`, `error`) | Processed peer operations |
+| `wgkex_worker_netlink_operation_seconds` | `op` (`wg_set`, `wg_info`, `route`, `fdb`, `get_addr`) | Histogram of netlink operation durations |
+| `wgkex_worker_netlink_reconnects_total` | | Netlink sockets reopened after an error |
+| `wgkex_worker_evictions_total` | `kind` (`rebalance`, `drain`) | Peers evicted on request of the broker |
+
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
 

@@ -5,6 +5,7 @@ from typing import NamedTuple
 
 from wgkex.common import logger
 from wgkex.worker.netlink import WireGuardClient, link_handler
+from wgkex.worker.observability import PEER_OPS, QUEUE_DEPTH
 from wgkex.worker.rebalance import peer_add_tracker
 
 
@@ -51,6 +52,7 @@ class UniqueQueue(Queue):
 
 
 q = UniqueQueue()
+QUEUE_DEPTH.set_function(lambda: q.qsize())
 
 # Maximum number of queued operations processed at once
 _MAX_BATCH = 256
@@ -112,9 +114,12 @@ def process_batch(max_items: int = _MAX_BATCH, timeout: float | None = None) -> 
     start = time.monotonic()
     # Sorted by interface, so the cached netlink state of an interface is reused back to back
     for item in sorted(batch, key=_sort_key):
+        op = "remove" if getattr(item, "remove", False) else "add"
         try:
             process_item(item)
+            PEER_OPS.labels(op, "ok").inc()
         except Exception as e:  # noqa: BLE001
+            PEER_OPS.labels(op, "error").inc()
             # Don't crash the queue processor
             if getattr(item, "remove", False):
                 # Expected when the peer was already removed, e.g. by rebalancing

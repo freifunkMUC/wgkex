@@ -305,6 +305,82 @@ class BrokerAppTest(unittest.TestCase):
             qos=0,
             retain=False,
         )
+        self.assertEqual(
+            self.sample(
+                "wgkex_broker_rebalance_hint_excess_peers_total",
+                worker="gw1",
+                kind="drain",
+            ),
+            40,
+        )
+
+    def sample(self, name: str, **labels) -> float:
+        value = self.app.observability.REGISTRY.get_sample_value(name, labels)
+        return value or 0.0
+
+    def test_metrics_endpoint(self):
+        """/metrics exports worker state and request counters in the Prometheus format."""
+        self.add_worker("gw1", 10)
+        self.add_worker("gw2", 30)
+        self.status("gw2", b"2")
+        ok_before = self.sample(
+            "wgkex_broker_key_exchange_requests_total", api="v2", result="ok"
+        )
+        invalid_before = self.sample(
+            "wgkex_broker_key_exchange_requests_total", api="v1", result="invalid"
+        )
+        assigned_before = self.sample(
+            "wgkex_broker_assignments_total", worker="gw1", domain=_DOMAIN
+        )
+        self.assertEqual(
+            self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY}).status_code,
+            200,
+        )
+        self.post("v1", {"domain": _DOMAIN, "public_key": "invalid"})
+
+        resp = self.client.get("/metrics")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.content_type.startswith("text/plain"))
+        text = resp.get_data(as_text=True)
+        self.assertIn('wgkex_broker_worker_online{worker="gw1"} 1.0', text)
+        self.assertIn('wgkex_broker_worker_draining{worker="gw2"} 1.0', text)
+        self.assertIn('wgkex_broker_worker_pending_assignments{worker="gw1"} 1.0', text)
+        self.assertIn('wgkex_broker_worker_effective_peers{worker="gw1"} 11.0', text)
+        # The draining worker has no target, gw1 is the only active worker
+        self.assertIn('wgkex_broker_worker_target_peers{worker="gw1"} 11.0', text)
+        self.assertIn('wgkex_broker_worker_target_peers{worker="gw2"} 0.0', text)
+        self.assertIn(
+            f'wgkex_broker_worker_domain_connected_peers{{domain="{_DOMAIN}",worker="gw2"}} 30.0',
+            text,
+        )
+        self.assertEqual(
+            self.sample(
+                "wgkex_broker_key_exchange_requests_total", api="v2", result="ok"
+            ),
+            ok_before + 1,
+        )
+        self.assertEqual(
+            self.sample(
+                "wgkex_broker_key_exchange_requests_total", api="v1", result="invalid"
+            ),
+            invalid_before + 1,
+        )
+        self.assertEqual(
+            self.sample("wgkex_broker_assignments_total", worker="gw1", domain=_DOMAIN),
+            assigned_before + 1,
+        )
+
+    def test_metrics_endpoint_disabled(self):
+        with mock.patch.object(config.get_config().metrics, "broker_endpoint", False):
+            self.assertEqual(self.client.get("/metrics").status_code, 404)
+
+    def test_invalid_mqtt_payload_counted(self):
+        before = self.sample("wgkex_broker_mqtt_message_errors_total", handler="status")
+        self.status("gw1", b"garbage")
+        self.assertEqual(
+            self.sample("wgkex_broker_mqtt_message_errors_total", handler="status"),
+            before + 1,
+        )
 
 
 if __name__ == "__main__":

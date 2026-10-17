@@ -8,7 +8,7 @@ import time
 from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
-from wgkex.worker import drain, mqtt
+from wgkex.worker import drain, mqtt, observability
 from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
 from wgkex.worker.rebalance import peer_add_tracker
@@ -126,6 +126,14 @@ def check_all_domains_unique(domains, prefixes):
     return True
 
 
+def start_metrics_server() -> None:
+    """Starts the optional Prometheus metrics listener."""
+    metrics_cfg = config.get_config().metrics
+    port = getattr(metrics_cfg, "worker_port", None)
+    if isinstance(port, int) and port > 0:
+        observability.start_http_server(port, metrics_cfg.worker_host)
+
+
 def main():
     """Starts MQTT listener.
 
@@ -157,6 +165,7 @@ def main():
     for domain in domains:
         if not is_valid_domain(domain):
             raise InvalidDomain(f"Domain {domain} has invalid prefix.")
+    start_metrics_server()
     clean_up_worker()
     watch_queue()
     mqtt.connect(exit_event)
