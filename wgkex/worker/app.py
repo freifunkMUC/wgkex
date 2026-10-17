@@ -8,7 +8,7 @@ import time
 from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
-from wgkex.worker import mqtt
+from wgkex.worker import drain, mqtt
 from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
 from wgkex.worker.rebalance import peer_add_tracker
@@ -144,6 +144,9 @@ def main():
     # SIGTERM is sent by e.g. docker stop and systemd
     signal.signal(signal.SIGINT, on_exit)
     signal.signal(signal.SIGTERM, on_exit)
+    # Drain mode for planned maintenance, see README
+    signal.signal(signal.SIGUSR1, lambda *_: drain.drain_state.request(True))
+    signal.signal(signal.SIGUSR2, lambda *_: drain.drain_state.request(False))
 
     domains = config.get_config().domains
     prefixes = config.get_config().domain_prefixes

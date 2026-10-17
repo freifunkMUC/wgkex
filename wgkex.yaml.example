@@ -58,12 +58,21 @@ load_balancing:
     max_evictions_ratio: 0.01
     # [worker] Seconds before the same peer may be evicted again
     eviction_cooldown: 3600
+    # [broker] Share of its peers a draining worker is asked to evict per interval (see "Planned reboot")
+    drain_rate: 0.1
 # [worker] Optional: removal of peers without recent handshake. All values below are the defaults.
 peer_cleanup:
   # Seconds without a handshake after which a peer is removed
   stale_timeout: 1800
   # Seconds between two cleanup runs
   interval: 300
+# [worker] Optional: drain mode for planned maintenance. Draining is also started with SIGUSR1
+# and stopped with SIGUSR2. The worker is draining while the file exists, use a non-persistent
+# location (e.g. /run) so that it does not stay draining after the reboot.
+drain:
+  file: /run/wgkex/drain
+  # Seconds between checks of the file
+  check_interval: 5
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
 # [broker, worker] MQTT connection informations

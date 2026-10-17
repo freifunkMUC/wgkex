@@ -93,6 +93,39 @@ class MQTTTest(unittest.TestCase):
             ]
         )
 
+    @mock.patch.object(mqtt, "get_config")
+    @mock.patch.object(mqtt, "get_device_data")
+    def test_announce_while_draining(self, get_device_data_mock, config_mock):
+        """A draining worker announces itself with status 2."""
+        config = _get_config_mock()
+        config.external_name = None
+        config_mock.return_value = config
+        get_device_data_mock.return_value = (51820, "456asdf=", "fe80::1")
+        client = mock.MagicMock()
+        mqtt.drain.drain_state.request(True)
+        self.addCleanup(mqtt.drain.drain_state.request, False)
+
+        self.assertTrue(mqtt.publish_worker_data_and_status(client))
+        client.publish.assert_called_with(
+            f"wireguard-worker/{socket.gethostname()}/status", 2, qos=1, retain=True
+        )
+
+    def test_publish_status(self):
+        """Status changes are only published after the announcement, and only once."""
+        client = mock.MagicMock()
+        topic = f"wireguard-worker/{socket.gethostname()}/status"
+        mqtt.on_disconnect(client, None, 0)
+        self.assertFalse(mqtt.publish_status(client, 2))
+        client.publish.assert_not_called()
+
+        with mock.patch.object(mqtt, "_published_status", 1):
+            self.assertTrue(mqtt.publish_status(client, 2))
+            client.publish.assert_called_once_with(topic, 2, qos=1, retain=True)
+            self.assertTrue(mqtt.publish_status(client, 2))
+            client.publish.assert_called_once()
+            self.assertTrue(mqtt.publish_status(client, 1))
+            client.publish.assert_called_with(topic, 1, qos=1, retain=True)
+
     @mock.patch.object(mqtt, "_start_announce_retry")
     @mock.patch.object(mqtt, "get_config")
     @mock.patch.object(mqtt, "get_device_data")

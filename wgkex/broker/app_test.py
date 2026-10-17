@@ -259,6 +259,53 @@ class BrokerAppTest(unittest.TestCase):
             retain=False,
         )
 
+    def status(self, worker: str, payload: bytes) -> None:
+        m = mock.MagicMock()
+        m.topic = f"wireguard-worker/{worker}/status"
+        m.payload = payload
+        self.app.handle_mqtt_message_status(None, None, m)
+
+    def test_draining_status(self):
+        """Status 2 keeps a worker online but excludes it from new v2 assignments."""
+        self.add_worker("gw1", 0)
+        self.add_worker("gw2", 500)
+        self.status("gw1", b"2")
+        self.assertTrue(self.app.worker_metrics.get("gw1").is_online())
+        self.assertTrue(self.app.worker_metrics.is_draining("gw1"))
+        for _ in range(10):
+            resp = self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(
+                resp.get_json()["Endpoint"]["Address"], "gw2.ext.example.net"
+            )
+        self.status("gw1", b"1")
+        self.assertFalse(self.app.worker_metrics.is_draining("gw1"))
+        self.status("gw1", b"2")
+        self.status("gw1", b"0")
+        self.assertFalse(self.app.worker_metrics.get("gw1").is_online())
+        self.assertFalse(self.app.worker_metrics.is_draining("gw1"))
+
+    def test_publish_drain_hints(self):
+        """Draining workers get hints with the configured drain rate."""
+        self.add_worker("gw1", 40)
+        self.add_worker("gw2", 0)
+        self.status("gw1", b"2")
+        with (
+            mock.patch.object(self.app.worker_metrics, "metrics_max_age", 0),
+            mock.patch.object(
+                config.get_config().load_balancing.rebalancing, "drain_rate", 0.25
+            ),
+        ):
+            self.app.publish_rebalance_hints()
+        self.app.mqtt.publish.assert_called_once_with(
+            "wireguard-worker/gw1/rebalance",
+            json.dumps(
+                {"excess": 40, "domains": [_DOMAIN], "max_evictions_ratio": 0.25}
+            ),
+            qos=0,
+            retain=False,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

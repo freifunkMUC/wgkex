@@ -69,6 +69,26 @@ class RebalancerTest(unittest.TestCase):
         # 102 connected peers * 0.02 = 2
         self.assertEqual(len(r.run_once()), 2)
 
+    def test_drain_hint_uses_its_rate(self):
+        """Hints for draining workers carry a faster eviction rate, which is clamped to 1."""
+        r = self.rebalancer()
+        r.handle_instruction(
+            json.dumps({"excess": 102, "domains": _DOMAINS, "max_evictions_ratio": 0.1})
+        )
+        # 102 connected peers * 0.1 = 10
+        self.assertEqual(len(r.run_once()), 10)
+        r.handle_instruction(
+            json.dumps({"excess": 500, "domains": _DOMAINS, "max_evictions_ratio": 5})
+        )
+        self.assertEqual(len(r.run_once()), 92)
+
+    def test_invalid_drain_rate_ignored(self):
+        r = self.rebalancer()
+        r.handle_instruction(
+            json.dumps({"excess": 5, "domains": _DOMAINS, "max_evictions_ratio": "x"})
+        )
+        self.assertListEqual(r.run_once(), [])
+
     def test_eviction_at_least_one(self):
         """At least one peer is evicted per round on small workers."""
         self.peers = {"wg-a": ["a0", "a1"], "wg-b": []}
