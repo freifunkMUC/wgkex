@@ -15,7 +15,7 @@ sys.modules["pyroute2"] = pyroute2_module_mock
 sys.modules["pyroute2.netlink"] = mock.MagicMock()
 from pyroute2 import IPRoute, WireGuard
 
-from wgkex.worker import netlink
+from wgkex.worker import netlink, observability
 
 _WG_CLIENT_ADD = netlink.WireGuardClient(
     public_key="public_key", domain="add", remove=False
@@ -324,8 +324,27 @@ class NetlinkTest(unittest.TestCase):
     def test_reconnect_on_socket_error(self):
         """A broken socket is replaced and the operation retried once."""
         self.route_info_mock.route.side_effect = [OSError("broken"), {"ok": 1}]
+        reconnects = observability.REGISTRY.get_sample_value(
+            "wgkex_worker_netlink_reconnects_total"
+        )
+        route_ops = observability.REGISTRY.get_sample_value(
+            "wgkex_worker_netlink_operation_seconds_count", {"op": "route"}
+        )
         self.assertEqual({"ok": 1}, netlink.route_handler(_WG_CLIENT_ADD))
         self.route_info_mock.close.assert_called_once()
+        self.assertEqual(
+            reconnects + 1,
+            observability.REGISTRY.get_sample_value(
+                "wgkex_worker_netlink_reconnects_total"
+            ),
+        )
+        # One observation per call, including the retry
+        self.assertEqual(
+            (route_ops or 0) + 1,
+            observability.REGISTRY.get_sample_value(
+                "wgkex_worker_netlink_operation_seconds_count", {"op": "route"}
+            ),
+        )
         self.assertEqual(2, self.route_info_mock.route.call_count)
 
     def test_refresh_ifindex_on_enodev(self):

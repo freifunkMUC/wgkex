@@ -44,6 +44,7 @@ py_binary(
     deps=[
         requirement("flask"),
         requirement("flask-mqtt"),
+        requirement("prometheus-client"),
         requirement("waitress"),
         "//wgkex/config:config",
         "//wgkex/common:logger",
@@ -51,6 +52,17 @@ py_binary(
         "//wgkex/common:utils",
         ":assignments",
         ":metrics",
+        ":observability",
+    ],
+)
+
+py_library(
+    name = "observability",
+    srcs = ["observability.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       requirement("prometheus-client"),
+       ":metrics",
     ],
 )
 

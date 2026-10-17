@@ -73,6 +73,14 @@ drain:
   file: /run/wgkex/drain
   # Seconds between checks of the file
   check_interval: 5
+# [broker, worker] Optional: Prometheus metrics
+metrics:
+  # [broker] Serve metrics at /metrics on the broker_listen address (default true)
+  broker_endpoint: true
+  # [worker] Port of an HTTP listener for worker metrics, disabled if unset (default)
+  # worker_port: 9101
+  # [worker] Address the worker metrics listener binds to (default 0.0.0.0)
+  worker_host: 0.0.0.0
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
 # [broker, worker] MQTT connection informations

@@ -7,9 +7,16 @@ import unittest
 from unittest import mock
 
 from wgkex.config.config import Rebalancing
-from wgkex.worker import rebalance
+from wgkex.worker import observability, rebalance
 
 _DOMAINS = ["ffmuc_a", "ffmuc_b"]
+
+
+def _evictions(kind: str) -> float:
+    value = observability.REGISTRY.get_sample_value(
+        "wgkex_worker_evictions_total", {"kind": kind}
+    )
+    return value or 0.0
 
 
 class FakeClock:
@@ -64,13 +71,16 @@ class RebalancerTest(unittest.TestCase):
 
     def test_eviction_is_rate_limited(self):
         """At most max_evictions_ratio of the connected peers are evicted per round."""
+        before = _evictions("rebalance")
         r = self.rebalancer()
         r.handle_instruction(self.hint(50))
         # 102 connected peers * 0.02 = 2
         self.assertEqual(len(r.run_once()), 2)
+        self.assertEqual(_evictions("rebalance"), before + 2)
 
     def test_drain_hint_uses_its_rate(self):
         """Hints for draining workers carry a faster eviction rate, which is clamped to 1."""
+        drain_before = _evictions("drain")
         r = self.rebalancer()
         r.handle_instruction(
             json.dumps({"excess": 102, "domains": _DOMAINS, "max_evictions_ratio": 0.1})
@@ -81,6 +91,7 @@ class RebalancerTest(unittest.TestCase):
             json.dumps({"excess": 500, "domains": _DOMAINS, "max_evictions_ratio": 5})
         )
         self.assertEqual(len(r.run_once()), 92)
+        self.assertEqual(_evictions("drain"), drain_before + 102)
 
     def test_invalid_drain_rate_ignored(self):
         r = self.rebalancer()

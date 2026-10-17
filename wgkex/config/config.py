@@ -159,6 +159,31 @@ class Drain:
 
 
 @dataclasses.dataclass
+class Metrics:
+    """A representation of the 'metrics' key in the configuration file.
+
+    Attributes:
+        broker_endpoint: Serve Prometheus metrics at /metrics on the broker's HTTP listener.
+        worker_port: Port of an HTTP listener serving Prometheus metrics on the worker,
+            None (default) disables it.
+        worker_host: Address the worker metrics listener binds to.
+    """
+
+    broker_endpoint: bool = True
+    worker_port: int | None = None
+    worker_host: str = "0.0.0.0"
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Metrics":
+        port = cfg.get("worker_port")
+        return cls(
+            broker_endpoint=bool(cfg.get("broker_endpoint", cls.broker_endpoint)),
+            worker_port=int(port) if port else None,
+            worker_host=str(cfg.get("worker_host") or cls.worker_host),
+        )
+
+
+@dataclasses.dataclass
 class LoadBalancing:
     """A representation of the 'load_balancing' key in the configuration file.
 
@@ -305,6 +330,7 @@ class Config:
         load_balancing: Load balancing and rebalancing configuration.
         peer_cleanup: Stale peer cleanup configuration (worker-only).
         drain: Drain mode configuration (worker-only).
+        metrics: Prometheus metrics configuration.
     """
 
     raw: dict[str, Any]
@@ -317,6 +343,7 @@ class Config:
     load_balancing: LoadBalancing = dataclasses.field(default_factory=LoadBalancing)
     peer_cleanup: PeerCleanup = dataclasses.field(default_factory=PeerCleanup)
     drain: Drain = dataclasses.field(default_factory=Drain)
+    metrics: Metrics = dataclasses.field(default_factory=Metrics)
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
@@ -340,6 +367,7 @@ class Config:
             load_balancing=LoadBalancing.from_dict(cfg.get("load_balancing") or {}),
             peer_cleanup=PeerCleanup.from_dict(cfg.get("peer_cleanup") or {}),
             drain=Drain.from_dict(cfg.get("drain") or {}),
+            metrics=Metrics.from_dict(cfg.get("metrics") or {}),
         )
 
     def get(self, key: str) -> Any:

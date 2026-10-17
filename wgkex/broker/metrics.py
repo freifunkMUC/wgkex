@@ -93,6 +93,21 @@ class RebalanceHint:
 
 
 @dataclasses.dataclass
+class WorkerSnapshot:
+    """State of a worker at one point in time, see WorkerMetricsCollection.snapshot."""
+
+    worker: str
+    online: bool
+    draining: bool
+    connected_peers: int
+    pending: int
+    effective_peers: int
+    target: float
+    #            domain -> (online, connected peers)
+    domains: dict[str, tuple[bool, int]]
+
+
+@dataclasses.dataclass
 class WorkerMetricsCollection:
     """A thread-safe container for all worker metrics.
 
@@ -391,6 +406,44 @@ class WorkerMetricsCollection:
                     excess=peers, domains=hint_domains, max_evictions_ratio=rate
                 )
         return hints
+
+    def snapshot(self) -> list["WorkerSnapshot"]:
+        """Returns a consistent view of all known workers, e.g. for exporting metrics.
+
+        The target is the worker's weighted share of the effective peers of all online workers
+        which are not draining, like in rebalancing; draining and offline workers have target 0.
+        """
+        with self._lock:
+            online = {w for w, wm in self.data.items() if self._is_online(wm)}
+            active = [w for w in sorted(online) if not self.data[w].draining]
+            targets = self._targets(active)
+            result = []
+            for w in sorted(self.data):
+                wm = self.data[w]
+                result.append(
+                    WorkerSnapshot(
+                        worker=w,
+                        online=w in online,
+                        draining=wm.draining,
+                        connected_peers=wm.get_peer_count(),
+                        pending=self.get_pending_count(w),
+                        effective_peers=self.get_effective_peer_count(w),
+                        target=targets[w][1] if w in targets else 0.0,
+                        domains={
+                            d: (
+                                self._is_online(wm, d),
+                                max(
+                                    wm.get_domain_metrics(d).get(
+                                        CONNECTED_PEERS_METRIC, 0
+                                    ),
+                                    0,
+                                ),
+                            )
+                            for d in sorted(wm.domain_data)
+                        },
+                    )
+                )
+            return result
 
     def is_draining(self, worker: str) -> bool:
         with self._lock:

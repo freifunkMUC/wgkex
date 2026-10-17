@@ -5,8 +5,15 @@ import time
 import unittest
 from unittest import mock
 
-from wgkex.worker import msg_queue
+from wgkex.worker import msg_queue, observability
 from wgkex.worker.msg_queue import PeerOp, UniqueQueue
+
+
+def _peer_ops(op: str, result: str) -> float:
+    value = observability.REGISTRY.get_sample_value(
+        "wgkex_worker_peer_operations_total", {"op": op, "result": result}
+    )
+    return value or 0.0
 
 
 class UniqueQueueTest(unittest.TestCase):
@@ -53,6 +60,13 @@ class ProcessBatchTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_queue_depth_metric(self):
+        self.q.put(PeerOp("d", "k1"))
+        self.q.put(PeerOp("d", "k2", remove=True))
+        self.assertEqual(
+            2, observability.REGISTRY.get_sample_value("wgkex_worker_queue_depth")
+        )
+
     def test_empty_queue_times_out(self):
         self.assertEqual(0, msg_queue.process_batch(timeout=0.01))
 
@@ -61,8 +75,12 @@ class ProcessBatchTest(unittest.TestCase):
         process_mock.side_effect = [RuntimeError("boom")] + [None] * 10
         for i in range(5):
             self.q.put(PeerOp("d", f"k{i}"))
+        errors_before = _peer_ops("add", "error")
+        ok_before = _peer_ops("add", "ok")
         self.assertEqual(3, msg_queue.process_batch(max_items=3, timeout=0))
         self.assertEqual(2, msg_queue.process_batch(timeout=0))
+        self.assertEqual(errors_before + 1, _peer_ops("add", "error"))
+        self.assertEqual(ok_before + 4, _peer_ops("add", "ok"))
         self.assertEqual(5, process_mock.call_count)
         # task_done was called for every item, even the failed one
         self.q.join()

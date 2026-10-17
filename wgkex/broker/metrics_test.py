@@ -520,6 +520,38 @@ class TestLoadBalancing(unittest.TestCase):
         self.assertDictEqual(self.hints(wm), {})
         self.assertSetEqual(set(self.hints(wm, drain_rate=0.1)), set())
 
+    def test_snapshot(self):
+        """The snapshot contains load, weighted targets and per-domain state of all workers."""
+        self.set_weights({"1": {"weight": 3}, "2": {"weight": 1}})
+        wm = self.collection(metrics_max_age=180)
+        self.add_worker(wm, "1", 10, domains=("d", "e"))
+        self.add_worker(wm, "2", 20)
+        self.add_worker(wm, "3", 5)
+        wm.set_draining("3", True)
+        wm.record_assignment("2", "d", "k1")
+        wm.update("4", "d", CONNECTED_PEERS_METRIC, 7)
+        self.clock.now += 100
+        wm.update("1", "d", CONNECTED_PEERS_METRIC, 10)
+
+        snap = {s.worker: s for s in wm.snapshot()}
+        self.assertListEqual(sorted(snap), ["1", "2", "3", "4"])
+        # Active workers 1 and 2 have 20 + 21 effective peers, split 3:1
+        self.assertEqual(snap["1"].effective_peers, 20)
+        self.assertAlmostEqual(snap["1"].target, 41 * 0.75)
+        self.assertEqual((snap["2"].pending, snap["2"].effective_peers), (1, 21))
+        self.assertAlmostEqual(snap["2"].target, 41 * 0.25)
+        self.assertTrue(snap["3"].draining)
+        self.assertEqual(snap["3"].target, 0)
+        self.assertFalse(snap["4"].online)
+        self.assertEqual(snap["4"].target, 0)
+        self.assertDictEqual(snap["1"].domains, {"d": (True, 10), "e": (True, 10)})
+        # Metrics of domain "e" are stale after another 100s
+        self.clock.now += 100
+        self.assertDictEqual(
+            {s.worker: s for s in wm.snapshot()}["1"].domains,
+            {"d": (True, 10), "e": (False, 10)},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

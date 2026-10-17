@@ -107,6 +107,18 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config.Rebalancing.from_dict({}).drain_rate, 0.1)
         self.assertEqual(config.Rebalancing.from_dict({"drain_rate": 3}).drain_rate, 1)
 
+    def test_metrics(self):
+        """The broker endpoint is on and the worker listener off by default."""
+        self.assertEqual(
+            config.Metrics.from_dict({}), config.Metrics(True, None, "0.0.0.0")
+        )
+        self.assertEqual(
+            config.Metrics.from_dict(
+                {"broker_endpoint": False, "worker_port": "9101", "worker_host": "::"}
+            ),
+            config.Metrics(False, 9101, "::"),
+        )
+
     def test_relative_worker_weight_unknown_worker(self):
         """Workers missing from the config get the average weight."""
         workers = config.Workers.from_dict({"a": {"weight": 10}, "b": {"weight": 30}})

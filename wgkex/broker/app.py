@@ -8,13 +8,22 @@ import time
 from typing import Any
 
 import paho.mqtt.client as mqtt_client
-from flask import Flask, Response, render_template, request
+from flask import Flask, Response, abort, render_template, request
 from flask.app import Flask as Flask_app
 from flask_mqtt import Mqtt
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from waitress import serve
 
+from wgkex.broker import observability
 from wgkex.broker.assignments import Assignment, AssignmentHistory
 from wgkex.broker.metrics import WorkerMetricsCollection
+from wgkex.broker.observability import (
+    ASSIGNMENTS,
+    KEY_EXCHANGE_REQUESTS,
+    MQTT_MESSAGE_ERRORS,
+    REBALANCE_HINT_EXCESS,
+    REBALANCE_HINTS,
+)
 from wgkex.common import logger
 from wgkex.common.mqtt import (
     STATUS_DRAINING,
@@ -89,12 +98,23 @@ assignment_history = AssignmentHistory(
     ttl=_load_balancing_cfg.previous_assignment_ttl,
     max_entries=_load_balancing_cfg.previous_assignment_max_entries,
 )
+observability.register_worker_metrics(worker_metrics)
 
 
 @app.route("/", methods=["GET"])
 def index() -> str:
     """Returns main page"""
     return render_template("index.html")
+
+
+@app.route("/metrics", methods=["GET"])
+def prometheus_metrics() -> Response:
+    """Returns Prometheus metrics, unless disabled in the configuration."""
+    if not config.get_config().metrics.broker_endpoint:
+        abort(404)
+    return Response(
+        generate_latest(observability.REGISTRY), mimetype=CONTENT_TYPE_LATEST
+    )
 
 
 @app.route("/api/v1/wg/key/exchange", methods=["POST"])
@@ -109,6 +129,7 @@ def wg_api_v1_key_exchange() -> tuple[Response | dict, int]:
         logger.error(
             "Exception occurred in /api/v1/wg/key/exchange: %s", ex, exc_info=True
         )
+        KEY_EXCHANGE_REQUESTS.labels("v1", "invalid").inc()
         return {
             "error": {
                 "message": "An internal error has occurred. Please try again later."
@@ -121,6 +142,7 @@ def wg_api_v1_key_exchange() -> tuple[Response | dict, int]:
 
     # v1 clients pick a random gateway themselves, so every worker needs the key
     publish_key(domain, key, WG_KEY_ALL_WORKERS)
+    KEY_EXCHANGE_REQUESTS.labels("v1", "ok").inc()
     return {"Message": "OK"}, 200
 
 
@@ -137,6 +159,7 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
         logger.error(
             "Exception occurred in /api/v2/wg/key/exchange: %s", ex, exc_info=True
         )
+        KEY_EXCHANGE_REQUESTS.labels("v2", "invalid").inc()
         return {
             "error": {
                 "message": "An internal error has occurred. Please try again later."
@@ -155,6 +178,7 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
         logger.warning(f"No worker online for domain {domain}")
         # Like before, so the key is present on every worker once the client falls back to v1
         publish_key(domain, key, WG_KEY_ALL_WORKERS)
+        KEY_EXCHANGE_REQUESTS.labels("v2", "no_worker").inc()
         return {
             "error": {
                 "message": "no gateway online for this domain, please check the domain value and try again later"
@@ -165,10 +189,12 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
     if w_data is None:
         logger.error(f"Couldn't get worker endpoint data for {best_worker}/{domain}")
         publish_key(domain, key, WG_KEY_ALL_WORKERS)
+        KEY_EXCHANGE_REQUESTS.labels("v2", "no_worker_data").inc()
         return {"error": {"message": "could not get gateway data"}}, 500
 
     # Count the peer for this worker until the worker metrics reflect it
     worker_metrics.record_assignment(best_worker, domain, key)
+    ASSIGNMENTS.labels(best_worker, domain).inc()
     logger.debug(
         f"Chose worker {best_worker} with {current_peers} effective peers ({diff:.1f} to target)"
     )
@@ -184,6 +210,7 @@ def wg_api_v2_key_exchange() -> tuple[Response | dict, int]:
         "PublicKey": w_data.get("PublicKey"),
     }
 
+    KEY_EXCHANGE_REQUESTS.labels("v2", "ok").inc()
     return {"Endpoint": endpoint}, 200
 
 
@@ -241,6 +268,7 @@ def handle_mqtt_message_metrics(
         _, domain, worker, metric = message.topic.split("/", 3)
     except ValueError:
         logger.error(f"Ignored MQTT message on unexpected topic {message.topic}")
+        MQTT_MESSAGE_ERRORS.labels("metrics").inc()
         return
     if not is_valid_domain(domain):
         logger.error(f"Domain {domain} not in configured domains")
@@ -256,6 +284,7 @@ def handle_mqtt_message_metrics(
         logger.error(
             f"Ignored invalid metric on {message.topic}: {_decode_payload(message.payload)}"
         )
+        MQTT_MESSAGE_ERRORS.labels("metrics").inc()
         return
 
     logger.debug(f"Update worker metrics: {metric} on {worker}/{domain} = {data}")
@@ -275,6 +304,7 @@ def handle_mqtt_message_status(
         logger.error(
             f"Ignored invalid status on {message.topic}: {_decode_payload(message.payload)}"
         )
+        MQTT_MESSAGE_ERRORS.labels("status").inc()
         return
     if status < 1:
         if worker_metrics.get(worker).is_online():
@@ -314,9 +344,11 @@ def handle_mqtt_message_data(
             domain,
             _decode_payload(message.payload),
         )
+        MQTT_MESSAGE_ERRORS.labels("data").inc()
         return
     if not isinstance(data, dict):
         logger.error("Invalid worker data received for %s/%s: %s", worker, domain, data)
+        MQTT_MESSAGE_ERRORS.labels("data").inc()
         return
 
     logger.info("Worker data received for %s/%s: %s", worker, domain, data)
@@ -351,6 +383,9 @@ def publish_rebalance_hints() -> None:
     )
     for worker, hint in hints.items():
         logger.info(f"Asking worker {worker} to shed peers: {hint}")
+        kind = "rebalance" if hint.max_evictions_ratio is None else "drain"
+        REBALANCE_HINTS.labels(worker, kind).inc()
+        REBALANCE_HINT_EXCESS.labels(worker, kind).inc(hint.excess)
         mqtt.publish(
             TOPIC_WORKER_REBALANCE.format(worker=worker),
             json.dumps(hint.to_dict()),

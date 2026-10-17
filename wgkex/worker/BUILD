@@ -12,7 +12,27 @@ py_library(
        "//wgkex/common:utils",
        "//wgkex/common:logger",
        "//wgkex/config:config",
+       ":observability",
     ],
+)
+
+py_library(
+    name = "observability",
+    srcs = ["observability.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       requirement("prometheus-client"),
+       "//wgkex/common:logger",
+    ],
+)
+
+py_test(
+    name = "observability_test",
+    srcs = ["observability_test.py"],
+    deps = [
+       ":observability",
+    ],
+    size="small",
 )
 
 
@@ -80,6 +100,7 @@ py_binary(
        ":drain",
        ":mqtt",
        ":msg_queue",
+       ":observability",
        ":rebalance",
        "//wgkex/config:config",
        "//wgkex/common:logger",
@@ -90,6 +111,7 @@ py_test(
     name = "app_test",
     srcs = ["app_test.py"],
     deps = [
+       "//wgkex/config:config",
        "//wgkex/worker:app",
        "//wgkex/worker:msg_queue",
     ],
@@ -103,6 +125,7 @@ py_library(
     deps = [
        "//wgkex/common:logger",
        ":netlink",
+       ":observability",
        ":rebalance",
     ],
 )
@@ -124,6 +147,7 @@ py_library(
        "//wgkex/common:logger",
        "//wgkex/config:config",
        ":netlink",
+       ":observability",
     ],
 )
 

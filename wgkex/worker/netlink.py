@@ -5,6 +5,7 @@ import errno
 import hashlib
 import re
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -17,6 +18,7 @@ import pyroute2.netlink.exceptions
 
 from wgkex.common import logger
 from wgkex.common.utils import mac2eui64
+from wgkex.worker.observability import NETLINK_OP_SECONDS, NETLINK_RECONNECTS
 
 _DEFAULT_PEER_TIMEOUT = 1800
 
@@ -82,12 +84,20 @@ def reset_handles() -> None:
     _handles().close()
 
 
-def _netlink_call(op: Callable[[_Handles], Any]) -> Any:
+def _netlink_call(op: Callable[[_Handles], Any], name: str = "other") -> Any:
     """Runs a netlink operation with the long-lived handles of this thread.
 
     Retries once with fresh interface indexes if an interface was recreated (ENODEV), and once
-    with new sockets on socket level errors.
+    with new sockets on socket level errors. The duration is recorded under the given name.
     """
+    start = time.monotonic()
+    try:
+        return _netlink_call_with_retry(op)
+    finally:
+        NETLINK_OP_SECONDS.labels(name).observe(time.monotonic() - start)
+
+
+def _netlink_call_with_retry(op: Callable[[_Handles], Any]) -> Any:
     handles = _handles()
     try:
         return op(handles)
@@ -102,6 +112,7 @@ def _netlink_call(op: Callable[[_Handles], Any]) -> Any:
         raise
     except Exception as e:  # noqa: BLE001
         logger.warning("Netlink socket error (%s), reconnecting", e)
+        NETLINK_RECONNECTS.inc()
         handles.close()
     return op(handles)
 
@@ -229,7 +240,8 @@ def bridge_fdb_handler(client: WireGuardClient) -> dict:
             lladdr="00:00:00:00:00:00",
             dst=re.sub(r"/\d+$", "", client.lladdr),
             NDA_IFINDEX=h.link_index(client.wg_interface),
-        )
+        ),
+        "fdb",
     )
 
 
@@ -250,7 +262,9 @@ def update_wireguard_peer(client: WireGuardClient) -> dict:
         "allowed_ips": [client.lladdr],
         "remove": client.remove,
     }
-    return _netlink_call(lambda h: h.wireguard().set(client.wg_interface, peer=wg_peer))
+    return _netlink_call(
+        lambda h: h.wireguard().set(client.wg_interface, peer=wg_peer), "wg_set"
+    )
 
 
 def route_handler(client: WireGuardClient) -> dict:
@@ -271,7 +285,8 @@ def route_handler(client: WireGuardClient) -> dict:
             "del" if client.remove else "replace",
             dst=client.lladdr,
             oif=h.link_index(client.wg_interface),
-        )
+        ),
+        "route",
     )
 
 
@@ -291,7 +306,7 @@ def find_stale_wireguard_clients(
     logger.info(
         "Starting search for stale wireguard peers for interface %s.", wg_interface
     )
-    msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
+    msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface), "wg_info")
     all_peers = []
     for msg in msgs:
         peers = msg.get_attr("WGDEVICE_A_PEERS")
@@ -321,12 +336,12 @@ def get_connected_peers(wg_interface: str) -> list[str]:
     three_mins_ago_in_secs = int((datetime.now(UTC) - timedelta(minutes=3)).timestamp())
     logger.debug("Collecting connected wireguard peers for interface %s.", wg_interface)
     try:
-        msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
+        msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface), "wg_info")
     except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
         # Normal behaviour, data has changed while it was being returned by netlink.
         # Retry once, don't catch the exception this time, and let the caller handle it.
         # See https://github.com/svinota/pyroute2/issues/874
-        msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
+        msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface), "wg_info")
 
     connected = []
     for msg in msgs:
@@ -369,7 +384,7 @@ def get_device_data(wg_interface: str) -> tuple[int, str, str]:
         # The listening port, public key, and local IP address of the WireGuard interface.
     """
     logger.info("Reading data from interface %s.", wg_interface)
-    msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface))
+    msgs = _netlink_call(lambda h: h.wireguard().info(wg_interface), "wg_info")
     if len(msgs) > 1:
         logger.warning(
             "Got multiple messages from netlink, expected one. Using only first one."
@@ -381,7 +396,7 @@ def get_device_data(wg_interface: str) -> tuple[int, str, str]:
 
     # Get link address using IPRoute
     msgs = _netlink_call(
-        lambda h: h.iproute().get_addr(index=h.link_index(wg_interface))
+        lambda h: h.iproute().get_addr(index=h.link_index(wg_interface)), "get_addr"
     )
     link_address = msgs[0].get_attr("IFA_ADDRESS")
 
