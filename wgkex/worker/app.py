@@ -11,8 +11,7 @@ from wgkex.config import config
 from wgkex.worker import mqtt
 from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
-
-_CLEANUP_TIME = 3600
+from wgkex.worker.rebalance import peer_add_tracker
 
 
 class Error(Exception):
@@ -36,12 +35,27 @@ class InvalidDomain(Error):
 
 
 def flush_workers(domain: str) -> None:
-    """Calls peer flush every _CLEANUP_TIME interval."""
+    """Removes stale peers every peer_cleanup.interval seconds."""
+    cleanup_cfg = config.get_config().peer_cleanup
+    wg_interface = f"wg-{domain}"
+
+    def recently_added(public_key: str) -> bool:
+        # Peers added by the key exchange may not have done their first handshake yet
+        added_at = peer_add_tracker.added_at(wg_interface, public_key)
+        return (
+            added_at is not None
+            and peer_add_tracker.now() - added_at < cleanup_cfg.stale_timeout
+        )
+
     while True:
         try:
-            time.sleep(_CLEANUP_TIME)
+            time.sleep(cleanup_cfg.interval)
             logger.info(f"Running cleanup task for {domain}")
-            logger.info("Cleaned up domains: %s", wg_flush_stale_peers(domain))
+            removed = wg_flush_stale_peers(
+                domain, cleanup_cfg.stale_timeout, keep=recently_added
+            )
+            logger.info("Removed %d stale peers from %s", len(removed), domain)
+            logger.debug("Cleanup results: %s", removed)
         except Exception as e:  # noqa: BLE001
             # Don't crash the thread when an exception is encountered
             logger.error(

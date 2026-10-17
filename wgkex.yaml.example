@@ -34,6 +34,13 @@ load_balancing:
   # [broker] Seconds without a connected peers metric (workers send it every 60s) after which
   # a worker is treated as offline for that domain. 0 disables the check.
   metrics_max_age: 180
+  # [broker] Publish keys received via /api/v2 only to the chosen worker (wireguard/{domain}/{worker})
+  # instead of all workers, and ask the previous worker of a key to remove the peer when the key
+  # moves to another worker. Keys received via /api/v1 are always published to all workers.
+  targeted_publish: true
+  # [broker] Seconds / number of keys for which the last assignment of a key is remembered
+  previous_assignment_ttl: 21600
+  previous_assignment_max_entries: 100000
   # Active rebalancing: overloaded workers slowly evict peers so they reconnect to underloaded workers,
   # e.g. after a gateway reboot. Must be enabled on the broker and on the workers to have any effect.
   rebalancing:
@@ -51,6 +58,12 @@ load_balancing:
     max_evictions_ratio: 0.01
     # [worker] Seconds before the same peer may be evicted again
     eviction_cooldown: 3600
+# [worker] Optional: removal of peers without recent handshake. All values below are the defaults.
+peer_cleanup:
+  # Seconds without a handshake after which a peer is removed
+  stale_timeout: 1800
+  # Seconds between two cleanup runs
+  interval: 300
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
 # [broker, worker] MQTT connection informations

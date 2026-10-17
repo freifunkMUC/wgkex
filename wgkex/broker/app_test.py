@@ -50,6 +50,7 @@ class BrokerAppTest(unittest.TestCase):
         self.app.worker_metrics.data.clear()
         self.app.worker_metrics._pending.clear()
         self.app.worker_data.clear()
+        self.app.assignment_history._entries.clear()
         self.app.mqtt.reset_mock()
         self.client = self.app.app.test_client()
 
@@ -100,9 +101,72 @@ class BrokerAppTest(unittest.TestCase):
         endpoint = resp.get_json()["Endpoint"]
         self.assertIsInstance(endpoint["Port"], str)
         self.assertIsInstance(endpoint["AllowedIPs"], list)
-        # The key must still be published to all workers
+        # The key is only published to the chosen worker
+        self.app.mqtt.publish.assert_called_once_with(
+            f"wireguard/{_DOMAIN}/gw1", _PUBKEY, qos=1
+        )
+
+    def test_v2_untargeted_publish(self):
+        """With targeted_publish disabled, v2 publishes keys to all workers like before."""
+        self.add_worker("gw1", 10)
+        with mock.patch.object(
+            config.get_config().load_balancing, "targeted_publish", False
+        ):
+            resp = self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.assertEqual(resp.status_code, 200)
         self.app.mqtt.publish.assert_called_once_with(
             f"wireguard/{_DOMAIN}/all", _PUBKEY, qos=1
+        )
+
+    def test_v2_no_worker_publishes_to_all(self):
+        """Without online workers, v2 fails as before and publishes the key to all workers."""
+        resp = self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.assertEqual(resp.status_code, 400)
+        self.app.mqtt.publish.assert_called_once_with(
+            f"wireguard/{_DOMAIN}/all", _PUBKEY, qos=1
+        )
+
+    def test_v2_reassignment_removes_from_previous_worker(self):
+        """When a key moves to another worker, the previous worker is asked to remove it."""
+        self.add_worker("gw1", 0)
+        self.add_worker("gw2", 1000)
+        self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.app.mqtt.publish.assert_called_once_with(
+            f"wireguard/{_DOMAIN}/gw1", _PUBKEY, qos=1
+        )
+        # gw1 goes down, the node reconnects and gets gw2
+        self.app.worker_metrics.set_offline("gw1")
+        self.app.mqtt.reset_mock()
+        self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.assertEqual(
+            self.app.mqtt.publish.call_args_list,
+            [
+                mock.call(f"wireguard/{_DOMAIN}/gw2", _PUBKEY, qos=1),
+                mock.call(f"wireguard-worker/gw1/{_DOMAIN}/remove", _PUBKEY, qos=1),
+            ],
+        )
+        # Same worker again: nothing to remove
+        self.app.mqtt.reset_mock()
+        self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.app.mqtt.publish.assert_called_once_with(
+            f"wireguard/{_DOMAIN}/gw2", _PUBKEY, qos=1
+        )
+
+    def test_v2_after_v1_removes_from_other_workers(self):
+        """A key previously published to all workers is removed from all but the chosen one."""
+        self.add_worker("gw1", 0)
+        self.add_worker("gw2", 1000)
+        self.add_worker("gw3", 1000)
+        self.post("v1", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.app.mqtt.reset_mock()
+        self.post("v2", {"domain": _DOMAIN, "public_key": _PUBKEY})
+        self.assertEqual(
+            self.app.mqtt.publish.call_args_list,
+            [
+                mock.call(f"wireguard/{_DOMAIN}/gw1", _PUBKEY, qos=1),
+                mock.call(f"wireguard-worker/gw2/{_DOMAIN}/remove", _PUBKEY, qos=1),
+                mock.call(f"wireguard-worker/gw3/{_DOMAIN}/remove", _PUBKEY, qos=1),
+            ],
         )
 
     def test_v2_records_pending_assignment(self):

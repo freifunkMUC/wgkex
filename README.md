@@ -41,7 +41,14 @@ graph TD;
 ### Frontend broker
 
 The frontend broker is where the client can push (register) its key before connecting. These keys are then pushed into
-an MQTT bus for all workers to consume.
+an MQTT bus for the workers to consume: keys received via `/api/v1` are sent to all workers (the client picks a gateway
+itself), keys received via `/api/v2` only to the worker chosen for the client (`load_balancing.targeted_publish`,
+enabled by default). When a key moves to a different worker, the broker asks the previous worker to remove the peer
+immediately, instead of waiting for the stale peer cleanup.
+
+Workers before this change subscribe to `wireguard/{domain}/+` and add every key, newer workers only act on keys for
+`all` and their own hostname. Brokers before this change publish every key to `all`. Mixed versions therefore keep
+working, the bandwidth savings only apply once both sides are updated.
 
 The frontend broker exposes the following API endpoints for use:
 
@@ -136,6 +143,8 @@ It reports metrics like number of connected peers and instance data like local a
 external domain name (configured in config.yml) back to the broker.
 Each worker must run on a machine with a unique hostname, as it is used for separation of metrics.
 On SIGINT or SIGTERM (e.g. `docker stop`), the worker marks itself offline at the broker before exiting.
+Peers without a handshake for `peer_cleanup.stale_timeout` seconds (default 1800) are removed every
+`peer_cleanup.interval` seconds (default 300). Peers which were just added are kept until they had time to connect.
 
 This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
 high-performance mesh links.
@@ -288,7 +297,10 @@ print(f'Key push was: {push_key.json().get("Message")}')
 
 ### MQTT topics
 
-- Publishing keys broker->worker: `wireguard/{domain}/{worker}`
+- Publishing keys broker->worker: `wireguard/{domain}/{worker}`, `{worker}` is `all` for v1 keys and the chosen worker's
+  hostname for v2 keys
+- Removing peers broker->worker (when a key moved to another worker): `wireguard-worker/{worker}/{domain}/remove`,
+  payload is the public key
 - Publishing metrics worker->broker: `wireguard-metrics/{domain}/{worker}/connected_peers`
 - Publishing worker status: `wireguard-worker/{worker}/status`
 - Publishing worker data: `wireguard-worker/{worker}/{domain}/data`

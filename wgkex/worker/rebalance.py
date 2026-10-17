@@ -39,6 +39,9 @@ class PeerAddTracker:
         with self._lock:
             return self._added_at.get((wg_interface, public_key))
 
+    def now(self) -> float:
+        return self._clock()
+
     def forget(self, wg_interface: str, public_key: str) -> None:
         with self._lock:
             self._added_at.pop((wg_interface, public_key), None)

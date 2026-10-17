@@ -3,6 +3,7 @@
 # See https://docs.pyroute2.org/iproute.html for a documentation of the layout of netlink responses
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from textwrap import wrap
@@ -14,7 +15,7 @@ import pyroute2.netlink.exceptions
 from wgkex.common import logger
 from wgkex.common.utils import mac2eui64
 
-_PEER_TIMEOUT_HOURS = 3
+_DEFAULT_PEER_TIMEOUT = 1800
 
 
 @dataclass
@@ -59,18 +60,26 @@ class WireGuardClient:
         return f"wg-{self.domain}"
 
 
-def wg_flush_stale_peers(domain: str) -> list[dict]:
+def wg_flush_stale_peers(
+    domain: str,
+    timeout: int = _DEFAULT_PEER_TIMEOUT,
+    keep: Callable[[str], bool] | None = None,
+) -> list[dict]:
     """Removes stale peers.
 
     Arguments:
         domain: The domain to detect peers on.
+        timeout: Seconds without handshake after which a peer is stale.
+        keep: Optional predicate for public keys which must not be removed (e.g. recently added).
 
     Returns:
         The peers which we can remove.
     """
     logger.info("Searching for stale clients for %s", domain)
     stale_clients = [
-        stale_client for stale_client in find_stale_wireguard_clients("wg-" + domain)
+        stale_client
+        for stale_client in find_stale_wireguard_clients("wg-" + domain, timeout)
+        if keep is None or not keep(stale_client)
     ]
     logger.debug("Found %s stale clients: %s", len(stale_clients), stale_clients)
     stale_wireguard_clients = [
@@ -177,18 +186,19 @@ def route_handler(client: WireGuardClient) -> dict:
         )
 
 
-def find_stale_wireguard_clients(wg_interface: str) -> list:
+def find_stale_wireguard_clients(
+    wg_interface: str, timeout: int = _DEFAULT_PEER_TIMEOUT
+) -> list:
     """Fetches and returns a list of peers which have not had recent handshakes.
 
     Arguments:
         wg_interface: The WireGuard interface to query.
+        timeout: Seconds without handshake after which a peer is stale.
 
     Returns:
         # A list of peers which have not recently seen a handshake.
     """
-    three_hrs_in_secs = int(
-        (datetime.now(UTC) - timedelta(hours=_PEER_TIMEOUT_HOURS)).timestamp()
-    )
+    stale_before = int((datetime.now(UTC) - timedelta(seconds=timeout)).timestamp())
     logger.info(
         "Starting search for stale wireguard peers for interface %s.", wg_interface
     )
@@ -203,7 +213,7 @@ def find_stale_wireguard_clients(wg_interface: str) -> list:
             peer.get_attr("WGPEER_A_PUBLIC_KEY").decode("utf-8")
             for peer in all_peers
             if (hshk_time := peer.get_attr("WGPEER_A_LAST_HANDSHAKE_TIME")) is not None
-            and hshk_time.get("tv_sec", 0) < three_hrs_in_secs
+            and hshk_time.get("tv_sec", 0) < stale_before
         ]
         return ret
 

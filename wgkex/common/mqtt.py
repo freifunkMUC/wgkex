@@ -7,3 +7,12 @@ TOPIC_CONNECTED_PEERS = "wireguard-metrics/{domain}/{worker}/" + CONNECTED_PEERS
 # Broker -> worker rebalancing hints (JSON: {"excess": int, "domains": [str, ...]}), not retained.
 # Only acted upon by workers which have rebalancing enabled; ignored by older workers.
 TOPIC_WORKER_REBALANCE = "wireguard-worker/{worker}/rebalance"
+# Broker -> worker: keys exchanged via the v1 API are published to "all", keys exchanged via the v2
+# API to the chosen worker only (unless targeted publishing is disabled). Payload: the public key.
+# Old workers subscribe to wireguard/{domain}/+ and add every key, new workers only act on "all"
+# and their own hostname.
+TOPIC_WG_KEY = "wireguard/{domain}/{worker}"
+WG_KEY_ALL_WORKERS = "all"
+# Broker -> worker: remove the peer with this public key (payload), because it was assigned to
+# another worker. Not retained, ignored by older workers.
+TOPIC_WORKER_REMOVE_PEER = "wireguard-worker/{worker}/{domain}/remove"

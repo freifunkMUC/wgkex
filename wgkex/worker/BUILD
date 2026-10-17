@@ -59,6 +59,7 @@ py_binary(
     deps = [
        ":mqtt",
        ":msg_queue",
+       ":rebalance",
        "//wgkex/config:config",
        "//wgkex/common:logger",
     ],
@@ -83,6 +84,15 @@ py_library(
        ":netlink",
        ":rebalance",
     ],
+)
+
+py_test(
+    name = "msg_queue_test",
+    srcs = ["msg_queue_test.py"],
+    deps = [
+       "//wgkex/worker:msg_queue",
+    ],
+    size="small",
 )
 
 py_library(

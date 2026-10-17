@@ -142,12 +142,21 @@ class LoadBalancing:
             assumed to be included in newly received worker metrics.
         metrics_max_age: [broker] Seconds after which a worker is treated as offline for a domain
             if no connected peers metric was received for it. 0 disables the check.
+        targeted_publish: [broker] Publish keys received via the v2 API only to the chosen worker
+            (wireguard/{domain}/{worker}) instead of all workers, and ask the previously assigned
+            worker to remove the peer when a key moves to another worker.
+        previous_assignment_ttl: [broker] Seconds the broker remembers which worker a key was last
+            assigned to, used for removing the peer from its previous worker.
+        previous_assignment_max_entries: [broker] Maximum number of remembered assignments.
         rebalancing: Active rebalancing configuration.
     """
 
     pending_assignment_ttl: int = 300
     pending_assignment_settle_time: int = 60
     metrics_max_age: int = 180
+    targeted_publish: bool = True
+    previous_assignment_ttl: int = 21600
+    previous_assignment_max_entries: int = 100000
     rebalancing: Rebalancing = dataclasses.field(default_factory=Rebalancing)
 
     @classmethod
@@ -162,7 +171,37 @@ class LoadBalancing:
                 )
             ),
             metrics_max_age=int(cfg.get("metrics_max_age", cls.metrics_max_age)),
+            targeted_publish=bool(cfg.get("targeted_publish", cls.targeted_publish)),
+            previous_assignment_ttl=int(
+                cfg.get("previous_assignment_ttl", cls.previous_assignment_ttl)
+            ),
+            previous_assignment_max_entries=int(
+                cfg.get(
+                    "previous_assignment_max_entries",
+                    cls.previous_assignment_max_entries,
+                )
+            ),
             rebalancing=Rebalancing.from_dict(cfg.get("rebalancing") or {}),
+        )
+
+
+@dataclasses.dataclass
+class PeerCleanup:
+    """A representation of the 'peer_cleanup' key in the configuration file (worker-only).
+
+    Attributes:
+        stale_timeout: Seconds without a handshake after which a peer is removed.
+        interval: Seconds between two cleanup runs.
+    """
+
+    stale_timeout: int = 1800
+    interval: int = 300
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "PeerCleanup":
+        return cls(
+            stale_timeout=int(cfg.get("stale_timeout", cls.stale_timeout)),
+            interval=int(cfg.get("interval", cls.interval)),
         )
 
 
@@ -237,6 +276,7 @@ class Config:
         workers: The worker weights configuration (broker-only).
         externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
         load_balancing: Load balancing and rebalancing configuration.
+        peer_cleanup: Stale peer cleanup configuration (worker-only).
     """
 
     raw: dict[str, Any]
@@ -247,6 +287,7 @@ class Config:
     workers: Workers
     external_name: str | None
     load_balancing: LoadBalancing = dataclasses.field(default_factory=LoadBalancing)
+    peer_cleanup: PeerCleanup = dataclasses.field(default_factory=PeerCleanup)
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
@@ -268,6 +309,7 @@ class Config:
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
             load_balancing=LoadBalancing.from_dict(cfg.get("load_balancing") or {}),
+            peer_cleanup=PeerCleanup.from_dict(cfg.get("peer_cleanup") or {}),
         )
 
     def get(self, key: str) -> Any:
