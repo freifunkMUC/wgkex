@@ -1,441 +1,285 @@
-# WGKex
+# wgkex
 
-[![Coverage Status](https://coveralls.io/repos/github/freifunkMUC/wgkex/badge.svg?branch=main)](https://coveralls.io/github/freifunkMUC/wgkex?branch=main)
-[![pylint](https://github.com/freifunkMUC/wgkex/actions/workflows/pylint.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/pylint.yml)
-[![Lint](https://github.com/freifunkMUC/wgkex/actions/workflows/black.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/black.yml)
 [![Bazel tests](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/bazel.yml)
+[![ruff](https://github.com/freifunkMUC/wgkex/actions/workflows/pylint.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/pylint.yml)
+[![black](https://github.com/freifunkMUC/wgkex/actions/workflows/black.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/actions/workflows/black.yml)
+[![Coverage Status](https://coveralls.io/repos/github/freifunkMUC/wgkex/badge.svg?branch=main)](https://coveralls.io/github/freifunkMUC/wgkex?branch=main)
+[![Docker image](https://github.com/freifunkMUC/wgkex/actions/workflows/publish.yml/badge.svg)](https://github.com/freifunkMUC/wgkex/pkgs/container/wgkex)
+[![License: GPL-3.0](https://img.shields.io/github/license/freifunkMUC/wgkex)](LICENSE)
 
-- [WGKex](#wgkex)
-  - [Overview](#overview)
-    - [Frontend broker](#frontend-broker)
-    - [Backend worker](#backend-worker)
-  - [Installation](#installation)
-  - [Configuration](#configuration)
-  - [Development](#development)
-    - [Build using Bazel](#build-using-bazel)
-    - [Updating PIP dependencies for Bazel](#updating-pip-dependencies-for-bazel)
-    - [Unit tests](#unit-tests)
-    - [Run Worker \& Broker using Bazel](#run-worker--broker-using-bazel)
-    - [Run Worker \& Broker using Python](#run-worker--broker-using-python)
-    - [Client](#client)
-    - [MQTT topics](#mqtt-topics)
-  - [Contact](#contact)
+**wgkex** (WireGuard key exchange) is the node management service of [Freifunk München](https://ffmuc.net). Mesh nodes
+register their WireGuard public key with a central **broker**, which picks a gateway for them and distributes the key
+via MQTT to the **workers** running on the gateways. The workers add the peer to WireGuard and the VXLAN FDB, so that
+nodes can run BATMAN over VXLAN over WireGuard as encrypted, high-performance mesh links.
 
-wgkex was started as a WireGuard key exchange tool, but has evolved beyond to the main node management tool of FFMUC.
+On the node side, wgkex is used by the Gluon package
+[`ffmuc-mesh-vpn-wireguard-vxlan`](https://github.com/freifunk-gluon/community-packages/tree/main/ffmuc-mesh-vpn-wireguard-vxlan).
 
-## Overview
+## Contents
 
-WireGuard Key Exchange is a tool consisting of two parts: a frontend (broker) and a backend (worker). These components
-communicate to each other via MQTT - a messaging bus.
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+  - [Docker](#docker)
+  - [Bazel](#bazel)
+  - [Python](#python)
+- [Configuration](#configuration)
+- [API](#api)
+- [Operations](#operations)
+- [MQTT topics](#mqtt-topics)
+- [Development](#development)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Architecture
 
 ```mermaid
-graph TD;
-	A{"client"} -->|"RESTful API"| G("WGKex Broker")
-	G -->|"publish"| B("Mosquitto")
-	C("WGKex Worker") -->|"Subscribe"| B
-	C -->|"Route Injection"| D["netlink (pyroute2)"]
-	C -->|"Peer Creation"| E["wireguard (pyroute2)"]
-	C -->|"VxLAN FDB Entry"| F["VXLAN FDB (pyroute2)"]
+flowchart TD
+    node["Gluon node<br/>(ffmuc-mesh-vpn-wireguard-vxlan)"]
+    broker["wgkex broker<br/>(HTTP API)"]
+    mqtt[("MQTT broker<br/>(e.g. Mosquitto)")]
+    subgraph gw["Gateway (one per worker)"]
+        worker["wgkex worker"]
+        wg["WireGuard<br/>wg-{domain}"]
+        vx["VXLAN FDB<br/>vx-{domain}"]
+        route["Routes<br/>(netlink)"]
+    end
+
+    node -- "POST /api/v2/wg/key/exchange" --> broker
+    broker -- "endpoint of chosen gateway" --> node
+    broker -- "wireguard/{domain}/{worker|all}<br/>wireguard-worker/{worker}/{domain}/remove<br/>wireguard-worker/{worker}/rebalance" --> mqtt
+    mqtt --> worker
+    worker -- "wireguard-worker/{worker}/status<br/>wireguard-worker/{worker}/{domain}/data<br/>wireguard-metrics/{domain}/{worker}/connected_peers" --> mqtt
+    mqtt --> broker
+    worker -- pyroute2 --> wg & vx & route
+    node -. "WireGuard + VXLAN tunnel" .-> wg
 ```
 
-### Frontend broker
+- **Broker** (`wgkex/broker`): a Flask app served by waitress. It validates key exchange requests, chooses a gateway
+  weighted by load (`/api/v2`), and publishes the key via MQTT. It also serves Prometheus metrics and runs the optional
+  rebalancing loop.
+- **Worker** (`wgkex/worker`): runs on each gateway. It subscribes to the keys for its domains and adds them as
+  WireGuard peers, routes and VXLAN FDB entries via netlink (pyroute2). It reports its status, endpoint data and
+  connected peers back to the broker, removes stale peers, and supports drain mode for planned maintenance.
+- WireGuard and VXLAN interface names are derived from the domain: the matching `domain_prefixes` entry is replaced by
+  `wg-` / `vx-` (e.g. `ffmuc_welt` → `wg-welt`, `vx-welt`).
 
-The frontend broker is where the client can push (register) its key before connecting. These keys are then pushed into
-an MQTT bus for the workers to consume: keys received via `/api/v1` are sent to all workers (the client picks a gateway
-itself), keys received via `/api/v2` only to the worker chosen for the client (`load_balancing.targeted_publish`,
-enabled by default). When a key moves to a different worker, the broker asks the previous worker to remove the peer
-immediately, instead of waiting for the stale peer cleanup.
+> [!IMPORTANT]
+> Every worker must run on a host with a **unique hostname**. The hostname identifies the worker in the MQTT topics,
+> in the `workers` config and in the metrics.
 
-Workers before this change subscribe to `wireguard/{domain}/+` and add every key, newer workers only act on keys for
-`all` and their own hostname. Brokers before this change publish every key to `all`. Mixed versions therefore keep
-working, the bandwidth savings only apply once both sides are updated.
+The broker publishes `/api/v1` keys to all workers and `/api/v2` keys only to the chosen worker; see
+[MQTT topics](#mqtt-topics) and [Docs/operations.md](Docs/operations.md) for details.
 
-The frontend broker exposes the following API endpoints for use:
+## Quick start
 
-```
-/api/v1/wg/key/exchange
-/api/v2/wg/key/exchange
-```
+All components read their configuration from `/etc/wgkex.yaml`, or from the file in the environment variable
+`WGKEX_CONFIG_FILE`. Start from [`wgkex.yaml.example`](wgkex.yaml.example).
 
-The full API, including all response codes, is specified as OpenAPI 3 in [Docs/openapi.yaml](Docs/openapi.yaml)
-(view it with e.g. the [Swagger Editor](https://editor.swagger.io/)). It is the reference for other client and broker
-implementations, and `//wgkex/broker:openapi_test` checks that the broker's responses match it.
+### Docker
 
-The listen address and port for the Flask server can be configured in `wgkex.yaml` under the `broker_listen` key:
+Images are published to [`ghcr.io/freifunkmuc/wgkex`](https://github.com/freifunkMUC/wgkex/pkgs/container/wgkex) on
+every push to `main` (tags `main` and `sha-<commit>`) and for release tags `vX.Y.Z`. The image command selects the
+component (`broker`, the default, or `worker`):
 
-```yaml
-broker_listen:
-  # host defaults to 127.0.0.1 if unspecified
-  host: 0.0.0.0
-  # port defaults to 5000 if unspecified
-  port: 5000
-```
-
-#### POST /api/v1/wg/key/exchange
-
-JSON POST'd to this endpoint should be in this format:
-
-```json
-{
-  "domain": "CONFIGURED_DOMAIN",
-  "public_key": "PUBLIC_KEY"
-}
+```sh
+docker run -d --name wgkex-broker -p 5000:5000 \
+  -v "$PWD/wgkex.yaml:/etc/wgkex.yaml:ro" \
+  ghcr.io/freifunkmuc/wgkex:main broker
 ```
 
-The broker will validate the domain and public key, and if valid, will push the key onto the MQTT bus.
+[`docker-compose.yml`](docker-compose.yml) starts Mosquitto, a broker and a worker. Without a mounted
+`/etc/wgkex.yaml`, the [`entrypoint`](entrypoint) generates a minimal config from the environment variables in
+[`env.example`](env.example) (`WGKEX_DOMAINS`, `WGKEX_DOMAIN_PREFIXES`, `WGKEX_DEBUG`,
+`WGKEX_BROKER_LISTEN_HOST`/`_PORT` (default `0.0.0.0:5000`), `MQTT_*`). `WGKEX_IMAGE_TAG` selects the image tag
+(default `main`; the `latest` tag still points to v0.2.1).
+[`docker-compose.override.yaml.example`](docker-compose.override.yaml.example) shows how to mount configs or disable
+services.
 
+> [!NOTE]
+> The worker manages WireGuard and VXLAN interfaces of the host via netlink. It needs the host's network namespace and
+> `CAP_NET_ADMIN` (e.g. `--network host --cap-add NET_ADMIN`), and the interfaces must already exist.
 
-#### POST /api/v2/wg/key/exchange
+### Bazel
 
-JSON POST'd to this endpoint should be in this format:
-
-```json
-{
-  "domain": "CONFIGURED_DOMAIN",
-  "public_key": "PUBLIC_KEY",
-  "location": "OPTIONAL_LOCATION"
-}
+```sh
+bazel build //wgkex/broker:app //wgkex/worker:app
+export WGKEX_CONFIG_FILE=$PWD/wgkex.yaml
+./bazel-bin/wgkex/broker/app
+# the worker needs root (or CAP_NET_ADMIN) to manage the interfaces
+sudo -E ./bazel-bin/wgkex/worker/app
 ```
 
-`location` is optional; workers with the same `location` in the `workers` config are preferred (see below).
+[Bazelisk](https://github.com/bazelbuild/bazelisk) picks the Bazel version from [`.bazelversion`](.bazelversion).
+See [Docs/development.md](Docs/development.md) for a local setup with dummy interfaces.
 
-The broker will validate the domain and public key, and if valid, will push the key onto the MQTT bus.
-Additionally it chooses a worker (aka gateway, endpoint) that the client should connect to.
-The response is JSON data containing the connection details for the chosen gateway:
+### Python
 
-```json
-{
-  "Endpoint": {
-    "Address": "GATEWAY_ADDRESS",
-    "Port": "GATEWAY_WIREGUARD_PORT",
-    "AllowedIPs": [
-      "GATEWAY_WIREGUARD_INTERFACE_ADDRESS"
-    ],
-    "PublicKey": "GATEWAY_PUBLIC_KEY"
-  }
-}
+Bazel uses Python 3.13 (see [`MODULE.bazel`](MODULE.bazel)). To run from a checkout without Bazel:
+
+```sh
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements_lock.txt
+export WGKEX_CONFIG_FILE=$PWD/wgkex.yaml
+python3 -m wgkex.broker.app
+sudo -E .venv/bin/python3 -m wgkex.worker.app
 ```
-
-Additional fields may be added to these responses in the future, but the existing fields will not be changed,
-as clients like the Gluon package `ffmuc-mesh-vpn-wireguard-vxlan` rely on them.
-
-#### Rate limiting, block- and allowlists
-
-Both endpoints are rate limited per client address (IPv6 per /64 by default) and globally (`rate_limit` config).
-A limited request still gets the normal `200` response, because Gluon clients fall back to `/api/v1` and a random
-gateway on errors. The key is just not published again, and `/api/v2` answers with the worker the key was already
-assigned to (if it is still online), so repeated requests are a no-op.
-
-#### Client address behind a reverse proxy
-
-By default, the client address is the TCP peer address. Behind a reverse proxy that would be the proxy for every
-request, so set `broker.trusted_proxies` to take it from `X-Forwarded-For`. The header can be spoofed by any client, so
-it is only used from trusted proxies:
-
-- A list of proxy addresses/networks (e.g. `["127.0.0.1/32", "::1/128"]`): the header is only used if the TCP peer is
-  in one of them. It is evaluated from the right, skipping trusted proxies, and the first other address is the
-  client. Entries further left were sent by the client and are ignored.
-- A number `n` of proxies every request passes through: the `n`-th entry from the right is used, like werkzeug's
-  `ProxyFix(x_for=n)`. Only use this if the broker can't be reached without passing the proxies.
-
-The resolved address is used for rate limiting and, with `broker.log_client_ip: true` (off by default), it is logged
-at INFO level with the domain and key of every key exchange request (`..., Client: 192.0.2.1`).
-
-Keys on the blocklist (`key_lists.blocklist` / `blocklist_file`) are rejected with `403` and never published; keys newly
-added to the file are also removed from all workers. Keys on the allowlist (`key_lists.allowlist` / `allowlist_file`,
-worker config) are never removed from a worker by the stale peer cleanup, rebalancing or draining. Both files are
-reloaded without a restart when modified.
-
-#### Load balancing
-
-For `/api/v2`, the broker chooses among the workers that are online for the requested domain and have published their
-connection data. Each worker gets a target share of all peers according to its `weight` in the `workers` config.
-The worker is picked randomly, with a probability proportional to how far it is below its target. Randomization avoids
-that all clients reconnecting after a gateway outage (or talking to different broker instances) land on the same worker.
-
-Workers only report peers with a recent handshake as connected. To bridge the time until a newly assigned peer shows up
-in these metrics, the broker counts recent assignments as pending load of the chosen worker
-(`load_balancing.pending_assignment_ttl`).
-
-Clients stay connected to their gateway as long as the connection works, so after a gateway reboot the load would stay
-uneven. Optionally (`load_balancing.rebalancing.enabled` on the broker *and* the workers), the broker periodically
-tells overloaded workers how many peers they have above their target (after the set of online workers has been stable for
-`stable_time`). These workers then remove a small, rate-limited number of their peers per interval, preferring the most
-recently (re-)connected ones and never evicting the same peer again within `eviction_cooldown`. The affected clients
-notice the broken connection and request a new gateway via the API within a minute or two.
-See [wgkex.yaml.example](wgkex.yaml.example) for all options.
-
-If the client sends a `location` and workers are configured with that location, these are preferred as long as their
-effective peers stay within `target + max(location_min_excess_peers, location_tolerance * target)`; beyond that, the
-normal selection applies. Keep `location_tolerance` at or below `rebalancing.tolerance`.
-
-When running multiple broker instances behind a load balancer, enable `load_balancing.share_pending_assignments` on all
-of them: each assignment is then published on `wireguard-broker/{broker_id}/assignment` and counted as pending by the
-other brokers as well.
-
-Workers only announce themselves as online once all their WireGuard interfaces are ready. A worker is treated as offline
-for a domain if the broker did not receive a connected peers metric for it within `load_balancing.metrics_max_age`
-seconds (default 180, i.e. three metrics intervals). Workers missing from the `workers` config get the average weight.
-
-### Backend worker
-
-The backend (worker) waits for new keys to appear on the MQTT message bus. Once a new key appears, the worker performs
-validation task on the key, then injects those keys into a WireGuard instance(While also updating the VxLAN FDB).
-It reports metrics like number of connected peers and instance data like local address, WG listening port and
-external domain name (configured in config.yml) back to the broker.
-Each worker must run on a machine with a unique hostname, as it is used for separation of metrics.
-On SIGINT or SIGTERM (e.g. `docker stop`), the worker marks itself offline at the broker before exiting.
-Peers without a handshake for `peer_cleanup.stale_timeout` seconds (default 1800) are removed every
-`peer_cleanup.interval` seconds (default 300). Peers which were just added are kept until they had time to connect.
-Queued key operations are picked up immediately (blocking queue, processed in batches of up to 256), and each worker
-thread keeps its netlink sockets and interface indexes open instead of reconnecting per operation. Broken sockets are
-reopened and recreated interfaces looked up again automatically. WireGuard peers are still added one per netlink
-message, as pyroute2's `WireGuard.set()` accepts only a single peer.
-
-#### Drain mode and planned reboots
-
-A worker can be put into drain mode before planned maintenance:
-
-- `kill -USR1 <pid>` (or `docker kill -s USR1 <container>`) starts draining, `kill -USR2 <pid>` stops it.
-- Alternatively configure `drain.file` (e.g. `/run/wgkex/drain`): the worker is draining while that file exists,
-  checked every `drain.check_interval` seconds (default 5). Use a non-persistent location like `/run`, so the worker
-  does not come back up draining after the reboot. SIGUSR2 does not override an existing drain file.
-
-A draining worker publishes status `2`. The broker then stops assigning new v2 clients to it (unless every worker of a
-domain is draining, clients always get an endpoint). If active rebalancing is enabled on broker and worker, the broker
-also asks the draining worker to evict its connected peers at `load_balancing.rebalancing.drain_rate` (default 10%)
-of its peers per `interval`, without waiting for `stable_time`, and only in domains where another worker which is not
-draining is online. Evicted nodes notice the broken tunnel within about 1-2 minutes and redo the key exchange, which
-assigns them to another worker. Brokers from before drain mode treat status `2` like `1`.
-
-Planned reboot runbook:
-
-1. Start draining: `docker kill -s USR1 <worker container>` or `touch /run/wgkex/drain`. The worker logs
-   `Worker is draining, published status 2`.
-2. Wait until the connected peers metric (`wireguard-metrics/{domain}/{worker}/connected_peers`) is close to 0.
-   With the defaults (`interval: 60`, `drain_rate: 0.1`) roughly 90% of the peers are gone after 20 minutes. Without
-   rebalancing, peers stay until the reboot, but no new ones arrive.
-3. Reboot. On shutdown (SIGTERM) the worker publishes status `0`, the LWT does the same if it is killed.
-4. After the boot the worker publishes status `1` once its WireGuard interfaces are ready (drain file in `/run` is
-   gone, signals are not persisted). If a drain file in a persistent location was used, delete it.
-5. Normal rebalancing (if enabled) moves peers back to the rebooted worker after `stable_time`.
-
-### Prometheus metrics
-
-The broker serves metrics in the Prometheus text format at `GET /metrics` on its normal HTTP listener. Disable it with
-`metrics.broker_endpoint: false`, or keep the path from being reachable through your reverse proxy if the worker loads
-should not be public. It exports:
-
-| Metric | Labels | Description |
-|---|---|---|
-| `wgkex_broker_worker_online` | `worker` | 1 if the worker is online |
-| `wgkex_broker_worker_draining` | `worker` | 1 if the worker is draining |
-| `wgkex_broker_worker_connected_peers` | `worker` | Connected peers reported by the worker (all domains) |
-| `wgkex_broker_worker_pending_assignments` | `worker` | Assigned peers not yet reflected in the worker's metrics |
-| `wgkex_broker_worker_effective_peers` | `worker` | Connected peers plus pending assignments, used for selection |
-| `wgkex_broker_worker_target_peers` | `worker` | Weighted share of the effective peers of all online, non-draining workers |
-| `wgkex_broker_worker_domain_online` | `worker`, `domain` | 1 if the worker is online for the domain with fresh metrics |
-| `wgkex_broker_worker_domain_connected_peers` | `worker`, `domain` | Connected peers reported for the domain |
-| `wgkex_broker_key_exchange_requests_total` | `api` (`v1`, `v2`), `result` (`ok`, `invalid`, `blocked`, `rate_limited`, `no_worker`, `no_worker_data`) | Key exchange requests |
-| `wgkex_broker_assignments_total` | `worker`, `domain` | Peers assigned by the v2 key exchange |
-| `wgkex_broker_rebalance_hints_total` | `worker`, `kind` (`rebalance`, `drain`) | Published rebalancing hints |
-| `wgkex_broker_rebalance_hint_excess_peers_total` | `worker`, `kind` | Sum of the excess peers in published hints |
-| `wgkex_broker_shared_assignments_received_total` | | Assignments received from other broker instances |
-| `wgkex_broker_mqtt_message_errors_total` | `handler` (`metrics`, `status`, `data`, `assignment`) | Ignored invalid MQTT messages |
-
-Workers can serve metrics on a separate HTTP listener (`GET /metrics`), which is disabled unless `metrics.worker_port`
-is set (bind address `metrics.worker_host`, default `0.0.0.0`):
-
-| Metric | Labels | Description |
-|---|---|---|
-| `wgkex_worker_queue_depth` | | Peer operations waiting in the queue |
-| `wgkex_worker_peer_operations_total` | `op` (`add`, `remove`), `result` (`ok`, `error`) | Processed peer operations |
-| `wgkex_worker_netlink_operation_seconds` | `op` (`wg_set`, `wg_info`, `route`, `fdb`, `get_addr`) | Histogram of netlink operation durations |
-| `wgkex_worker_netlink_reconnects_total` | | Netlink sockets reopened after an error |
-| `wgkex_worker_evictions_total` | `kind` (`rebalance`, `drain`) | Peers evicted on request of the broker |
-
-#### Grafana dashboards
-
-[contrib/grafana](contrib/grafana) contains example dashboards with the same panels for two setups:
-
-- [wgkex-prometheus.json](contrib/grafana/wgkex-prometheus.json): for a Prometheus datasource scraping the broker and
-  worker `/metrics` endpoints.
-- [wgkex-influxdb.json](contrib/grafana/wgkex-influxdb.json): for an InfluxDB (1.x, InfluxQL) datasource, filled by
-  Telegraf's `inputs.prometheus` plugin with `metric_version = 2` (measurement `prometheus`). See
-  [telegraf-wgkex.conf](contrib/grafana/telegraf-wgkex.conf); the dashboard expects the tag `wgkex_role = "worker"` on
-  the worker inputs. Histograms can't be aggregated into percentiles in InfluxQL, so netlink latency is shown as mean.
-
-Import them via *Dashboards → New → Import* and choose the datasource for the `DS` variable. The `worker` and `domain`
-variables filter the broker panels; `instance` (Prometheus) / `url` (InfluxDB) filters the worker panels.
-Panels cover effective peers against the weighted target, connected peers per domain, pending assignments,
-online/draining state, assignments per worker, rebalancing hints and evictions, request rates and errors, rate limited and
-blocked requests, worker queue depth, peer operations and netlink latency/reconnects. Rate limited and blocked requests
-are only reported by brokers that support rate limiting and blocklists.
-
-This tool is intended to facilitate running BATMAN over VXLAN over WireGuard as a means to create encrypted
-high-performance mesh links.
-
-For further information, please see this [presentation on the architecture](https://www.slideshare.net/AnnikaWickert/ffmuc-goes-wild-infrastructure-recap-2020-rc3)
-
-## Installation
-
-- TBA
 
 ## Configuration
 
-- Configuration file
+[`wgkex.yaml.example`](wgkex.yaml.example) is the source of truth: it documents every option with its default and
+whether it applies to the broker, the worker or both. Overview:
 
-The `wgkex` configuration file defaults to `/etc/wgkex.yaml` ([Sample configuration file](wgkex.yaml.example)), however
-can also be overwritten by setting the environment variable `WGKEX_CONFIG_FILE`.
+| Key | Used by | Description |
+|---|---|---|
+| `domains` | broker, worker | Accepted domains; each needs matching `wg-*` / `vx-*` interfaces on the workers. Required. |
+| `domain_prefixes` | broker, worker | Prefixes stripped from the domain to derive the interface names. Required. |
+| `mqtt` | broker, worker | `broker_url`, `username`, `password` (required); `broker_port` (`1883`), `keepalive` (`5`), `tls` (`false`). |
+| `broker_listen` | broker | `host` and `port` of the HTTP API. Both are required by the broker (no built-in default). |
+| `externalName` | worker | Public hostname or address of this worker, returned to clients as `Endpoint.Address`. Defaults to the hostname. |
+| `workers` | broker | Hostname → `weight` (default `1`) and optional `location` per worker. Unlisted workers get the average weight. |
+| `load_balancing` | broker, worker | Peer distribution, targeted publishing, location preference, shared assignments and `rebalancing`. |
+| `peer_cleanup` | worker | Removal of peers without handshake: `stale_timeout` (`1800` s), `interval` (`300` s). |
+| `drain` | worker | Drain mode: `file` (unset), `check_interval` (`5` s). |
+| `metrics` | broker, worker | `broker_endpoint` (`true`), `worker_port` (unset = disabled), `worker_host` (`0.0.0.0`). |
+| `rate_limit` | broker | Per-client and global token buckets for the key exchange (`30`/`60` s per client, `6000`/`60` s global). |
+| `broker` | broker | `trusted_proxies` (`0`) and `log_client_ip` (`false`). |
+| `key_lists` | broker, worker | `blocklist`/`blocklist_file` (broker), `allowlist`/`allowlist_file` (worker), `reload_interval` (`60` s). |
+| `log_level` | broker, worker | Root log level (`INFO`). Overrides the root level of `logging_config`. |
+| `logging_config` | broker, worker | Optional Python logging configuration in `dictConfig` format. |
 
-The log level is set with `log_level` (default `INFO`), a full Python logging configuration can be given in
-`logging_config`.
+## API
 
-## Development
+The broker exposes:
 
-### Build using [Bazel](https://bazel.build)
+| Endpoint | Description |
+|---|---|
+| `POST /api/v1/wg/key/exchange` | Publish a key to all workers of the domain; the client picks a gateway itself. |
+| `POST /api/v2/wg/key/exchange` | Publish a key and get the connection data of the gateway chosen for the client. |
+| `GET /metrics` | Prometheus metrics (unless `metrics.broker_endpoint: false`). |
+| `GET /` | Static index page. |
 
-```sh
-# modify .bazelversion if you want to test another version of Bazel (using Bazelisk)
-bazel build //wgkex/broker:app
-bazel build //wgkex/worker:app
-# artifacts will be at ./bazel-bin/wgkex/{broker,worker}/app respectively
-```
-
-### Updating PIP dependencies for Bazel
-
-This package is using Bazel's `compile_pip_requirements` to get a requirements_lock.txt file.
-In order to update the respective depencencies after modifying the requirements.txt, run:
-
-```sh
-bazel run //:requirements.update
-```
-
-### Unit tests
-
-The test can be run using
-
-```sh
-bazel test ... --test_output=all
-```
-
-or
+[`Docs/openapi.yaml`](Docs/openapi.yaml) (OpenAPI 3) is the authoritative specification of requests, responses and
+status codes, and the reference for other client and broker implementations. View it with e.g. the
+[Swagger Editor](https://editor.swagger.io/); `//wgkex/broker:openapi_test` checks the broker against it.
 
 ```sh
-python3 -m unittest discover -p '*_test.py'
+curl -s -X POST http://127.0.0.1:5000/api/v2/wg/key/exchange \
+  -d '{"domain": "ffmuc_welt", "public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg=", "location": "muc"}'
 ```
-
-### Run Worker & Broker using Bazel
-
-1. After having built the broker and worker (see above),
-   set up dummy interfaces for the worker using this script:
-
-   ```sh
-   interface_linklocal() {
-     # We generate a predictable v6 address
-     local macaddr="$(echo $1 | wg pubkey |md5sum|sed 's/^\(..\)\(..\)\(..\)\(..\)\(..\).*$/02:\1:\2:\3:\4:\5/')"
-     local oldIFS="$IFS"; IFS=':'; set -- $macaddr; IFS="$oldIFS"
-     echo "fe80::$1$2:$3ff:fe$4:$5$6"
-   }
-
-   sudo ip link add wg-welt type wireguard
-   wg genkey | sudo wg set wg-welt private-key /dev/stdin
-   sudo wg set wg-welt listen-port 51820
-   addr=$(interface_linklocal $(sudo wg show wg-welt private-key))
-   sudo ip addr add $addr dev wg-welt
-   sudo ip link add vx-welt type vxlan id 99 dstport 0 local $addr dev wg-welt
-   sudo ip addr add fe80::1/64 dev vx-welt
-   sudo ip link set wg-welt up
-   sudo ip link set vx-welt up
-   ```
-
-2. Generate a development configuration:
-
-   ```sh
-   sed -E '/(ffmuc_muc|ffwert|ffdon)/d' wgkex.yaml.example > wgkex.yaml
-   ```
-
-3. Run the broker in a terminal:
-
-   ```sh
-   # defaults to /etc/wgkex.yaml if not set
-   export WGKEX_CONFIG_FILE=$PWD/wgkex.yaml
-   ./bazel-bin/wgkex/broker/app
-   ```
-
-4. And run the worker in a second terminal:
-
-   ```sh
-   export WGKEX_CONFIG_FILE=$PWD/wgkex.yaml
-   # the worker requires admin permissions to read interfaces
-   sudo -E ./bazel-bin/wgkex/worker/app
-   ```
-
-### Run Worker & Broker using Python
-
-Follow steps above to set generate the new config and export the `WGKEX_CONFIG_FILE`
-then start the broker and worker like the following:
-
-- Broker (Using Flask development server)
-
-  ```sh
-  FLASK_ENV=development FLASK_DEBUG=1 FLASK_APP=wgkex/broker/app.py python3 -m flask run
-  ```
-
-- Worker
-
-  ```sh
-  python3 -c 'from wgkex.worker.app import main; main()'
-  ```
-
-### Client
-
-The client can be used via CLI:
-
-```sh
-wget -q -O- --post-data='{"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}' 'http://127.0.0.1:5000/api/v2/wg/key/exchange'
-```
-
-and it should output something similar to:
 
 ```json
 {
   "Endpoint": {
     "Address": "gw04.ext.ffmuc.net",
-    "AllowedIPs": [
-      "fe80::27c:16ff:fec0:6c74"
-    ],
     "Port": "40011",
+    "AllowedIPs": ["fe80::27c:16ff:fec0:6c74"],
     "PublicKey": "TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g="
   }
 }
 ```
 
-Or use Python instead of wget:
+`location` is optional; workers configured with the same `location` are preferred.
 
-```python
-import requests
-key_data = {"domain": "ffmuc_welt","public_key": "o52Ge+Rpj4CUSitVag9mS7pSXUesNM0ESnvj/wwehkg="}
-broker_url = "http://127.0.0.1:5000"
-push_key = requests.get(f'{broker_url}/api/v2/wg/key/exchange', json=key_data)
-print(f'Key push was: {push_key.json().get("Message")}')
+> [!IMPORTANT]
+> Compatibility with the Gluon client `ffmuc-mesh-vpn-wireguard-vxlan` is part of the contract:
+>
+> - The request body is parsed as JSON regardless of the `Content-Type` header.
+> - `Endpoint.Port` is a **string**, not a number.
+> - On any non-`200` response, the client falls back to `/api/v1` and a random gateway from its own configuration.
+>   Rate-limited requests therefore still get a `200` response; there is no `429`.
+> - New response fields may be added, but existing fields are never changed. Clients must ignore unknown fields.
+
+## Operations
+
+Detailed guides are in [Docs/operations.md](Docs/operations.md) and [Docs/metrics.md](Docs/metrics.md):
+
+- [Load balancing and rebalancing](Docs/operations.md#load-balancing): weighted, randomized gateway selection with
+  pending assignments, location preference, optional active rebalancing, and multiple broker instances.
+- [Drain mode and planned reboots](Docs/operations.md#drain-mode-and-planned-reboots): `SIGUSR1`/`SIGUSR2` or a drain
+  file, plus a step-by-step reboot runbook.
+- [Stale peer cleanup and worker internals](Docs/operations.md#worker-peer-handling).
+- [Rate limiting and key block-/allowlists](Docs/operations.md#rate-limiting-and-key-lists).
+- [Running behind a reverse proxy](Docs/operations.md#running-behind-a-reverse-proxy): `broker.trusted_proxies` and
+  `broker.log_client_ip`.
+- [Prometheus metrics and Grafana dashboards](Docs/metrics.md): metric reference and the dashboards in
+  [`contrib/grafana`](contrib/grafana) for Prometheus and InfluxDB/Telegraf.
+
+> [!WARNING]
+> `GET /metrics` on the broker exposes worker names and loads. Disable it with `metrics.broker_endpoint: false` or block
+> the path at your reverse proxy if that should not be public.
+
+## MQTT topics
+
+All topics are defined in [`wgkex/common/mqtt.py`](wgkex/common/mqtt.py). `{worker}` is the worker's hostname.
+
+| Topic | Direction | Payload | Notes |
+|---|---|---|---|
+| `wireguard/{domain}/{worker}` | broker → worker | public key | `{worker}` is `all` for `/api/v1` keys, and the chosen worker for `/api/v2` keys (with `load_balancing.targeted_publish`, the default). |
+| `wireguard-worker/{worker}/{domain}/remove` | broker → worker | public key | Remove a peer whose key moved to another worker. |
+| `wireguard-worker/{worker}/rebalance` | broker → worker | JSON `{"excess": int, "domains": [str]}` | Only with rebalancing enabled. Draining workers also get `"max_evictions_ratio": float`. |
+| `wireguard-worker/{worker}/status` | worker → broker | `0` offline, `1` online, `2` draining | Retained. The worker's MQTT last will sets `0`. |
+| `wireguard-worker/{worker}/{domain}/data` | worker → broker | JSON `{"ExternalAddress", "Port", "PublicKey", "LinkAddress"}` | Retained. Endpoint data returned by `/api/v2`. |
+| `wireguard-metrics/{domain}/{worker}/connected_peers` | worker → broker | integer | Peers with a recent handshake, sent every 60 s. |
+| `wireguard-broker/{broker_id}/assignment` | broker → broker | JSON `{"worker": str, "domain": str, "key": str}` | Only with `load_balancing.share_pending_assignments`. |
+
+The `remove`, `rebalance` and `assignment` topics, the targeted `wireguard/{domain}/{worker}` keys and status `2` were
+added without breaking older components, so brokers and workers can be upgraded one at a time:
+
+- Older workers subscribe to `wireguard/{domain}/+` and add every key; newer workers only act on `all` and their own
+  hostname. Older brokers publish every key to `all`. The bandwidth savings of targeted publishing only apply once both
+  sides are updated.
+- Older workers ignore `remove` and `rebalance` messages; older brokers ignore `assignment` messages.
+- Older brokers treat any status `>= 1`, including draining (`2`), as online.
+
+## Development
+
+```sh
+bazel build //...
+# all tests, as run in CI
+bazel test //... --test_output=errors --action_env=WGKEX_CONFIG_FILE=$PWD/wgkex.yaml.example
 ```
 
-### MQTT topics
+Without Bazel, run the test modules one at a time (they share module-level state, so a single
+`unittest discover` run does not work):
 
-- Publishing keys broker->worker: `wireguard/{domain}/{worker}`, `{worker}` is `all` for v1 keys and the chosen worker's
-  hostname for v2 keys
-- Removing peers broker->worker (when a key moved to another worker): `wireguard-worker/{worker}/{domain}/remove`,
-  payload is the public key
-- Publishing metrics worker->broker: `wireguard-metrics/{domain}/{worker}/connected_peers`
-- Publishing worker status: `wireguard-worker/{worker}/status`, retained, `0` offline, `1` online, `2` draining
-  (brokers from before drain mode treat any value >= 1 as online)
-- Publishing worker data: `wireguard-worker/{worker}/{domain}/data`
-- Rebalancing hints broker->worker (only if rebalancing is enabled): `wireguard-worker/{worker}/rebalance`,
-  JSON `{"excess": int, "domains": [...]}`, plus `"max_evictions_ratio": float` for draining workers
-- Sharing assignments broker->broker (only if `share_pending_assignments` is enabled):
-  `wireguard-broker/{broker_id}/assignment`, JSON `{"worker": str, "domain": str, "key": str}`
+```sh
+export WGKEX_CONFIG_FILE=$PWD/wgkex.yaml.example
+for t in $(git ls-files 'wgkex/*_test.py'); do python3 -m unittest "$(echo "${t%.py}" | tr / .)" || break; done
+```
 
-## Contact
+CI ([`.github/workflows`](.github/workflows)) runs the Bazel tests with coverage, `ruff check` on `./wgkex` (ruff is
+pinned to **0.16.1**, so new default rules don't break CI) and `black --check` (the `psf/black` action, v26.5.1):
 
-[Freifunk Munich Mattermost](https://chat.ffmuc.net)
+```sh
+pip install ruff==0.16.1 black==26.5.1
+ruff check ./wgkex
+black --check .
+```
+
+Python dependencies are declared in [`requirements.txt`](requirements.txt) and locked in
+[`requirements_lock.txt`](requirements_lock.txt) via Bazel's `compile_pip_requirements`. After changing
+`requirements.txt`, regenerate the lock file:
+
+```sh
+bazel run //:requirements.update
+```
+
+> [!NOTE]
+> The Bazel version in [`.bazelversion`](.bazelversion) must match the `bazel-public/bazel` builder image in the
+> [`Dockerfile`](Dockerfile); a workflow updates `.bazelversion` on Dependabot pull requests.
+
+See [Docs/development.md](Docs/development.md) for running broker and worker locally with dummy interfaces and
+example clients.
+
+## Contributing
+
+Issues and pull requests are welcome. Please keep CI green (tests, ruff, black), add tests for new behaviour, and update
+[`wgkex.yaml.example`](wgkex.yaml.example) and [`Docs/openapi.yaml`](Docs/openapi.yaml) when changing configuration or
+the API. New MQTT topics and payload fields must stay compatible with older brokers and workers.
+
+Questions? Reach us on the [Freifunk München Mattermost](https://chat.ffmuc.net). Background on the architecture:
+[FFMUC goes wild – infrastructure recap 2020 (rC3)](https://www.slideshare.net/slideshow/ffmuc-goes-wild-infrastructure-recap-2020-rc3/240656823).
+
+## License
+
+wgkex is licensed under the [GNU General Public License v3.0](LICENSE).
