@@ -9,9 +9,13 @@ from wgkex.config import config
 from wgkex.worker import app
 
 
-def _get_config_mock(domains=None):
+def _get_config_mock(domains=None, parker=None):
     test_prefixes = ["_TEST_PREFIX_", "_TEST_PREFIX2_"]
     config_mock = mock.MagicMock()
+    if parker:
+        config_mock.parker = parker
+    else:
+        config_mock.parker.enabled = False
     config_mock.domains = (
         domains if domains is not None else [f"{test_prefixes[1]}domain.one"]
     )
@@ -134,7 +138,7 @@ class AppTest(unittest.TestCase):
         )
 
         thread = threading.Thread(
-            target=app.flush_workers, args=("dummy_domain",), daemon=True
+            target=app.flush_workers, args=(False, "dummy_domain"), daemon=True
         )
         thread.start()
 
@@ -157,7 +161,7 @@ class AppTest(unittest.TestCase):
         )
         done = threading.Event()
 
-        def flush(domain, timeout, keep):
+        def flush(parker, domain, timeout, keep):
             self.assertEqual(domain, "cleanup_domain")
             self.assertEqual(timeout, 600)
             self.assertTrue(keep("RECENT_KEY"))
@@ -168,9 +172,38 @@ class AppTest(unittest.TestCase):
         wg_flush_mock.side_effect = flush
         app.peer_add_tracker.note_added("wg-cleanup_domain", "RECENT_KEY")
         threading.Thread(
-            target=app.flush_workers, args=("cleanup_domain",), daemon=True
+            target=app.flush_workers, args=(False, "cleanup_domain"), daemon=True
         ).start()
         self.assertTrue(done.wait(2))
+
+    @mock.patch.object(app.config, "get_config")
+    @mock.patch.object(app, "wg_flush_stale_peers")
+    def test_flush_workers_passes_parker_options(self, wg_flush_mock, config_mock):
+        """Parker cleanup uses the Parker timeout, the handshake grace and prefix length."""
+        config_mock.return_value.peer_cleanup = app.config.PeerCleanup(
+            interval=0, parker_stale_timeout=345, initial_handshake_grace=678
+        )
+        config_mock.return_value.parker.prefixes.ipv6.length = 62
+        done = threading.Event()
+        calls = []
+
+        def flush(*args, **kwargs):
+            # Cleanup threads of other tests may still be running
+            if args[:2] == (True, "parker"):
+                calls.append((args, kwargs))
+                done.set()
+            return []
+
+        wg_flush_mock.side_effect = flush
+        threading.Thread(
+            target=app.flush_workers, args=(True, "parker"), daemon=True
+        ).start()
+        self.assertTrue(done.wait(2))
+        args, kwargs = calls[0]
+        self.assertEqual(args, (True, "parker", 345))
+        self.assertEqual(kwargs["initial_handshake_grace"], 678)
+        self.assertEqual(kwargs["parker_prefix_length"], 62)
+        self.assertTrue(callable(kwargs["keep"]))
 
     @mock.patch.object(app.config, "get_config")
     @mock.patch.object(app, "is_allowlisted", side_effect=lambda k: k == "ALLOWED")
@@ -183,7 +216,7 @@ class AppTest(unittest.TestCase):
         )
         done = threading.Event()
 
-        def flush(domain, timeout, keep):
+        def flush(parker, domain, timeout, keep):
             self.assertTrue(keep("ALLOWED"))
             self.assertFalse(keep("OTHER_KEY"))
             done.set()
@@ -191,9 +224,84 @@ class AppTest(unittest.TestCase):
 
         wg_flush_mock.side_effect = flush
         threading.Thread(
-            target=app.flush_workers, args=("allow_domain",), daemon=True
+            target=app.flush_workers, args=(False, "allow_domain"), daemon=True
         ).start()
         self.assertTrue(done.wait(2))
+
+    @mock.patch.object(app.threading, "Thread")
+    def test_cleanup_schedules_parker_and_legacy_domains(self, thread):
+        app.clean_up_worker(True)
+        thread.assert_called_once_with(
+            target=app.flush_workers, args=(True, "parker"), daemon=True
+        )
+        thread.return_value.start.assert_called_once()
+
+        thread.reset_mock()
+        with (
+            mock.patch.object(
+                app.config,
+                "get_config",
+                return_value=_get_config_mock(
+                    domains=["_TEST_PREFIX_domain.one", "unmatched"]
+                ),
+            ),
+            mock.patch.object(app.logger, "error") as error,
+        ):
+            app.clean_up_worker(False)
+        thread.assert_called_once_with(
+            target=app.flush_workers, args=(False, "domain.one"), daemon=True
+        )
+        thread.return_value.start.assert_called_once()
+        error.assert_called_once_with(
+            "Not every domain got cleaned. Check domains for missing prefixes: domains %r, prefixes %r",
+            ["_TEST_PREFIX_domain.one", "unmatched"],
+            ["_TEST_PREFIX_", "_TEST_PREFIX2_"],
+        )
+
+    @mock.patch.object(app.config, "get_config")
+    def test_main_parker_registers_shutdown_and_starts_components(self, config_mock):
+        config_mock.return_value = _get_config_mock(parker=mock.MagicMock(enabled=True))
+        callbacks = []
+        with (
+            mock.patch.object(
+                app.signal,
+                "signal",
+                side_effect=lambda _, callback: callbacks.append(callback),
+            ),
+            mock.patch.object(app, "clean_up_worker") as cleanup,
+            mock.patch.object(app, "watch_queue") as watch_queue,
+            mock.patch.object(app.mqtt, "connect") as connect,
+        ):
+            app.main()
+
+        cleanup.assert_called_once_with(True)
+        watch_queue.assert_called_once_with(
+            True,
+            parker_prefix_length=mock.ANY,
+            initial_handshake_grace=mock.ANY,
+        )
+        connect.assert_called_once()
+        # SIGINT, SIGTERM and the drain signals SIGUSR1/SIGUSR2
+        self.assertEqual(len(callbacks), 4)
+
+        with (
+            mock.patch.object(app.time, "sleep") as sleep,
+            mock.patch.object(app.sys, "exit") as exit_process,
+        ):
+            callbacks[0](app.signal.SIGINT, None)
+        sleep.assert_any_call(2)
+        exit_process.assert_called_once()
+
+    @mock.patch.object(app.config, "get_config")
+    def test_main_rejects_duplicate_stripped_domains(self, config_mock):
+        config_mock.return_value = _get_config_mock(
+            domains=["_TEST_PREFIX_same", "_TEST_PREFIX2_same"]
+        )
+        with (
+            mock.patch.object(app.signal, "signal"),
+            self.assertRaises(app.DomainsAreNotUnique),
+        ):
+            app.main()
 
 
 if __name__ == "__main__":

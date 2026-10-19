@@ -155,6 +155,7 @@ The broker exposes:
 |---|---|
 | `POST /api/v1/wg/key/exchange` | Publish a key to all workers of the domain; the client picks a gateway itself. |
 | `POST /api/v2/wg/key/exchange` | Publish a key and get the connection data of the gateway chosen for the client. |
+| `GET /api/v3/wg/key/exchange` | Parker only (`parker.enabled`): signed node configuration with one concentrator per PoP. Also served at `/api/v3/config` and `/config`. See [Docs/parker.md](Docs/parker.md). |
 | `GET /metrics` | Prometheus metrics (unless `metrics.broker_endpoint: false`). |
 | `GET /` | Static index page. |
 
@@ -180,13 +181,23 @@ curl -s -X POST http://127.0.0.1:5000/api/v2/wg/key/exchange \
 
 `location` is optional; workers configured with the same `location` are preferred.
 
+Or for /api/v3 (Parker):
+```sh
+curl --get \
+  --data-urlencode "v6mtu=1500" \
+  --data-urlencode "pubkey=TszFS3oFRdhsJP3K0VOlklGMGYZy+oFCtlaghXJqW2g=" \
+  --data-urlencode "nonce=123456" \
+  "http://127.0.0.1:5000/api/v3/wg/key/exchange"
+```
+
 > [!IMPORTANT]
 > Compatibility with the Gluon client `ffmuc-mesh-vpn-wireguard-vxlan` is part of the contract:
 >
 > - The request body is parsed as JSON regardless of the `Content-Type` header.
 > - `Endpoint.Port` is a **string**, not a number.
 > - On any non-`200` response, the client falls back to `/api/v1` and a random gateway from its own configuration.
->   Rate-limited requests therefore still get a `200` response; there is no `429`.
+>   Rate-limited requests therefore still get a `200` response; v1 and v2 never answer with `429`.
+> - Parker (`/api/v3`) is purely additive and doesn't change v1 or v2.
 > - New response fields may be added, but existing fields are never changed. Clients must ignore unknown fields.
 
 ## Operations
@@ -201,6 +212,7 @@ Detailed guides are in [Docs/operations.md](Docs/operations.md) and [Docs/metric
 - [Rate limiting and key block-/allowlists](Docs/operations.md#rate-limiting-and-key-lists).
 - [Running behind a reverse proxy](Docs/operations.md#running-behind-a-reverse-proxy): `broker.trusted_proxies` and
   `broker.log_client_ip`.
+- [Parker](Docs/parker.md): `/api/v3`, PoPs, IPAM and Parker peer cleanup.
 - [Prometheus metrics and Grafana dashboards](Docs/metrics.md): metric reference and the dashboards in
   [`contrib/grafana`](contrib/grafana) for Prometheus and InfluxDB/Telegraf.
 
@@ -221,6 +233,10 @@ All topics are defined in [`wgkex/common/mqtt.py`](wgkex/common/mqtt.py). `{work
 | `wireguard-worker/{worker}/{domain}/data` | worker → broker | JSON `{"ExternalAddress", "Port", "PublicKey", "LinkAddress"}` | Retained. Endpoint data returned by `/api/v2`. |
 | `wireguard-metrics/{domain}/{worker}/connected_peers` | worker → broker | integer | Peers with a recent handshake, sent every 60 s. |
 | `wireguard-broker/{broker_id}/assignment` | broker → broker | JSON `{"worker": str, "domain": str, "key": str}` | Only with `load_balancing.share_pending_assignments`. |
+| `parker/wireguard/{worker}` | broker → worker | JSON `{"PublicKey", "Range6", "Keepalive"}`, optionally `"Remove": true` | Parker only. Sent to each concentrator chosen for a node; `Remove` to concentrators it was moved away from. Parker workers also accept `{worker}` = `all`. |
+| `parker/wireguard-worker/{worker}/status` | worker → broker | `0` offline, `1` online, `2` draining | Parker only. Retained. |
+| `parker/wireguard-worker/{worker}/data` | worker → broker | JSON `{"ExternalAddress", "Port", "PublicKey", "LinkAddress"}` | Parker only. Retained. |
+| `parker/wireguard-metrics/{worker}/connected_peers` | worker → broker | integer | Parker only. Sent every 10 s. |
 
 The `remove`, `rebalance` and `assignment` topics, the targeted `wireguard/{domain}/{worker}` keys and status `2` were
 added without breaking older components, so brokers and workers can be upgraded one at a time:

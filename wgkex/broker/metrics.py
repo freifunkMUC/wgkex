@@ -108,6 +108,15 @@ class WorkerSnapshot:
 
 
 @dataclasses.dataclass
+class WorkerResult:
+    name: str
+    id: int
+    diff: int
+    peers: int
+    target: int
+
+
+@dataclasses.dataclass
 class WorkerMetricsCollection:
     """A thread-safe container for all worker metrics.
 
@@ -260,7 +269,9 @@ class WorkerMetricsCollection:
     def get_total_peer_count(self) -> int:
         """Returns the sum of connected peers over all workers and domains"""
         with self._lock:
-            return sum(wm.get_peer_count() for wm in self.data.values())
+            return sum(
+                wm.get_peer_count() for wm in self.data.values() if wm is not None
+            )
 
     def _prune_expired(self) -> None:
         deadline = self.clock() - self.pending_ttl
@@ -381,6 +392,121 @@ class WorkerMetricsCollection:
         if not room:
             return None
         return self.rng.choices(list(room), weights=list(room.values()), k=1)[0]
+
+    def get_best_workers(
+        self,
+        domain: str,
+        current_selected_workers: list[str] | None,
+        require_configured: bool = False,
+    ) -> list[WorkerResult]:
+        """Analyzes the metrics and determines the best worker for each PoP that a node should connect to.
+
+        If no current_selected_workers is passed (None or empty):
+            The best worker is defined as the one with the most number of clients missing
+            to its should-be target value according to its weight.
+
+        If current_selected_workers is passed:
+            First it is checked whether the workers in the list are still online and not
+            more than the configured treshold above the should-be target value.
+            For any where this isn't the case, they are replaced as per the logic below:
+
+            The best worker is defined as the one with the most number of clients missing
+            to its should-be target value according to its weight.
+
+        Like for the v2 API, load includes pending assignments, and draining workers are neither
+        kept nor selected, unless all online workers of a PoP are draining.
+
+        Returns:
+            A List of WorkerResult containing the worker name, difference to target peers, number of connected peers.
+            The list can be empty if no suitable worker could be determined.
+        """
+
+        with self._lock:
+            return self._get_best_workers(
+                domain, current_selected_workers, require_configured
+            )
+
+    def _get_best_workers(
+        self,
+        domain: str,
+        current_selected_workers: list[str] | None,
+        require_configured: bool,
+    ) -> list[WorkerResult]:
+        new_selected_workers: list[WorkerResult] = []
+        workers_cfg = config.get_config().workers
+        self._prune_expired()
+        total_peers = self.get_total_peer_count() + sum(
+            len(assignments) for assignments in self._pending.values()
+        )
+
+        for pop in workers_cfg.all_pops:
+            candidates: list[WorkerResult] = []
+
+            # Map metrics to a list of (target diff, peer count, worker) tuples for online workers
+            for wm in list(self.data.values()):
+                worker_cfg = workers_cfg.get(wm.worker)
+                if worker_cfg is None:
+                    if require_configured:
+                        logger.warning(
+                            "Worker %s is not in the workers config, skipping",
+                            wm.worker,
+                        )
+                        continue
+                    worker_cfg = config.Worker(id=0, weight=1, pop="")
+
+                if worker_cfg.pop != pop:
+                    continue
+
+                if not self._is_online(wm, domain):
+                    continue
+
+                peers = self.get_effective_peer_count(wm.worker)
+                rel_weight = workers_cfg.relative_worker_weight(wm.worker)
+                target = round(rel_weight * total_peers)
+                diff = peers - target
+                logger.debug(
+                    f"Worker candidate {wm.worker} for PoP {pop}: current {peers}, target {target} (total {total_peers}, rel weight {rel_weight}), diff {diff}"
+                )
+                candidates.append(
+                    WorkerResult(wm.worker, worker_cfg.id, diff, peers, target)
+                )
+
+            not_draining = [c for c in candidates if not self.data[c.name].draining]
+            if not_draining:
+                candidates = not_draining
+
+            # If one of the currently selected workers is a valid candidate, and below a certain treshold, keep it
+            if current_selected_workers:
+                any_hit = False
+
+                for w in current_selected_workers:
+                    all_matched = [cand for cand in candidates if cand.name == w]
+                    if len(all_matched) > 0:
+                        matched = all_matched[0]
+
+                        if matched.diff > max(
+                            1, workers_cfg.sticky_worker_tolerance * matched.target
+                        ):
+                            continue
+
+                        new_selected_workers.append(matched)
+                        any_hit = True
+                        logger.debug(
+                            f"Sticky worker candidate {matched.name} selected, below treshold"
+                        )
+                        break
+
+                if any_hit:
+                    continue  # to next PoP
+
+            # Sort by diff (ascending), workers with most peers missing to target are sorted first
+            candidates = sorted(candidates, key=lambda wm: wm.diff)
+
+            if len(candidates) > 0:
+                best = candidates[0]
+                new_selected_workers.append(best)
+
+        return new_selected_workers
 
     def is_topology_stable(self, stable_time: float) -> bool:
         """Whether no worker went online or offline (and the broker did not start) within stable_time seconds."""

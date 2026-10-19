@@ -9,12 +9,17 @@ import time
 from typing import Any
 
 import paho.mqtt.client as mqtt
+import paho.mqtt.enums
 import pyroute2.netlink.exceptions
 
 from wgkex.common import logger
 from wgkex.common.mqtt import (
     STATUS_DRAINING,
     TOPIC_CONNECTED_PEERS,
+    TOPIC_PARKER_CONNECTED_PEERS,
+    TOPIC_PARKER_WG_PEER,
+    TOPIC_PARKER_WORKER_STATUS,
+    TOPIC_PARKER_WORKER_WG_DATA,
     TOPIC_WG_KEY,
     TOPIC_WORKER_REBALANCE,
     TOPIC_WORKER_REMOVE_PEER,
@@ -33,6 +38,7 @@ from wgkex.worker.rebalance import Rebalancer
 
 _HOSTNAME = socket.gethostname()
 _METRICS_SEND_INTERVAL = 60
+_METRICS_SEND_INTERVAL_PARKER = 10
 _ANNOUNCE_RETRY_INTERVAL = 10
 
 # Set when active rebalancing is enabled in the configuration
@@ -49,12 +55,22 @@ def _rebalancing_enabled() -> bool:
     return get_config().load_balancing.rebalancing.enabled is True
 
 
+def _status_topic() -> str:
+    """The retained status topic of this worker, Parker workers use their own namespace."""
+    if get_config().parker.enabled:
+        return TOPIC_PARKER_WORKER_STATUS.format(worker=_HOSTNAME)
+    return TOPIC_WORKER_STATUS.format(worker=_HOSTNAME)
+
+
 def connect(exit_event: threading.Event) -> None:
     """Connect to MQTT.
 
     Argument:
         exit_event: A threading.Event that signals application shutdown.
     """
+
+    parker_enabled = get_config().parker.enabled
+
     base_config = get_config().mqtt
     broker_address = base_config.broker_url
     broker_port = base_config.broker_port
@@ -62,23 +78,32 @@ def connect(exit_event: threading.Event) -> None:
     broker_password = base_config.password
     broker_keepalive = base_config.keepalive
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, _HOSTNAME)
-    domains = get_config().domains
 
-    # Register LWT to set worker status down when lossing connection
-    client.will_set(TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), 0, qos=1, retain=True)
+    domains: list[str] = []
+    if not parker_enabled:
+        domains = get_config().domains
+
+    # Register LWT to set worker status down when loosing connection
+    client.will_set(_status_topic(), 0, qos=1, retain=True)
 
     # Register handlers
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
     client.on_message = on_message
-    client.message_callback_add("wireguard/#", on_message_wireguard)
-    client.message_callback_add(
-        TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"),
-        on_message_remove_peer,
-    )
+
+    if parker_enabled:
+        client.message_callback_add(
+            TOPIC_PARKER_WG_PEER.format(worker="+"), on_message_parker
+        )
+    else:
+        client.message_callback_add("wireguard/#", on_message_wireguard)
+        client.message_callback_add(
+            TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"),
+            on_message_remove_peer,
+        )
 
     global _rebalancer
-    if _rebalancing_enabled():
+    if not parker_enabled and _rebalancing_enabled():
         logger.info("Active rebalancing is enabled")
         _rebalancer = Rebalancer(
             get_config().load_balancing.rebalancing, domains, wg_interface_name
@@ -98,9 +123,7 @@ def connect(exit_event: threading.Event) -> None:
         exit_event.wait()
         if client.is_connected():
             logger.info("Marking worker as down")
-            client.publish(
-                TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), 0, qos=1, retain=True
-            )
+            client.publish(_status_topic(), 0, qos=1, retain=True)
 
     mark_offline_on_exit_thread = threading.Thread(
         target=mark_offline_on_exit, args=(exit_event,)
@@ -125,12 +148,21 @@ def connect(exit_event: threading.Event) -> None:
         daemon=True,
     ).start()
 
-    for domain in domains:
+    if parker_enabled:
         # Schedule repeated metrics publishing
         metrics_thread = threading.Thread(
-            target=publish_metrics_loop, args=(exit_event, client, domain)
+            target=publish_metrics_loop,
+            args=(exit_event, client, None, parker_enabled),
         )
         metrics_thread.start()
+    else:
+        for domain in domains:
+            # Schedule repeated metrics publishing
+            metrics_thread = threading.Thread(
+                target=publish_metrics_loop,
+                args=(exit_event, client, domain, parker_enabled),
+            )
+            metrics_thread.start()
 
     if _rebalancer is not None:
         threading.Thread(
@@ -165,6 +197,29 @@ def on_disconnect(client: mqtt.Client, userdata: Any, rc):
         _published_status = None
 
 
+def _publish_parker_worker_data(client: mqtt.Client, own_external_name: str) -> bool:
+    try:
+        port, public_key, link_address = get_device_data("wg-nodes")
+    except Exception as ex:  # noqa: BLE001
+        # Don't let the exception escape into paho's network loop.
+        logger.warning("WireGuard interface wg-nodes is not ready yet: %s", ex)
+        return False
+
+    data = {
+        "ExternalAddress": own_external_name,
+        "Port": port,
+        "PublicKey": public_key,
+        "LinkAddress": link_address,
+    }
+    client.publish(
+        TOPIC_PARKER_WORKER_WG_DATA.format(worker=_HOSTNAME),
+        json.dumps(data),
+        qos=1,
+        retain=True,
+    )
+    return True
+
+
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     """Handles MQTT connect and subscribes to topics on connect
@@ -175,20 +230,46 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         flags: The MQTT flags.
         rc: The MQTT rc.
     """
-    logger.debug("Connected with result code " + str(rc))
-    domains = get_config().domains
+    match rc:
+        case paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED:
+            logger.debug(
+                "MQTT successfully connected to %s:%s",
+                client.host,
+                client.port,
+            )
+        case _:
+            logger.error(
+                "MQTT connection to %s:%s failed with return code %s (%s)",
+                client.host,
+                client.port,
+                rc,
+                paho.mqtt.enums.ConnackCode(rc).name,
+            )
+            return
 
-    for domain in domains:
-        # Subscribing in on_connect() means that if we lose the connection and
-        # reconnect then subscriptions will be renewed.
-        # Keys from the v1 API are sent to all workers, keys from the v2 API only to the chosen one.
-        for worker in (WG_KEY_ALL_WORKERS, _HOSTNAME):
-            topic = TOPIC_WG_KEY.format(domain=domain, worker=worker)
+    parker_enabled = get_config().parker.enabled
+
+    if parker_enabled:
+        # Peer updates are addressed by worker name (the hostname, the same identity as the
+        # status/metrics topics and the broker's worker config). "all" stays subscribed so a
+        # broker that still broadcasts keeps working during a rollout.
+        for worker in (_HOSTNAME, WG_KEY_ALL_WORKERS):
+            topic = TOPIC_PARKER_WG_PEER.format(worker=worker)
             logger.info(f"Subscribing to topic {topic}")
             client.subscribe(topic, qos=1)
-    client.subscribe(
-        TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"), qos=1
-    )
+    else:
+        domains = get_config().domains
+        for domain in domains:
+            # Subscribing in on_connect() means that if we lose the connection and
+            # reconnect then subscriptions will be renewed.
+            # Keys from the v1 API are sent to all workers, keys from the v2 API only to the chosen one.
+            for worker in (WG_KEY_ALL_WORKERS, _HOSTNAME):
+                topic = TOPIC_WG_KEY.format(domain=domain, worker=worker)
+                logger.info(f"Subscribing to topic {topic}")
+                client.subscribe(topic, qos=1)
+        client.subscribe(
+            TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"), qos=1
+        )
 
     if _rebalancer is not None:
         client.subscribe(TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME))
@@ -206,14 +287,18 @@ def publish_worker_data_and_status(client: mqtt.Client) -> bool:
     Returns:
         Whether the worker was marked as online.
     """
-    domains = get_config().domains
     own_external_name = (
         get_config().external_name
         if get_config().external_name is not None
         else _HOSTNAME
     )
-
     ready = True
+    if get_config().parker.enabled:
+        if not _publish_parker_worker_data(client, own_external_name):
+            return False
+        domains: list[str] = []
+    else:
+        domains = get_config().domains
     for domain in domains:
         iface = wg_interface_name(domain)
         if not iface:
@@ -248,9 +333,7 @@ def publish_worker_data_and_status(client: mqtt.Client) -> bool:
     global _published_status
     with _status_lock:
         status = drain.drain_state.status()
-        client.publish(
-            TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), status, qos=1, retain=True
-        )
+        client.publish(_status_topic(), status, qos=1, retain=True)
         _published_status = status
     logger.info("Published worker status %d", status)
     return True
@@ -268,9 +351,7 @@ def publish_status(client: mqtt.Client, status: int) -> bool:
             return False
         if _published_status == status:
             return True
-        client.publish(
-            TOPIC_WORKER_STATUS.format(worker=_HOSTNAME), status, qos=1, retain=True
-        )
+        client.publish(_status_topic(), status, qos=1, retain=True)
         _published_status = status
     if status == STATUS_DRAINING:
         logger.warning("Worker is draining, published status %d", status)
@@ -382,24 +463,72 @@ def on_message_rebalance(
         _rebalancer.handle_instruction(message.payload)
 
 
+def on_message_parker(
+    client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
+) -> None:
+    """Processes messages from MQTT and forwards them to netlink.
+
+    Arguments:
+        client: the client instance for this callback.
+        userdata: the private user data.
+        message: The MQTT message.
+    """
+    # The subscriptions are already narrowed to this worker's topic, but the
+    # peer provisioning below mutates wg + routing state, so re-check the
+    # addressee instead of trusting whatever ended up subscribed.
+    target = message.topic.rpartition("/")[2]
+    if target not in (_HOSTNAME, WG_KEY_ALL_WORKERS):
+        logger.debug(
+            "Ignoring Parker peer update addressed to %s (this worker is %s)",
+            target,
+            _HOSTNAME,
+        )
+        return
+    # TODO: ensure payload is a dict mathing a TBD shared data class
+    q.put(str(message.payload.decode("utf-8")))
+
+
 def publish_metrics_loop(
-    exit_event: threading.Event, client: mqtt.Client, domain: str
+    exit_event: threading.Event,
+    client: mqtt.Client,
+    domain: str | None,
+    parker_enabled: bool = False,
 ) -> None:
     """Continuously send metrics every METRICS_SEND_INTERVAL seconds for this gateway and the given domain."""
-    logger.info("Scheduling metrics task for %s, ", domain)
 
-    topic = TOPIC_CONNECTED_PEERS.format(domain=domain, worker=_HOSTNAME)
+    if not parker_enabled and domain is None:
+        raise ValueError(
+            "Domain must be passed to publish_metrics_loop if Parker is not enabled"
+        )
+
+    if parker_enabled:
+        logger.info("Scheduling interface metrics task, ")
+        topic = TOPIC_PARKER_CONNECTED_PEERS.format(worker=_HOSTNAME)
+    else:
+        logger.info("Scheduling metrics task for %s, ", domain)
+        topic = TOPIC_CONNECTED_PEERS.format(domain=domain, worker=_HOSTNAME)
 
     while not exit_event.is_set():
         try:
-            publish_metrics(client, topic, domain)
+            if parker_enabled:
+                publish_metrics_parker(client, topic)
+            else:
+                publish_metrics(client, topic, domain)  # type: ignore
         except Exception as e:  # noqa: BLE001
             # Don't crash the thread when an exception is encountered
-            logger.error(f"Exception during publish metrics task for {domain}:")
-            logger.error(e)
+            if parker_enabled:
+                logger.error("Exception during publish metrics task", exc_info=e)
+            else:
+                logger.error(
+                    f"Exception during publish metrics task for {domain}", exc_info=e
+                )
         finally:
             # This drifts slightly over time, doesn't matter for us
-            exit_event.wait(_METRICS_SEND_INTERVAL)
+            exit_event.wait(
+                _METRICS_SEND_INTERVAL_PARKER
+                if parker_enabled
+                else _METRICS_SEND_INTERVAL
+            )
 
     # Set peers metric to -1 to mark worker as offline
     # Use QoS 1 (at least once) to make sure the broker notices
@@ -424,11 +553,32 @@ def publish_metrics(client: mqtt.Client, topic: str, domain: str) -> None:
     except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
         # Handle gracefully, don't update metrics
         logger.info(
-            "Caught NetlinkDumpInterrupted exception while collecting metrics for domain {domain}"
+            f"Caught NetlinkDumpInterrupted exception while collecting metrics for domain {domain}"
         )
         return
 
-    # Publish metrics, retain it at MQTT broker so restarted wgkex broker has metrics right away
+    # Publish metrics, retain it at MQTT broker so a restarted wgkex broker has metrics right away
+    client.publish(topic, peer_count, retain=True)
+
+
+def publish_metrics_parker(client: mqtt.Client, topic: str) -> None:
+    """Publish metrics for this gateway and the given domain.
+
+    The metrics currently only consist of the number of connected peers.
+    """
+    logger.debug("Publishing interface metrics")
+    iface = "wg-nodes"
+
+    try:
+        peer_count = get_connected_peers_count(iface)
+    except pyroute2.netlink.exceptions.NetlinkDumpInterrupted:
+        # Handle gracefully, don't update metrics
+        logger.info(
+            "Caught NetlinkDumpInterrupted exception while collecting interface metrics"
+        )
+        return
+
+    # Publish metrics, retain it at MQTT broker so a restarted wgkex broker has metrics right away
     client.publish(topic, peer_count, retain=True)
 
 
