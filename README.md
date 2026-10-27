@@ -59,7 +59,8 @@ flowchart TD
   rebalancing loop.
 - **Worker** (`wgkex/worker`): runs on each gateway. It subscribes to the keys for its domains and adds them as
   WireGuard peers, routes and VXLAN FDB entries via netlink (pyroute2). It reports its status, endpoint data and
-  connected peers back to the broker, removes stale peers, and supports drain mode for planned maintenance.
+  connected peers back to the broker, removes stale peers (never the peers of other gateways), and supports drain mode
+  for planned maintenance.
 - WireGuard and VXLAN interface names are derived from the domain: the matching `domain_prefixes` entry is replaced by
   `wg-` / `vx-` (e.g. `ffmuc_welt` → `wg-welt`, `vx-welt`).
 
@@ -218,7 +219,7 @@ All topics are defined in [`wgkex/common/mqtt.py`](wgkex/common/mqtt.py). `{work
 | `wireguard-worker/{worker}/{domain}/remove` | broker → worker | public key | Remove a peer whose key moved to another worker. |
 | `wireguard-worker/{worker}/rebalance` | broker → worker | JSON `{"excess": int, "domains": [str]}` | Only with rebalancing enabled. Draining workers also get `"max_evictions_ratio": float`. |
 | `wireguard-worker/{worker}/status` | worker → broker | `0` offline, `1` online, `2` draining | Retained. The worker's MQTT last will sets `0`. |
-| `wireguard-worker/{worker}/{domain}/data` | worker → broker | JSON `{"ExternalAddress", "Port", "PublicKey", "LinkAddress"}` | Retained. Endpoint data returned by `/api/v2`. |
+| `wireguard-worker/{worker}/{domain}/data` | worker → broker, workers | JSON `{"ExternalAddress", "Port", "PublicKey", "LinkAddress"}` | Retained. Endpoint data returned by `/api/v2`. Workers never remove peers with these keys. |
 | `wireguard-metrics/{domain}/{worker}/connected_peers` | worker → broker | integer | Peers with a recent handshake, sent every 60 s. |
 | `wireguard-broker/{broker_id}/assignment` | broker → broker | JSON `{"worker": str, "domain": str, "key": str}` | Only with `load_balancing.share_pending_assignments`. |
 
