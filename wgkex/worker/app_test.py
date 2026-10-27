@@ -134,10 +134,7 @@ class AppTest(unittest.TestCase):
             "'NoneType' object has no attribute 'get'"
         )
 
-        thread = threading.Thread(
-            target=app.flush_workers, args=("dummy_domain",), daemon=True
-        )
-        thread.start()
+        thread = self._start_flush("dummy_domain")
 
         i = 0
         while i < 20 and not wg_flush_mock.called:
@@ -147,7 +144,6 @@ class AppTest(unittest.TestCase):
         wg_flush_mock.assert_called()
         # Assert that the thread hasn't crashed and is still running
         self.assertTrue(thread.is_alive())
-        # If Python would allow it without writing custom signalling, this would be the place to stop the thread again
 
     @mock.patch.object(app.config, "get_config")
     @mock.patch.object(app, "wg_flush_stale_peers")
@@ -169,9 +165,7 @@ class AppTest(unittest.TestCase):
 
         wg_flush_mock.side_effect = flush
         app.peer_add_tracker.note_added("wg-cleanup_domain", "RECENT_KEY")
-        threading.Thread(
-            target=app.flush_workers, args=("cleanup_domain",), daemon=True
-        ).start()
+        self._start_flush("cleanup_domain")
         self.assertTrue(done.wait(2))
 
     @mock.patch.object(app.config, "get_config")
@@ -193,9 +187,7 @@ class AppTest(unittest.TestCase):
             return []
 
         wg_flush_mock.side_effect = flush
-        threading.Thread(
-            target=app.flush_workers, args=("allow_domain",), daemon=True
-        ).start()
+        self._start_flush("allow_domain")
         self.assertTrue(done.wait(2))
 
     @mock.patch.object(app.config, "get_config")
@@ -216,9 +208,7 @@ class AppTest(unittest.TestCase):
             return []
 
         wg_flush_mock.side_effect = flush
-        threading.Thread(
-            target=app.flush_workers, args=("gw_domain",), daemon=True
-        ).start()
+        self._start_flush("gw_domain")
         self.assertTrue(done.wait(2))
 
     @mock.patch.object(app.config, "get_config")
@@ -231,13 +221,22 @@ class AppTest(unittest.TestCase):
         self.addCleanup(app.gateway_keys.reset)
         done = threading.Event()
         wg_flush_mock.side_effect = lambda *a, **kw: done.set() or []
-        threading.Thread(
-            target=app.flush_workers, args=("wait_domain",), daemon=True
-        ).start()
+        self._start_flush("wait_domain")
         sleep(0.1)
         wg_flush_mock.assert_not_called()
         app.gateway_keys.handle_worker_data("me", b'{"PublicKey": "OWN="}', "me")
         self.assertTrue(done.wait(2))
+
+    def _start_flush(self, domain: str) -> threading.Thread:
+        """Starts flush_workers in a thread, which is stopped after the test."""
+        exit_event = threading.Event()
+        thread = threading.Thread(
+            target=app.flush_workers, args=(domain, exit_event), daemon=True
+        )
+        thread.start()
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(exit_event.set)
+        return thread
 
     def _mark_synced(self):
         self.addCleanup(app.gateway_keys.reset)

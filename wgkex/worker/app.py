@@ -36,10 +36,11 @@ class InvalidDomain(Error):
     """If the domains is invalid and is not listed in the configuration file."""
 
 
-def flush_workers(domain: str) -> None:
-    """Removes stale peers every peer_cleanup.interval seconds."""
+def flush_workers(domain: str, exit_event: threading.Event | None = None) -> None:
+    """Removes stale peers every peer_cleanup.interval seconds, until exit_event is set."""
     cleanup_cfg = config.get_config().peer_cleanup
     wg_interface = f"wg-{domain}"
+    exit_event = exit_event or threading.Event()
 
     def keep(public_key: str) -> bool:
         if is_protected(public_key):
@@ -51,9 +52,8 @@ def flush_workers(domain: str) -> None:
             and peer_add_tracker.now() - added_at < cleanup_cfg.stale_timeout
         )
 
-    while True:
+    while not exit_event.wait(cleanup_cfg.interval):
         try:
-            time.sleep(cleanup_cfg.interval)
             if not gateway_keys.synced:
                 # Without the keys of the other gateways we could remove their static peers
                 logger.warning(
