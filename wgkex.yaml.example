@@ -127,7 +127,8 @@ key_lists:
   # file are also removed from all workers.
   blocklist: []
   # blocklist_file: /etc/wgkex/blocklist
-  # [worker] Never removed by the stale peer cleanup or evicted by rebalancing/draining.
+  # [worker] Never removed by the stale peer cleanup or evicted by rebalancing/draining. Keys of
+  # wgkex gateways are protected automatically, do not add them here.
   allowlist: []
   # allowlist_file: /etc/wgkex/allowlist
   reload_interval: 60

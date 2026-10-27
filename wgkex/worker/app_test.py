@@ -129,6 +129,7 @@ class AppTest(unittest.TestCase):
     def test_flush_workers_doesnt_throw(self, wg_flush_mock, config_mock):
         """Ensure the flush_workers thread doesn't throw and exit if it encounters an exception."""
         config_mock.return_value.peer_cleanup = app.config.PeerCleanup(interval=0)
+        self._mark_synced()
         wg_flush_mock.side_effect = AttributeError(
             "'NoneType' object has no attribute 'get'"
         )
@@ -155,6 +156,7 @@ class AppTest(unittest.TestCase):
         config_mock.return_value.peer_cleanup = app.config.PeerCleanup(
             stale_timeout=600, interval=0
         )
+        self._mark_synced()
         done = threading.Event()
 
         def flush(domain, timeout, keep):
@@ -173,7 +175,7 @@ class AppTest(unittest.TestCase):
         self.assertTrue(done.wait(2))
 
     @mock.patch.object(app.config, "get_config")
-    @mock.patch.object(app, "is_allowlisted", side_effect=lambda k: k == "ALLOWED")
+    @mock.patch.object(app, "is_protected", side_effect=lambda k: k == "ALLOWED")
     @mock.patch.object(app, "wg_flush_stale_peers")
     def test_flush_workers_keeps_allowlisted_peers(
         self, wg_flush_mock, allowlist_mock, config_mock
@@ -181,6 +183,7 @@ class AppTest(unittest.TestCase):
         config_mock.return_value.peer_cleanup = app.config.PeerCleanup(
             stale_timeout=600, interval=0
         )
+        self._mark_synced()
         done = threading.Event()
 
         def flush(domain, timeout, keep):
@@ -194,6 +197,51 @@ class AppTest(unittest.TestCase):
             target=app.flush_workers, args=("allow_domain",), daemon=True
         ).start()
         self.assertTrue(done.wait(2))
+
+    @mock.patch.object(app.config, "get_config")
+    @mock.patch.object(app, "wg_flush_stale_peers")
+    def test_flush_workers_keeps_gateway_peers(self, wg_flush_mock, config_mock):
+        """Peers of other gateways are never removed, also when they are offline."""
+        config_mock.return_value.peer_cleanup = app.config.PeerCleanup(
+            stale_timeout=600, interval=0
+        )
+        self._mark_synced()
+        app.gateway_keys.add("GW_KEY")
+        done = threading.Event()
+
+        def flush(domain, timeout, keep):
+            self.assertTrue(keep("GW_KEY"))
+            self.assertFalse(keep("CLIENT_KEY"))
+            done.set()
+            return []
+
+        wg_flush_mock.side_effect = flush
+        threading.Thread(
+            target=app.flush_workers, args=("gw_domain",), daemon=True
+        ).start()
+        self.assertTrue(done.wait(2))
+
+    @mock.patch.object(app.config, "get_config")
+    @mock.patch.object(app, "wg_flush_stale_peers")
+    def test_flush_workers_waits_for_gateway_keys(self, wg_flush_mock, config_mock):
+        """No cleanup before the worker data of all gateways was received."""
+        config_mock.return_value.peer_cleanup = app.config.PeerCleanup(
+            stale_timeout=600, interval=0.01
+        )
+        self.addCleanup(app.gateway_keys.reset)
+        done = threading.Event()
+        wg_flush_mock.side_effect = lambda *a, **kw: done.set() or []
+        threading.Thread(
+            target=app.flush_workers, args=("wait_domain",), daemon=True
+        ).start()
+        sleep(0.1)
+        wg_flush_mock.assert_not_called()
+        app.gateway_keys.handle_worker_data("me", b'{"PublicKey": "OWN="}', "me")
+        self.assertTrue(done.wait(2))
+
+    def _mark_synced(self):
+        self.addCleanup(app.gateway_keys.reset)
+        app.gateway_keys.handle_worker_data("me", b'{"PublicKey": "OWN="}', "me")
 
 
 if __name__ == "__main__":

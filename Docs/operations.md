@@ -121,6 +121,11 @@ before exiting. If it is killed, its MQTT last will does the same.
 - **Stale peer cleanup:** peers without a handshake for `peer_cleanup.stale_timeout` seconds (default 1800) are
   removed every `peer_cleanup.interval` seconds (default 300). Peers that were just added are kept until they had time
   to connect.
+- **Gateway peers:** the worker never removes the peers of other gateways (e.g. static gateway-to-gateway peers on
+  `wg-{domain}`), also not while the other gateway is offline. The worker reads the public keys from the retained
+  `wireguard-worker/+/+/data` topic and keeps them until it stops. The cleanup starts only after the worker received
+  its own data message. Give the worker MQTT user read access to `wireguard-worker/+/+/data`, otherwise the cleanup
+  does not run.
 - **Queue:** queued key operations are picked up immediately (blocking queue, processed in batches of up to 256).
 - **Netlink:** each worker thread keeps its netlink sockets and interface indexes open instead of reconnecting per
   operation. Broken sockets are reopened and recreated interfaces looked up again automatically. WireGuard peers are
@@ -143,7 +148,8 @@ Key lists (`key_lists`) contain public keys inline or in files with one key per 
 - **Blocklist** (broker: `blocklist` / `blocklist_file`): keys are rejected with `403` and never published. Keys newly
   added to the file are also removed from all workers.
 - **Allowlist** (worker: `allowlist` / `allowlist_file`): keys are never removed from a worker by the stale peer
-  cleanup, rebalancing or draining.
+  cleanup, rebalancing or draining. The keys of wgkex gateways are protected automatically (see
+  [Worker peer handling](#worker-peer-handling)).
 
 Files are reloaded without a restart within `reload_interval` seconds (default 60) after being modified. If a file is
 deleted or unreadable, its previous keys stay active; empty it instead.

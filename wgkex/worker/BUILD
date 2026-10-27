@@ -58,6 +58,7 @@ py_library(
        "//wgkex/common:utils",
        "//wgkex/config:config",
        ":drain",
+       ":gateway_keys",
        ":msg_queue",
        ":netlink",
        ":rebalance",
@@ -99,6 +100,7 @@ py_binary(
     deps = [
        ":allowlist",
        ":drain",
+       ":gateway_keys",
        ":mqtt",
        ":msg_queue",
        ":observability",
@@ -170,6 +172,7 @@ py_library(
     deps = [
        "//wgkex/common:keylist",
        "//wgkex/config:config",
+       ":gateway_keys",
     ],
 )
 
@@ -179,6 +182,26 @@ py_test(
     deps = [
        "//wgkex/config:config",
        "//wgkex/worker:allowlist",
+       "//wgkex/worker:gateway_keys",
+       "//wgkex/worker:rebalance",
+    ],
+    size="small",
+)
+
+py_library(
+    name = "gateway_keys",
+    srcs = ["gateway_keys.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+    ],
+)
+
+py_test(
+    name = "gateway_keys_test",
+    srcs = ["gateway_keys_test.py"],
+    deps = [
+       ":gateway_keys",
     ],
     size="small",
 )

@@ -24,6 +24,7 @@ from wgkex.common.mqtt import (
 )
 from wgkex.config.config import get_config
 from wgkex.worker import drain
+from wgkex.worker.gateway_keys import gateway_keys, is_gateway_key
 from wgkex.worker.msg_queue import PeerOp, q
 from wgkex.worker.netlink import (
     get_connected_peers_count,
@@ -76,7 +77,9 @@ def connect(exit_event: threading.Event) -> None:
         TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"),
         on_message_remove_peer,
     )
-
+    client.message_callback_add(
+        TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"), on_message_worker_data
+    )
     global _rebalancer
     if _rebalancing_enabled():
         logger.info("Active rebalancing is enabled")
@@ -189,6 +192,9 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
     client.subscribe(
         TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"), qos=1
     )
+    # Retained data of all workers, their keys are protected from removal. Subscribe before publishing our own data,
+    # receiving it then means that the retained data of all other workers was received.
+    client.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"), qos=1)
 
     if _rebalancer is not None:
         client.subscribe(TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME))
@@ -368,10 +374,27 @@ def on_message_remove_peer(
     except ValueError as e:
         logger.error(f"Ignored invalid remove message on {message.topic}: {e}")
         return
+    if is_gateway_key(public_key):
+        logger.warning(
+            f"Ignored remove message for key {public_key} of a gateway on domain {domain}"
+        )
+        return
     logger.info(
         f"Received remove message for key {public_key} on domain {domain} adding to queue"
     )
     q.put(PeerOp(interface.removeprefix("wg-"), public_key, remove=True))
+
+
+def on_message_worker_data(
+    client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
+) -> None:
+    """Learns the public keys of all workers, they are never removed by this worker."""
+    try:
+        _, worker, _, _ = message.topic.split("/", 3)
+    except ValueError:
+        logger.error(f"Ignored worker data on invalid topic {message.topic}")
+        return
+    gateway_keys.handle_worker_data(worker, message.payload, _HOSTNAME)
 
 
 def on_message_rebalance(
