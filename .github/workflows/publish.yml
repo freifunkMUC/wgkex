@@ -62,7 +62,6 @@ jobs:
           labels: |
             org.opencontainers.image.authors=${{ env.AUTHOR }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.created=${{ steps.meta.outputs.created }}
 
       - name: Build and push container image
         id: push
