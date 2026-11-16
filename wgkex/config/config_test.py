@@ -482,6 +482,28 @@ class TestConfig(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "interval"):
             config.Parker.from_dict({**parker, "route_gate": {"interval": 0}})
 
+    def test_parker_ipam_cache(self):
+        parsed = config.Parker.from_dict(_parker_dict())
+        self.assertEqual(parsed.ipam_cache, config.Parker.IPAMCache(None, 60, 32))
+        parsed = config.Parker.from_dict(
+            {
+                **_parker_dict(),
+                "ipam_cache": {
+                    "snapshot_dir": "/data",
+                    "sync_interval": 30,
+                    "reserve": 8,
+                },
+            }
+        )
+        self.assertEqual(parsed.ipam_cache, config.Parker.IPAMCache("/data", 30, 8))
+        for cache, error in (
+            ([], "mapping"),
+            ({"reserve": -1}, "reserve"),
+            ({"sync_interval": 0}, "sync_interval"),
+        ):
+            with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
+                config.Parker.from_dict({**_parker_dict(), "ipam_cache": cache})
+
     def test_worker_parker_config_does_not_require_broker_credentials(self):
         cfg = _config_dict()
         cfg["parker"] = _parker_dict()

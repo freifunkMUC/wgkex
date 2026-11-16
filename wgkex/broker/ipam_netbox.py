@@ -1,19 +1,30 @@
 import json
 import sys
 from datetime import datetime, timezone
-from ipaddress import IPv4Network, IPv6Network
 from typing import Any
 
 import pynetbox
 import pynetbox.core.query
 import pynetbox.models.ipam
+import requests
 
-from wgkex.broker.ipam import ParkerIPAM
 from wgkex.common import logger
 from wgkex.config import config
 
 
-class NetboxIPAM(ParkerIPAM):
+class _TimeoutSession(requests.Session):
+    """A session with a default timeout, so that a dead NetBox does not block a request."""
+
+    timeout: float = 5
+
+    def request(self, *args, **kwargs):
+        kwargs.setdefault("timeout", self.timeout)
+        return super().request(*args, **kwargs)
+
+
+class NetboxIPAM:
+    """The NetBox store of the node prefixes. The broker reads it through IPAMCache."""
+
     nb: pynetbox.api
     xlat: bool
     parent_prefix_v4: pynetbox.models.ipam.Prefixes | None
@@ -27,6 +38,7 @@ class NetboxIPAM(ParkerIPAM):
         v6_filter: dict[str, Any] | None = None,
     ) -> None:
         self.nb = pynetbox.api(api_url, token=token)
+        self.nb.http_session = _TimeoutSession()
         self.xlat = xlat
         self.parent_prefix_v4 = None
 
@@ -164,7 +176,6 @@ class NetboxIPAM(ParkerIPAM):
                     pubkey,
                 )
                 selected_concentrators = []
-            # We don't update "last_allocated_on" here to save a request. Instead require the caller to call update_prefix() later
 
         # No suitable candidate found, allocate a new prefix
         # TODO support "no-create" mode to only allow known nodes
@@ -216,120 +227,122 @@ class NetboxIPAM(ParkerIPAM):
 
         return prefix, selected_concentrators
 
-    # TODO consider caching to reduce load on NetBox? Would enough nodes be cached before mass reconnect events happen?
-    # Possibly only really affecting notorious unstable nodes that reconnect often
-    def get_or_allocate_prefix(
-        self,
-        pubkey: str,
-        ipv4: bool,
-        ipv6: bool,
-        ipv4_prefix_length: int = 22,
-        ipv6_prefix_length: int = 63,
-    ) -> tuple[IPv4Network | None, IPv6Network | None, list[str]]:
-        ipv6_prefix: pynetbox.models.ipam.Prefixes | None = None
-        ipv4_prefix: pynetbox.models.ipam.Prefixes | None = None
-        ipv6_selected_concentrators: list[str] = []
-        ipv4_selected_concentrators: list[str] = []
-        selected_concentrators: list[str] = []
+    def _entry(self, prefix: pynetbox.models.ipam.Prefixes) -> dict[str, Any]:
+        """Return the cache entry of a node prefix."""
+        desc = json.loads(prefix.description)
+        concentrators = desc.get("selected_concentrators", [])
+        try:
+            written = datetime.fromisoformat(desc["last_allocated_on"]).timestamp()
+        except (KeyError, TypeError, ValueError):
+            written = 0.0
+        return {
+            "prefix": str(prefix.prefix),
+            "concentrators": concentrators if isinstance(concentrators, list) else [],
+            "primary": desc.get("primary") is True,
+            "written": written,
+        }
 
-        if ipv6:
-            ipv6_prefix, ipv6_selected_concentrators = self._get_or_allocate_prefix(
-                pubkey,
-                addr_family=6,
-                prefix_length=ipv6_prefix_length,
-                additional_data=config.get_config().parker.prefixes.ipv6.netbox_additional_data,
-            )
-        if ipv4 and not self.xlat:
-            assert (
-                self.parent_prefix_v4 is not None
-            ), "464XLAT disabled but no parent IPv4 prefix loaded"
+    def lookup(self, pubkey: str) -> dict[str, Any] | None:
+        """Return the stored IPv6 entry of a node, or None. Does not allocate."""
+        prefix = self._deduplicate_prefixes(pubkey, 6)
+        return None if prefix is None else self._entry(prefix)
 
-            ipv4_prefix, ipv4_selected_concentrators = self._get_or_allocate_prefix(
-                pubkey,
-                addr_family=4,
-                prefix_length=ipv4_prefix_length,
-                additional_data=config.get_config().parker.prefixes.ipv4.netbox_additional_data,
-            )
-
-        if ipv6_selected_concentrators:
-            if (
-                ipv4_selected_concentrators
-                and ipv4_selected_concentrators != ipv6_selected_concentrators
-            ):
-                # The selected concentratos stored in the prefixes differ between the IPv6 and IPv4 prefix
-                # This is unwanted behaviour, log a warning. We'll prefer the value from the IPv6 prefix
-                logger.warning(
-                    "selected_concentrators differs between IPv6 and IPv4 prefix for pubkey %s: IPv6: %s, IPv4: %s",
-                    pubkey,
-                    ipv6_selected_concentrators,
-                    ipv4_selected_concentrators,
-                )
-            selected_concentrators = ipv6_selected_concentrators
-        elif ipv4_selected_concentrators:
-            selected_concentrators = ipv4_selected_concentrators
-
-        return (
-            IPv4Network(ipv4_prefix.prefix) if ipv4_prefix else None,
-            IPv6Network(ipv6_prefix.prefix) if ipv6_prefix else None,
-            selected_concentrators,
+    def allocate(self, pubkey: str, prefix_length: int) -> dict[str, Any] | None:
+        """Return the stored IPv6 entry of a node, or allocate a new prefix."""
+        prefix, _ = self._get_or_allocate_prefix(
+            pubkey,
+            6,
+            prefix_length,
+            config.get_config().parker.prefixes.ipv6.netbox_additional_data,
         )
+        return None if prefix is None else self._entry(prefix)
 
-    def release_prefix(self, pubkey: str) -> None:
-        raise NotImplementedError
+    def store(
+        self, pubkey: str, prefix: str, concentrators: list[str], primary: bool
+    ) -> str:
+        """Write the entry of a node to its prefix. The prefix can be a reserved one.
 
-    def _update_prefix(
-        self,
-        pubkey: str,
-        addr_family: int,
-        selected_concentrators: list[str],
-        primary: bool | None = None,
-    ) -> None:
-        prefix = self._deduplicate_prefixes(pubkey, addr_family)
+        Returns:
+            The prefix of the node after the removal of duplicates.
 
-        if prefix is not None:
-            desc = json.loads(prefix.description)
-            desc["last_allocated_on"] = datetime.now(tz=timezone.utc).isoformat(
-                timespec="seconds"
+        Raises:
+            ValueError: The prefix does not exist or belongs to another node.
+        """
+        found = list(
+            self.nb.ipam.prefixes.filter(
+                family=6, within=self.parent_prefix_v6.prefix, prefix=prefix
             )
-            desc["selected_concentrators"] = selected_concentrators
-            if primary is not None:
-                desc["primary"] = primary
+        )
+        if len(found) != 1:
+            raise ValueError(f"Prefix {prefix} of {pubkey} is not in NetBox")
+        record = found[0]
+        try:
+            desc = json.loads(record.description or "{}")
+        except json.JSONDecodeError:
+            desc = {}
+        if desc.get("pubkey", pubkey) != pubkey:
+            raise ValueError(f"Prefix {prefix} belongs to another node, not {pubkey}")
+        record.description = json.dumps(
+            {
+                "pubkey": pubkey,
+                "last_allocated_on": datetime.now(tz=timezone.utc).isoformat(
+                    timespec="seconds"
+                ),
+                "created_by": "wgkex",
+                "selected_concentrators": concentrators,
+                "primary": primary,
+            }
+        )
+        record.save()
+        canonical = self._deduplicate_prefixes(pubkey, 6, allocated_prefix=record)
+        return str(canonical.prefix if canonical is not None else prefix)
 
+    def dump(self, broker_id: str) -> tuple[dict[str, dict[str, Any]], list[str]]:
+        """Read all node prefixes in the parent prefix.
+
+        Returns:
+            Public key -> entry, and the free prefixes that this broker reserved.
+        """
+        found: dict[str, list[pynetbox.models.ipam.Prefixes]] = {}
+        reserved: list[str] = []
+        for prefix in self.nb.ipam.prefixes.filter(
+            family=6, within=self.parent_prefix_v6.prefix
+        ):
             try:
-                prefix.description = json.dumps(desc)
-                prefix.save()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "Could not update prefix information on %s, pubkey %s",
-                    prefix.prefix,
-                    pubkey,
-                    exc_info=e,
-                )
+                desc = json.loads(prefix.description or "")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(desc, dict):
+                continue
+            if desc.get("reserved_by") == broker_id:
+                reserved.append(str(prefix.prefix))
+            elif isinstance(desc.get("pubkey"), str):
+                found.setdefault(desc["pubkey"], []).append(prefix)
+        entries = {}
+        for pubkey, prefixes in found.items():
+            # Two brokers allocated for the same new node at the same time.
+            canonical = (
+                self._deduplicate_prefixes(pubkey, 6)
+                if len(prefixes) > 1
+                else prefixes[0]
+            )
+            if canonical is not None:
+                entries[pubkey] = self._entry(canonical)
+        return entries, reserved
 
-    def update_prefix(
-        self,
-        pubkey: str,
-        ipv4: bool,
-        ipv6: bool,
-        selected_concentrators: list[str],
-        primary: bool | None = None,
-    ) -> None:
-        if ipv4:
-            self._update_prefix(pubkey, 4, selected_concentrators)
-        if ipv6:
-            self._update_prefix(pubkey, 6, selected_concentrators, primary)
-
-    def is_primary(self, pubkey: str) -> bool:
-        return any(
-            json.loads(prefix.description).get("primary") is True
-            for prefix in self._get_prefixes(pubkey, 6)
-        )
-
-    def count_primary(self) -> int:
-        # _update_prefix writes the description with json.dumps, which gives
-        # '"primary": true'.
-        return self.nb.ipam.prefixes.count(
-            family=6,
-            within=self.parent_prefix_v6.prefix,
-            description__ic='"primary": true',
-        )
+    def reserve(self, broker_id: str, count: int, prefix_length: int) -> list[str]:
+        """Reserve free prefixes for this broker. It uses them when NetBox is down."""
+        description = json.dumps({"reserved_by": broker_id, "created_by": "wgkex"})
+        data = {
+            "prefix_length": prefix_length,
+            "description": description,
+            "mark_utilized": True,
+            **(config.get_config().parker.prefixes.ipv6.netbox_additional_data or {}),
+        }
+        created = self.parent_prefix_v6.available_prefixes.create([data] * count)
+        if not isinstance(created, list):
+            created = [created]
+        return [
+            str(item["prefix"] if isinstance(item, dict) else item.prefix)
+            for item in created
+        ]
