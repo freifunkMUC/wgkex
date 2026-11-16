@@ -19,7 +19,7 @@ from collections.abc import Callable
 
 from wgkex.common import logger
 from wgkex.config.config import Rebalancing
-from wgkex.worker.allowlist import is_allowlisted
+from wgkex.worker.allowlist import is_protected
 from wgkex.worker.netlink import WireGuardClient, get_connected_peers, link_handler
 from wgkex.worker.observability import EVICTIONS
 
@@ -72,7 +72,7 @@ class Rebalancer:
         evict: Function evicting a peer, defaults to removing it via netlink.
         connected_peers: Function returning connected peers for a WireGuard interface.
         protected: Function returning True for public keys which must never be evicted
-            (allowlisted keys).
+            (keys of gateways and allowlisted keys).
     """
 
     def __init__(
@@ -83,7 +83,7 @@ class Rebalancer:
         tracker: PeerAddTracker = peer_add_tracker,
         evict: Callable[[str, str], object] | None = None,
         connected_peers: Callable[[str], list[str]] = get_connected_peers,
-        protected: Callable[[str], bool] = is_allowlisted,
+        protected: Callable[[str], bool] = is_protected,
         clock: Callable[[], float] = time.monotonic,
         rng: random.Random | None = None,
     ) -> None:

@@ -29,6 +29,7 @@ from wgkex.common.mqtt import (
 )
 from wgkex.config.config import get_config
 from wgkex.worker import drain
+from wgkex.worker.gateway_keys import gateway_keys, is_gateway_key
 from wgkex.worker.msg_queue import PeerOp, q
 from wgkex.worker.netlink import (
     get_connected_peers_count,
@@ -40,6 +41,8 @@ _HOSTNAME = socket.gethostname()
 _METRICS_SEND_INTERVAL = 60
 _METRICS_SEND_INTERVAL_PARKER = 10
 _ANNOUNCE_RETRY_INTERVAL = 10
+# Worker data and status are retained, republish them so brokers that missed them recover
+_ANNOUNCE_REFRESH_INTERVAL = 300
 
 # Set when active rebalancing is enabled in the configuration
 _rebalancer: Rebalancer | None = None
@@ -101,6 +104,10 @@ def connect(exit_event: threading.Event) -> None:
             TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"),
             on_message_remove_peer,
         )
+        client.message_callback_add(
+            TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"),
+            on_message_worker_data,
+        )
 
     global _rebalancer
     if not parker_enabled and _rebalancing_enabled():
@@ -146,6 +153,10 @@ def connect(exit_event: threading.Event) -> None:
             ),
         ),
         daemon=True,
+    ).start()
+
+    threading.Thread(
+        target=republish_announcement_loop, args=(exit_event, client), daemon=True
     ).start()
 
     if parker_enabled:
@@ -270,6 +281,9 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         client.subscribe(
             TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"), qos=1
         )
+        # Retained data of all workers, their keys are protected from removal. Subscribe before publishing our own
+        # data, receiving it then means that the retained data of all other workers was received.
+        client.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"), qos=1)
 
     if _rebalancer is not None:
         client.subscribe(TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME))
@@ -449,10 +463,27 @@ def on_message_remove_peer(
     except ValueError as e:
         logger.error(f"Ignored invalid remove message on {message.topic}: {e}")
         return
+    if is_gateway_key(public_key):
+        logger.warning(
+            f"Ignored remove message for key {public_key} of a gateway on domain {domain}"
+        )
+        return
     logger.info(
         f"Received remove message for key {public_key} on domain {domain} adding to queue"
     )
     q.put(PeerOp(interface.removeprefix("wg-"), public_key, remove=True))
+
+
+def on_message_worker_data(
+    client: mqtt.Client, userdata: Any, message: mqtt.MQTTMessage
+) -> None:
+    """Learns the public keys of all workers, they are never removed by this worker."""
+    try:
+        _, worker, _, _ = message.topic.split("/", 3)
+    except ValueError:
+        logger.error(f"Ignored worker data on invalid topic {message.topic}")
+        return
+    gateway_keys.handle_worker_data(worker, message.payload, _HOSTNAME)
 
 
 def on_message_rebalance(
@@ -486,6 +517,24 @@ def on_message_parker(
         return
     # TODO: ensure payload is a dict mathing a TBD shared data class
     q.put(str(message.payload.decode("utf-8")))
+
+
+def republish_announcement_loop(
+    exit_event: threading.Event, client: mqtt.Client
+) -> None:
+    """Republishes worker data and status every _ANNOUNCE_REFRESH_INTERVAL seconds once the worker is announced.
+
+    A broker that subscribed before its MQTT node had synced the retained messages would otherwise never
+    learn about this worker.
+    """
+    while not exit_event.wait(_ANNOUNCE_REFRESH_INTERVAL):
+        if _published_status is None or not client.is_connected():
+            # Not announced yet (the announcement publishes it) or disconnected (messages would be lost)
+            continue
+        try:
+            publish_worker_data_and_status(client)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Exception during republish of worker data: {e}")
 
 
 def publish_metrics_loop(

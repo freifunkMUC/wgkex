@@ -4,6 +4,7 @@ import threading
 
 from wgkex.common.keylist import KeyList
 from wgkex.config import config
+from wgkex.worker.gateway_keys import is_gateway_key
 
 _lock = threading.Lock()
 _allowlist: KeyList | None = None
@@ -29,6 +30,11 @@ def get_allowlist() -> KeyList:
 
 def is_allowlisted(public_key: str) -> bool:
     return public_key in get_allowlist()
+
+
+def is_protected(public_key: str) -> bool:
+    """Whether wgkex must never remove the key: keys of gateways and allowlisted keys."""
+    return is_gateway_key(public_key) or is_allowlisted(public_key)
 
 
 def reset() -> None:

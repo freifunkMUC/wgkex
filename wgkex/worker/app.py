@@ -9,7 +9,8 @@ from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
 from wgkex.worker import drain, mqtt, observability
-from wgkex.worker.allowlist import is_allowlisted
+from wgkex.worker.allowlist import is_protected
+from wgkex.worker.gateway_keys import gateway_keys
 from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
 from wgkex.worker.rebalance import peer_add_tracker
@@ -39,13 +40,16 @@ def _parker_prefix_length() -> int:
     return config.get_config().parker.prefixes.ipv6.length
 
 
-def flush_workers(parker: bool, domain: str) -> None:
-    """Removes stale peers every peer_cleanup.interval seconds."""
+def flush_workers(
+    parker: bool, domain: str, exit_event: threading.Event | None = None
+) -> None:
+    """Removes stale peers every peer_cleanup.interval seconds, until exit_event is set."""
     cleanup_cfg = config.get_config().peer_cleanup
     wg_interface = "wg-nodes" if parker else f"wg-{domain}"
+    exit_event = exit_event or threading.Event()
 
     def keep(public_key: str) -> bool:
-        if is_allowlisted(public_key):
+        if is_protected(public_key):
             return True
         # Peers added by the key exchange may not have done their first handshake yet
         added_at = peer_add_tracker.added_at(wg_interface, public_key)
@@ -61,9 +65,16 @@ def flush_workers(parker: bool, domain: str) -> None:
             "parker_prefix_length": _parker_prefix_length(),
         }
 
-    while True:
+    while not exit_event.wait(cleanup_cfg.interval):
         try:
-            time.sleep(cleanup_cfg.interval)
+            # Parker uses wg-nodes, which has no static peers of other gateways.
+            if not parker and not gateway_keys.synced:
+                # Without the keys of the other gateways we could remove their static peers
+                logger.warning(
+                    "Skipping cleanup for %s: worker data of the gateways not received from MQTT yet",
+                    domain,
+                )
+                continue
             logger.info(f"Running cleanup task for {domain}")
             removed = wg_flush_stale_peers(
                 parker,

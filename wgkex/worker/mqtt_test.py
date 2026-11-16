@@ -89,6 +89,7 @@ class MQTTTest(unittest.TestCase):
                 mock.call().subscribe("wireguard/_ffmuc_domain.one/all", qos=1),
                 mock.call().subscribe(f"wireguard/_ffmuc_domain.one/{hostname}", qos=1),
                 mock.call().subscribe(f"wireguard-worker/{hostname}/+/remove", qos=1),
+                mock.call().subscribe("wireguard-worker/+/+/data", qos=1),
                 mock.call().publish(
                     f"wireguard-worker/{hostname}/_ffmuc_domain.one/data",
                     f'{{"ExternalAddress": "{hostname}", "Port": 51820, "PublicKey": "456asdf=", "LinkAddress": "fe80::1"}}',
@@ -223,6 +224,31 @@ class MQTTTest(unittest.TestCase):
             client.publish.assert_called_once()
             self.assertTrue(mqtt.publish_status(client, 1))
             client.publish.assert_called_with(topic, 1, qos=1, retain=True)
+
+    @mock.patch.object(mqtt, "publish_worker_data_and_status")
+    def test_republish_announcement_loop(self, publish_mock):
+        """Data and status are republished periodically, but only once announced and connected."""
+        client = mock.MagicMock()
+        client.is_connected.return_value = True
+        ee = threading.Event()
+        with mock.patch.object(mqtt, "_ANNOUNCE_REFRESH_INTERVAL", 0.01):
+            with mock.patch.object(mqtt, "_published_status", None):
+                t = threading.Thread(
+                    target=mqtt.republish_announcement_loop, args=(ee, client)
+                )
+                t.start()
+                sleep(0.1)
+                publish_mock.assert_not_called()
+            with mock.patch.object(mqtt, "_published_status", 1):
+                client.is_connected.return_value = False
+                sleep(0.1)
+                publish_mock.assert_not_called()
+                client.is_connected.return_value = True
+                sleep(0.1)
+                self.assertGreaterEqual(publish_mock.call_count, 1)
+            ee.set()
+            t.join(timeout=2)
+        self.assertFalse(t.is_alive())
 
     @mock.patch.object(mqtt, "_start_announce_retry")
     @mock.patch.object(mqtt, "get_config")
@@ -473,6 +499,37 @@ class MQTTTest(unittest.TestCase):
         self.assertEqual(mqtt.q.qsize(), 0)
 
     @mock.patch.object(mqtt, "get_config")
+    def test_on_message_remove_peer_ignores_gateway_keys(self, config_mock):
+        """Remove messages never remove the peer of another gateway."""
+        config_mock.return_value = _get_config_mock()
+        self.addCleanup(mqtt.gateway_keys.reset)
+        mqtt.gateway_keys.add("GW_KEY")
+        msg = mock.MagicMock()
+        msg.topic = f"wireguard-worker/{mqtt._HOSTNAME}/_ffmuc_domain1/remove"
+        msg.payload = b"GW_KEY"
+        mqtt.on_message_remove_peer(None, None, msg)
+        self.assertEqual(mqtt.q.qsize(), 0)
+
+    def test_on_message_worker_data(self):
+        """Worker data messages protect the keys, our own message marks them as complete."""
+        self.addCleanup(mqtt.gateway_keys.reset)
+        msg = mock.MagicMock()
+        msg.topic = "wireguard-worker/gw05/_ffmuc_domain1/data"
+        msg.payload = b'{"ExternalAddress": "gw05", "Port": 1, "PublicKey": "GW05=", "LinkAddress": "fe80::1"}'
+        mqtt.on_message_worker_data(None, None, msg)
+        self.assertIn("GW05=", mqtt.gateway_keys)
+        self.assertFalse(mqtt.gateway_keys.synced)
+        msg.topic = f"wireguard-worker/{mqtt._HOSTNAME}/_ffmuc_domain1/data"
+        msg.payload = b'{"PublicKey": "OWN="}'
+        mqtt.on_message_worker_data(None, None, msg)
+        self.assertTrue(mqtt.gateway_keys.synced)
+        # A deleted retained message (empty payload) does not forget the key
+        msg.topic = "wireguard-worker/gw05/_ffmuc_domain1/data"
+        msg.payload = b""
+        mqtt.on_message_worker_data(None, None, msg)
+        self.assertIn("GW05=", mqtt.gateway_keys)
+
+    @mock.patch.object(mqtt, "get_config")
     def test_on_connect_subscriptions(self, config_mock):
         """Workers subscribe to keys for all workers and for themselves, and to removals."""
         config_mock.return_value = _get_config_mock()
@@ -483,6 +540,7 @@ class MQTTTest(unittest.TestCase):
         self.assertIn("wireguard/_ffmuc_domain.one/all", topics)
         self.assertIn(f"wireguard/_ffmuc_domain.one/{mqtt._HOSTNAME}", topics)
         self.assertIn(f"wireguard-worker/{mqtt._HOSTNAME}/+/remove", topics)
+        self.assertIn("wireguard-worker/+/+/data", topics)
         self.assertNotIn("wireguard/_ffmuc_domain.one/+", topics)
 
     @mock.patch.object(mqtt.threading, "Thread")
@@ -515,8 +573,8 @@ class MQTTTest(unittest.TestCase):
         client.message_callback_add.assert_called_once_with(
             "parker/wireguard/+", mqtt.on_message_parker
         )
-        # mark offline on exit, drain watcher, metrics
-        self.assertEqual(thread.call_count, 3)
+        # mark offline on exit, drain watcher, announcement republish, metrics
+        self.assertEqual(thread.call_count, 4)
         client.loop_forever.assert_called_once()
 
     @mock.patch.object(mqtt, "get_config")
