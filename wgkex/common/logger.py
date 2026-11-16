@@ -8,7 +8,11 @@ __all__ = ["critical", "debug", "error", "info", "warning"]
 
 import yaml
 
-from wgkex.config.config import WG_CONFIG_DEFAULT_LOCATION, WG_CONFIG_OS_ENV
+from wgkex.config.config import (
+    WG_CONFIG_DEFAULT_LOCATION,
+    WG_CONFIG_OS_ENV,
+    apply_env_overrides,
+)
 
 _LOGGING_DEFAULT_CONFIG = {
     "version": 1,
@@ -47,6 +51,10 @@ def fetch_logging_configuration(config_file: str | None = None) -> dict[str, Any
             raw = yaml.safe_load(cfg_file)
     if not isinstance(raw, dict):
         raw = {}
+    try:
+        raw = apply_env_overrides(raw)
+    except ValueError:
+        pass  # get_config() reports the error and exits.
     logging_cfg = copy.deepcopy(raw.get("logging_config") or _LOGGING_DEFAULT_CONFIG)
     log_level = raw.get("log_level")
     if log_level:
