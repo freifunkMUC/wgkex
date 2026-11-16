@@ -22,6 +22,7 @@ from wgkex.common.mqtt import (
     TOPIC_WORKER_WG_DATA,
     WG_KEY_ALL_WORKERS,
 )
+from wgkex.common.subscriptions import SubscriptionGuard
 from wgkex.config.config import get_config
 from wgkex.worker import drain
 from wgkex.worker.gateway_keys import gateway_keys, is_gateway_key
@@ -40,6 +41,7 @@ _ANNOUNCE_REFRESH_INTERVAL = 300
 
 # Set when active rebalancing is enabled in the configuration
 _rebalancer: Rebalancer | None = None
+_subscriptions = SubscriptionGuard()
 _announce_retry_lock = threading.Lock()
 _announce_retry_running = False
 # Status last published while the worker was ready (None while not announced)
@@ -73,6 +75,7 @@ def connect(exit_event: threading.Event) -> None:
     # Register handlers
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
+    client.on_subscribe = _subscriptions.on_subscribe
     client.on_message = on_message
     client.message_callback_add("wireguard/#", on_message_wireguard)
     client.message_callback_add(
@@ -194,16 +197,20 @@ def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
         for worker in (WG_KEY_ALL_WORKERS, _HOSTNAME):
             topic = TOPIC_WG_KEY.format(domain=domain, worker=worker)
             logger.info(f"Subscribing to topic {topic}")
-            client.subscribe(topic, qos=1)
-    client.subscribe(
-        TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"), qos=1
+            _subscriptions.subscribe(client, topic, qos=1)
+    _subscriptions.subscribe(
+        client, TOPIC_WORKER_REMOVE_PEER.format(worker=_HOSTNAME, domain="+"), qos=1
     )
     # Retained data of all workers, their keys are protected from removal. Subscribe before publishing our own data,
     # receiving it then means that the retained data of all other workers was received.
-    client.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"), qos=1)
+    _subscriptions.subscribe(
+        client, TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"), qos=1
+    )
 
     if _rebalancer is not None:
-        client.subscribe(TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME))
+        _subscriptions.subscribe(
+            client, TOPIC_WORKER_REBALANCE.format(worker=_HOSTNAME)
+        )
 
     # Only mark the worker as online once the data of all WireGuard interfaces could be published,
     # otherwise the broker would send clients to interfaces which are not ready yet (e.g. during boot).

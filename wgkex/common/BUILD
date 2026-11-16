@@ -46,6 +46,24 @@ py_library(
 )
 
 py_library(
+    name = "subscriptions",
+    srcs = ["subscriptions.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+    ],
+)
+
+py_test(
+    name = "subscriptions_test",
+    srcs = ["subscriptions_test.py"],
+    deps = [
+       "//wgkex/common:subscriptions",
+    ],
+    size="small",
+)
+
+py_library(
     name = "keylist",
     srcs = ["keylist.py"],
     visibility = ["//visibility:public"],
