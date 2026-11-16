@@ -127,6 +127,31 @@ class MQTTTest(unittest.TestCase):
             self.assertTrue(mqtt.publish_status(client, 1))
             client.publish.assert_called_with(topic, 1, qos=1, retain=True)
 
+    @mock.patch.object(mqtt, "publish_worker_data_and_status")
+    def test_republish_announcement_loop(self, publish_mock):
+        """Data and status are republished periodically, but only once announced and connected."""
+        client = mock.MagicMock()
+        client.is_connected.return_value = True
+        ee = threading.Event()
+        with mock.patch.object(mqtt, "_ANNOUNCE_REFRESH_INTERVAL", 0.01):
+            with mock.patch.object(mqtt, "_published_status", None):
+                t = threading.Thread(
+                    target=mqtt.republish_announcement_loop, args=(ee, client)
+                )
+                t.start()
+                sleep(0.1)
+                publish_mock.assert_not_called()
+            with mock.patch.object(mqtt, "_published_status", 1):
+                client.is_connected.return_value = False
+                sleep(0.1)
+                publish_mock.assert_not_called()
+                client.is_connected.return_value = True
+                sleep(0.1)
+                self.assertGreaterEqual(publish_mock.call_count, 1)
+            ee.set()
+            t.join(timeout=2)
+        self.assertFalse(t.is_alive())
+
     @mock.patch.object(mqtt, "_start_announce_retry")
     @mock.patch.object(mqtt, "get_config")
     @mock.patch.object(mqtt, "get_device_data")

@@ -35,6 +35,8 @@ from wgkex.worker.rebalance import Rebalancer
 _HOSTNAME = socket.gethostname()
 _METRICS_SEND_INTERVAL = 60
 _ANNOUNCE_RETRY_INTERVAL = 10
+# Worker data and status are retained, republish them so brokers that missed them recover
+_ANNOUNCE_REFRESH_INTERVAL = 300
 
 # Set when active rebalancing is enabled in the configuration
 _rebalancer: Rebalancer | None = None
@@ -126,6 +128,10 @@ def connect(exit_event: threading.Event) -> None:
             ),
         ),
         daemon=True,
+    ).start()
+
+    threading.Thread(
+        target=republish_announcement_loop, args=(exit_event, client), daemon=True
     ).start()
 
     for domain in domains:
@@ -403,6 +409,24 @@ def on_message_rebalance(
     """Passes rebalancing hints from the broker to the rebalancer."""
     if _rebalancer is not None:
         _rebalancer.handle_instruction(message.payload)
+
+
+def republish_announcement_loop(
+    exit_event: threading.Event, client: mqtt.Client
+) -> None:
+    """Republishes worker data and status every _ANNOUNCE_REFRESH_INTERVAL seconds once the worker is announced.
+
+    A broker that subscribed before its MQTT node had synced the retained messages would otherwise never
+    learn about this worker.
+    """
+    while not exit_event.wait(_ANNOUNCE_REFRESH_INTERVAL):
+        if _published_status is None or not client.is_connected():
+            # Not announced yet (the announcement publishes it) or disconnected (messages would be lost)
+            continue
+        try:
+            publish_worker_data_and_status(client)
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"Exception during republish of worker data: {e}")
 
 
 def publish_metrics_loop(
