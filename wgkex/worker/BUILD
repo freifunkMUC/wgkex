@@ -21,14 +21,33 @@ py_library(
     srcs = ["netlink.py"],
     visibility = ["//visibility:public"],
     deps = [
-       requirement("NetLink"),
        requirement("paho-mqtt"),
        requirement("pyroute2"),
        "//wgkex/common:utils",
        "//wgkex/common:logger",
        "//wgkex/config:config",
+       ":observability",
        ":peer_state",
     ],
+)
+
+py_library(
+    name = "observability",
+    srcs = ["observability.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       requirement("prometheus-client"),
+       "//wgkex/common:logger",
+    ],
+)
+
+py_test(
+    name = "observability_test",
+    srcs = ["observability_test.py"],
+    deps = [
+       ":observability",
+    ],
+    size="small",
 )
 
 
@@ -37,7 +56,17 @@ py_test(
     srcs = ["netlink_test.py"],
     deps = [
        "//wgkex/worker:netlink",
-       requirement("mock"),
+       requirement("pyroute2"),
+    ],
+    size="small",
+)
+
+py_test(
+    name = "parker_netlink_test",
+    srcs = ["parker_netlink_test.py"],
+    deps = [
+       "//wgkex/worker:netlink",
+       "//wgkex/worker:peer_state",
        requirement("pyroute2"),
     ],
     size="small",
@@ -48,17 +77,38 @@ py_library(
     srcs = ["mqtt.py"],
     visibility = ["//visibility:public"],
     deps = [
-       requirement("NetLink"),
        requirement("paho-mqtt"),
        requirement("pyroute2"),
        "//wgkex/common:logger",
        "//wgkex/common:mqtt",
        "//wgkex/common:utils",
        "//wgkex/config:config",
+       ":drain",
+       ":gateway_keys",
        ":msg_queue",
        ":netlink",
+       ":rebalance",
        ":peer_state",
     ],
+)
+
+py_library(
+    name = "drain",
+    srcs = ["drain.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+       "//wgkex/common:mqtt",
+    ],
+)
+
+py_test(
+    name = "drain_test",
+    srcs = ["drain_test.py"],
+    deps = [
+       ":drain",
+    ],
+    size="small",
 )
 
 py_test(
@@ -67,7 +117,6 @@ py_test(
     deps = [
        "//wgkex/worker:mqtt",
        "//wgkex/worker:msg_queue",
-       requirement("mock"),
     ],
     size="small",
 )
@@ -76,8 +125,13 @@ py_binary(
     name = "app",
     srcs = ["app.py"],
     deps = [
+       ":allowlist",
+       ":drain",
+       ":gateway_keys",
        ":mqtt",
        ":msg_queue",
+       ":observability",
+       ":rebalance",
        ":peer_state",
        "//wgkex/config:config",
        "//wgkex/common:logger",
@@ -88,9 +142,9 @@ py_test(
     name = "app_test",
     srcs = ["app_test.py"],
     deps = [
+       "//wgkex/config:config",
        "//wgkex/worker:app",
        "//wgkex/worker:msg_queue",
-       requirement("mock"),
     ],
     size="small",
 )
@@ -102,6 +156,8 @@ py_library(
     deps = [
        "//wgkex/common:logger",
        ":netlink",
+       ":observability",
+       ":rebalance",
        ":peer_state",
     ],
 )
@@ -110,10 +166,73 @@ py_test(
     name = "msg_queue_test",
     srcs = ["msg_queue_test.py"],
     deps = [
-       ":msg_queue",
+       "//wgkex/worker:msg_queue",
+       "//wgkex/worker:netlink",
+       "//wgkex/worker:peer_state",
+    ],
+    size="small",
+)
+
+py_library(
+    name = "rebalance",
+    srcs = ["rebalance.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+       "//wgkex/config:config",
+       ":allowlist",
        ":netlink",
-       ":peer_state",
-       requirement("mock"),
+       ":observability",
+    ],
+)
+
+py_test(
+    name = "rebalance_test",
+    srcs = ["rebalance_test.py"],
+    deps = [
+       "//wgkex/config:config",
+       "//wgkex/worker:rebalance",
+    ],
+    size="small",
+)
+
+py_library(
+    name = "allowlist",
+    srcs = ["allowlist.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:keylist",
+       "//wgkex/config:config",
+       ":gateway_keys",
+    ],
+)
+
+py_test(
+    name = "allowlist_test",
+    srcs = ["allowlist_test.py"],
+    deps = [
+       "//wgkex/config:config",
+       "//wgkex/worker:allowlist",
+       "//wgkex/worker:gateway_keys",
+       "//wgkex/worker:rebalance",
+    ],
+    size="small",
+)
+
+py_library(
+    name = "gateway_keys",
+    srcs = ["gateway_keys.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+    ],
+)
+
+py_test(
+    name = "gateway_keys_test",
+    srcs = ["gateway_keys_test.py"],
+    deps = [
+       ":gateway_keys",
     ],
     size="small",
 )

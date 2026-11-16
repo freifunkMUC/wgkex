@@ -1,9 +1,10 @@
 import importlib
 import ipaddress
 import json
-import mock
 import sys
 import unittest
+from unittest import mock
+
 import paho.mqtt.client
 
 from wgkex.config import config
@@ -292,32 +293,18 @@ class TestParker(unittest.TestCase):
             )
 
         expected_subscriptions = {
-            MQTTTopics.TOPIC_CONNECTED_PEERS.format(worker="+", domain="+"),
+            "wireguard-metrics/#",
             MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"),
             MQTTTopics.TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"),
-            MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(broker="+"),
             MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"),
             MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"),
             MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"),
-            MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(broker="+"),
         }
         self.assertEqual(
             {call.args[0] for call in mqtt.subscribe.call_args_list},
             expected_subscriptions,
         )
-        legacy_topic = MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(
-            broker=broker_app._HOSTNAME
-        )
-        parker_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
-            broker=broker_app._HOSTNAME
-        )
-        mqtt.publish.assert_has_calls(
-            [
-                mock.call(legacy_topic, 1, qos=1, retain=True),
-                mock.call(parker_topic, 1, qos=1, retain=True),
-            ]
-        )
-        self.assertEqual(broker_app.app.config["MQTT_LAST_WILL_TOPIC"], legacy_topic)
+        mqtt.publish.assert_not_called()
 
     def test_parker_mqtt_handlers(self):
         # Import app after config is set
@@ -333,80 +320,11 @@ class TestParker(unittest.TestCase):
             "PublicKey": "K==",
         }
         msg = paho.mqtt.client.MQTTMessage()
-        msg.topic = "parker/wireguard-worker/worker1/data".encode("utf-8")
+        msg.topic = b"parker/wireguard-worker/worker1/data"
         msg.payload = json.dumps(payload).encode("utf-8")
         broker_app.handle_mqtt_message_parker_data(None, None, msg)
         self.assertIn("worker1", broker_app.parker_worker_data)
         self.assertEqual(broker_app.parker_worker_data["worker1"], payload)
-
-        # Test parker broker announce handler
-        broker_app.parker_active_brokers.clear()
-        msg.topic = "parker/wireguard-broker/broker1/status".encode("utf-8")
-        msg.payload = b"1"
-        broker_app.handle_mqtt_message_parker_broker_status(None, None, msg)
-        self.assertIn("broker1", broker_app.parker_active_brokers)
-
-        msg.payload = b"0"
-        broker_app.handle_mqtt_message_parker_broker_status(None, None, msg)
-        self.assertNotIn("broker1", broker_app.parker_active_brokers)
-
-        broker_app.active_brokers.clear()
-        broker_app.parker_active_brokers.clear()
-        msg.topic = "wireguard-broker/broker1/status".encode("utf-8")
-        msg.payload = b"1"
-        broker_app.handle_mqtt_message_broker_status(None, None, msg)
-        self.assertIn("broker1", broker_app.active_brokers)
-        self.assertNotIn("broker1", broker_app.parker_active_brokers)
-        broker_app.parker_active_brokers.add("broker1")
-        msg.payload = b"0"
-        broker_app.handle_mqtt_message_broker_status(None, None, msg)
-        self.assertNotIn("broker1", broker_app.active_brokers)
-        self.assertNotIn("broker1", broker_app.parker_active_brokers)
-
-    def test_parker_shutdown_clears_legacy_and_alias_status(self):
-        from wgkex.broker import app as broker_app
-        from wgkex.common.mqtt import MQTTTopics
-
-        legacy_topic = MQTTTopics.TOPIC_BROKER_ANNOUNCE.format(
-            broker=broker_app._HOSTNAME
-        )
-        parker_topic = MQTTTopics.TOPIC_PARKER_BROKER_ANNOUNCE.format(
-            broker=broker_app._HOSTNAME
-        )
-        with (
-            mock.patch.object(broker_app, "mqtt") as mqtt,
-            mock.patch.object(broker_app.time, "sleep") as sleep,
-            mock.patch.object(broker_app.sys, "exit") as exit_process,
-        ):
-            broker_app._publish_offline_and_exit(None, None)
-
-        mqtt.publish.assert_has_calls(
-            [
-                mock.call(legacy_topic, 0, qos=1, retain=True),
-                mock.call(parker_topic, b"", qos=1, retain=True),
-                mock.call(parker_topic, 0, qos=1, retain=False),
-            ]
-        )
-        sleep.assert_called_once_with(2)
-        exit_process.assert_called_once_with(0)
-
-    def test_get_active_brokers_count(self):
-        from wgkex.broker import app as broker_app
-
-        broker_app.active_brokers.clear()
-        broker_app.parker_active_brokers.clear()
-        # Test that count never goes below 1
-        self.assertEqual(broker_app.get_active_brokers_count(parker=False), 1)
-        self.assertEqual(broker_app.get_active_brokers_count(parker=True), 1)
-
-        broker_app.active_brokers.add("a")
-        self.assertEqual(broker_app.get_active_brokers_count(parker=False), 1)
-        broker_app.active_brokers.add("b")
-        self.assertEqual(broker_app.get_active_brokers_count(parker=False), 2)
-        broker_app.parker_active_brokers.update(("a", "not-active"))
-        self.assertEqual(broker_app.get_active_brokers_count(parker=True), 1)
-        broker_app.parker_active_brokers.add("b")
-        self.assertEqual(broker_app.get_active_brokers_count(parker=True), 2)
 
     def test_ipam_loaded(self):
         from wgkex.broker import app as broker_app
@@ -424,7 +342,7 @@ class TestParker(unittest.TestCase):
             pass
 
         msg = paho.mqtt.client.MQTTMessage()
-        msg.topic = "parker/wireguard-metrics/workerX/connected_peers".encode("utf-8")
+        msg.topic = b"parker/wireguard-metrics/workerX/connected_peers"
         msg.payload = b"5"
         broker_app.handle_mqtt_message_parker_metrics(None, None, msg)
         self.assertEqual(

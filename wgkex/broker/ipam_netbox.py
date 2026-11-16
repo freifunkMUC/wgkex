@@ -2,7 +2,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from ipaddress import IPv4Network, IPv6Network
-from typing import Any, List, Optional, Tuple
+from typing import Any
 
 import pynetbox
 import pynetbox.core.query
@@ -16,7 +16,7 @@ from wgkex.config import config
 class NetboxIPAM(ParkerIPAM):
     nb: pynetbox.api
     xlat: bool
-    parent_prefix_v4: Optional[pynetbox.models.ipam.Prefixes]
+    parent_prefix_v4: pynetbox.models.ipam.Prefixes | None
     parent_prefix_v6: pynetbox.models.ipam.Prefixes
 
     def __init__(self, api_url, token, xlat: bool = False) -> None:
@@ -67,7 +67,7 @@ class NetboxIPAM(ParkerIPAM):
         self,
         pubkey: str,
         addr_family: int,
-    ) -> List[pynetbox.models.ipam.Prefixes]:
+    ) -> list[pynetbox.models.ipam.Prefixes]:
         # https://netboxlabs.com/docs/netbox/reference/filtering/#string-fields
         candidate_prefixes = self.nb.ipam.prefixes.filter(
             family=addr_family,
@@ -94,7 +94,7 @@ class NetboxIPAM(ParkerIPAM):
         return matching_prefixes
 
     @staticmethod
-    def _prefix_sort_key(prefix: pynetbox.models.ipam.Prefixes) -> Tuple[int, str]:
+    def _prefix_sort_key(prefix: pynetbox.models.ipam.Prefixes) -> tuple[int, str]:
         prefix_id = getattr(prefix, "id", None)
         return (
             int(prefix_id) if prefix_id is not None else sys.maxsize,
@@ -105,8 +105,8 @@ class NetboxIPAM(ParkerIPAM):
         self,
         pubkey: str,
         addr_family: int,
-        allocated_prefix: Optional[pynetbox.models.ipam.Prefixes] = None,
-    ) -> Optional[pynetbox.models.ipam.Prefixes]:
+        allocated_prefix: pynetbox.models.ipam.Prefixes | None = None,
+    ) -> pynetbox.models.ipam.Prefixes | None:
         candidates = self._get_prefixes(pubkey, addr_family)
         if allocated_prefix is not None and not any(
             getattr(candidate, "id", None) == getattr(allocated_prefix, "id", None)
@@ -141,10 +141,10 @@ class NetboxIPAM(ParkerIPAM):
         pubkey: str,
         addr_family: int,
         prefix_length: int,
-        additional_data: Optional[dict[str, Any]],
-    ) -> Tuple[Optional[pynetbox.models.ipam.Prefixes], List[str]]:
-        prefix: Optional[pynetbox.models.ipam.Prefixes] = None
-        selected_concentrators: List[str] = []
+        additional_data: dict[str, Any] | None,
+    ) -> tuple[pynetbox.models.ipam.Prefixes | None, list[str]]:
+        prefix: pynetbox.models.ipam.Prefixes | None = None
+        selected_concentrators: list[str] = []
 
         prefix = self._deduplicate_prefixes(pubkey, addr_family)
 
@@ -152,7 +152,7 @@ class NetboxIPAM(ParkerIPAM):
             desc = json.loads(prefix.description)
 
             selected_concentrators = desc.get("selected_concentrators", None)
-            if not isinstance(selected_concentrators, List):
+            if not isinstance(selected_concentrators, list):
                 logger.warning(
                     "Ignoring invalid selected_concentrators for prefix %s pubkey %s: not a list",
                     prefix.prefix,
@@ -220,12 +220,12 @@ class NetboxIPAM(ParkerIPAM):
         ipv6: bool,
         ipv4_prefix_length: int = 22,
         ipv6_prefix_length: int = 63,
-    ) -> Tuple[Optional[IPv4Network], Optional[IPv6Network], List[str]]:
-        ipv6_prefix: Optional[pynetbox.models.ipam.Prefixes] = None
-        ipv4_prefix: Optional[pynetbox.models.ipam.Prefixes] = None
-        ipv6_selected_concentrators: List[str] = []
-        ipv4_selected_concentrators: List[str] = []
-        selected_concentrators: List[str] = []
+    ) -> tuple[IPv4Network | None, IPv6Network | None, list[str]]:
+        ipv6_prefix: pynetbox.models.ipam.Prefixes | None = None
+        ipv4_prefix: pynetbox.models.ipam.Prefixes | None = None
+        ipv6_selected_concentrators: list[str] = []
+        ipv4_selected_concentrators: list[str] = []
+        selected_concentrators: list[str] = []
 
         if ipv6:
             ipv6_prefix, ipv6_selected_concentrators = self._get_or_allocate_prefix(
@@ -273,7 +273,7 @@ class NetboxIPAM(ParkerIPAM):
         raise NotImplementedError
 
     def _update_prefix(
-        self, pubkey: str, addr_family: int, selected_concentrators: List[str]
+        self, pubkey: str, addr_family: int, selected_concentrators: list[str]
     ) -> None:
         prefix = self._deduplicate_prefixes(pubkey, addr_family)
 
@@ -287,7 +287,7 @@ class NetboxIPAM(ParkerIPAM):
             try:
                 prefix.description = json.dumps(desc)
                 prefix.save()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(
                     "Could not update prefix information on %s, pubkey %s",
                     prefix.prefix,
@@ -296,7 +296,7 @@ class NetboxIPAM(ParkerIPAM):
                 )
 
     def update_prefix(
-        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: List[str]
+        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: list[str]
     ) -> None:
         if ipv4:
             self._update_prefix(pubkey, 4, selected_concentrators)

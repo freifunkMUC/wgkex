@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from ipaddress import IPv4Network, IPv6Network
-from typing import List, Optional, Tuple
 
 
 class ParkerIPAM(ABC):
@@ -13,7 +12,7 @@ class ParkerIPAM(ABC):
         ipv6: bool,
         ipv4_prefix_length: int = 22,
         ipv6_prefix_length: int = 63,
-    ) -> Tuple[Optional[IPv4Network], Optional[IPv6Network], List[str]]:
+    ) -> tuple[IPv4Network | None, IPv6Network | None, list[str]]:
         """
         Fetch existing prefixes of allocate new ones for this pubkey.
         Does not ensure the prefix lengths of existing prefixes match the requested lengths.
@@ -38,7 +37,7 @@ class ParkerIPAM(ABC):
 
     @abstractmethod
     def update_prefix(
-        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: List[str]
+        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: list[str]
     ) -> None:
         """Release any previously allocated IP prefix."""
         raise NotImplementedError

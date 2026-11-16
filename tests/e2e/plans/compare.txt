@@ -1,0 +1,13 @@
+# run-name  source  scenario-args...   (see scenario.py --help; times in seconds)
+# Compares two wgkex trees: src/pre (before the change under test) and src/main.
+# Baselines: key herd at bring-up, steady state, BUM replication (main: targeted vs all publishing)
+pre-baseline             pre      --scenario baseline --steady 600
+main-baseline            main     --scenario baseline --steady 600
+main-baseline-all        main     --scenario baseline --steady 600 --config-overlay overlays/publish-all.yaml
+# Hard reboot of gw1 (weight 30) for 2 minutes, rebalancing off and on
+pre-reboot-off           pre      --scenario reboot --rebalancing off --observe 1200
+pre-reboot-on            pre      --scenario reboot --rebalancing on --observe 3000
+main-reboot-off          main     --scenario reboot --rebalancing off --observe 1200
+main-reboot-on           main     --scenario reboot --rebalancing on --observe 3000
+# Drain gw1 (SIGUSR1, default drain_rate 0.1), planned reboot after 20 min
+main-drain-reboot        main     --scenario drain-reboot --rebalancing on --drain-wait 1200 --observe 1800

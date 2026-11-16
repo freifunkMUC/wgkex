@@ -1,6 +1,6 @@
 import dataclasses
 import ipaddress
-from typing import Any, Dict, List
+from typing import Any
 
 from wgkex.common.utils import is_valid_wg_pubkey
 from wgkex.config import config
@@ -80,7 +80,7 @@ class ParkerResponse:
     time: int
     id: str
     mtu: int
-    concentrators: List[Dict[str, str | int]]
+    concentrators: list[dict[str, str | int]]
     range6: str
     address6: str
     xlat_range6: str

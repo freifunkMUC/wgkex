@@ -13,7 +13,12 @@ domain_prefixes:
   - ffmuc_
   - ffdon_
   - ffwert_
-# [broker] The dict of workers mapping their hostname to their respective weight (for weighted peer distribution) and PoP (for multi-tunnel support, esp. in Parker)
+# [broker] The dict of workers mapping their hostname to their respective weight for weighted peer distribution.
+# Workers missing here get the average configured weight (and a warning is logged).
+# Optional: a location per worker, preferred for clients sending the same "location" in their
+# /api/v2 request (see load_balancing.location_tolerance).
+# Optional: a PoP (Point of Presence) per worker for Parker multi-tunnel support: /api/v3 clients
+# get one worker per PoP.
 workers:
   gw04.in.ffmuc.net:
     # A unique, static ID for this worker. In Parker mode it is the concentrator ID sent to
@@ -21,6 +26,7 @@ workers:
     # If omitted it defaults to the position in this map.
     id: 1
     weight: 30
+    location: muc
     pop: vie01
     # In Parker mode: the hostname handed to nodes as the concentrator endpoint,
     # instead of the address this worker announces over MQTT. The port is kept.
@@ -44,20 +50,121 @@ workers:
 # a requesting client who is currently connected to 'Worker A' will get redirected to a new worker with lower peer count.
 # 10% * 150 = 15 -> (170-150) > 15
 sticky_worker_tolerance: 15
+# [broker, worker] Optional: load balancing of peers across the workers. All values below are the defaults.
+load_balancing:
+  # [broker] Seconds a peer assigned via /api/v2 counts towards the load of the chosen worker
+  # until it shows up in the connected peers metric reported by that worker
+  pending_assignment_ttl: 300
+  # [broker] Minimum seconds an assignment is kept before a metric update may supersede it
+  pending_assignment_settle_time: 60
+  # [broker] Seconds without a connected peers metric (workers send it every 60s) after which
+  # a worker is treated as offline for that domain. 0 disables the check.
+  metrics_max_age: 180
+  # [broker] Publish keys received via /api/v2 only to the chosen worker (wireguard/{domain}/{worker})
+  # instead of all workers, and ask the previous worker of a key to remove the peer when the key
+  # moves to another worker. Keys received via /api/v1 are always published to all workers.
+  targeted_publish: true
+  # [broker] Seconds / number of keys for which the last assignment of a key is remembered
+  previous_assignment_ttl: 21600
+  previous_assignment_max_entries: 100000
+  # [broker] Workers in the location requested by a client are preferred while their effective peers
+  # stay within target + max(location_min_excess_peers, location_tolerance * target). Otherwise (and
+  # for clients without or with an unknown location) the normal selection is used. Should not be
+  # larger than rebalancing.tolerance, or rebalancing would move these peers away again.
+  location_tolerance: 0.1
+  location_min_excess_peers: 10
+  # [broker] For multiple broker instances: share assignments via MQTT
+  # (wireguard-broker/{broker_id}/assignment) so each broker counts the others' pending assignments.
+  share_pending_assignments: false
+  # [broker] Unique id of this broker instance, defaults to the hostname plus a random suffix
+  # broker_id: broker1
+  # Active rebalancing: overloaded workers slowly evict peers so they reconnect to underloaded workers,
+  # e.g. after a gateway reboot. Must be enabled on the broker and on the workers to have any effect.
+  rebalancing:
+    # [broker, worker]
+    enabled: false
+    # [broker, worker] Seconds between rebalancing rounds
+    interval: 60
+    # [broker] Relative excess over the weighted target that is tolerated without rebalancing
+    tolerance: 0.1
+    # [broker] Absolute excess (in peers) that is tolerated without rebalancing
+    min_excess_peers: 10
+    # [broker] Seconds the set of online workers must be unchanged before rebalancing starts
+    stable_time: 600
+    # [worker] Maximum share of the connected peers evicted per interval (at least 1 peer)
+    max_evictions_ratio: 0.01
+    # [worker] Seconds before the same peer may be evicted again
+    eviction_cooldown: 3600
+    # [broker] Share of its peers a draining worker is asked to evict per interval (see "Planned reboot")
+    drain_rate: 0.1
+# [worker] Optional: removal of peers without recent handshake. All values below are the defaults
+# and must be positive. The section was called "cleanup" in early Parker versions, which is still
+# accepted (with legacy_stale_timeout as stale_timeout); peer_cleanup takes precedence.
+peer_cleanup:
+  # Seconds without a handshake after which a (non-Parker) peer is removed
+  stale_timeout: 1800
+  # Seconds between two cleanup runs
+  interval: 300
+  # Parker: a peer with an earlier last handshake is stale. The default allows multiple 120s
+  # config retries and the 180s WireGuard tunnel timeout.
+  parker_stale_timeout: 300
+  # Parker: never-handshaked peers are retained this long after provisioning or worker startup,
+  # then treated as abandoned.
+  initial_handshake_grace: 600
+# [worker] Optional: drain mode for planned maintenance. Draining is also started with SIGUSR1
+# and stopped with SIGUSR2. The worker is draining while the file exists, use a non-persistent
+# location (e.g. /run) so that it does not stay draining after the reboot.
+drain:
+  file: /run/wgkex/drain
+  # Seconds between checks of the file
+  check_interval: 5
+# [broker, worker] Optional: Prometheus metrics
+metrics:
+  # [broker] Serve metrics at /metrics on the broker_listen address (default true)
+  broker_endpoint: true
+  # [worker] Port of an HTTP listener for worker metrics, disabled if unset (default)
+  # worker_port: 9101
+  # [worker] Address the worker metrics listener binds to (default 0.0.0.0)
+  worker_host: 0.0.0.0
+# [broker] Optional: rate limiting of the key exchange endpoints. All values below are the defaults,
+# 0 disables a limit. Limited requests still get the normal response (so clients never fall back to
+# /api/v1), but the key is not published again; /api/v2 answers with the worker the key was already
+# assigned to.
+rate_limit:
+  # Token bucket per client address (IPv6 per prefix of ipv6_prefix_length)
+  per_client_requests: 30
+  per_client_period: 60
+  # Token bucket over all clients
+  global_requests: 6000
+  global_period: 60
+  ipv6_prefix_length: 64
+  max_tracked_clients: 100000
+# [broker] Optional: client address handling
+broker:
+  # Reverse proxies whose X-Forwarded-For header is trusted for the client address (used by the rate
+  # limiter and log_client_ip). The header can be spoofed by anyone, so it is ignored by default (0)
+  # and the TCP peer address is used. Either the number of proxies every request passes through
+  # (only safe if the broker can't be reached directly), or a list of proxy addresses/networks which
+  # the TCP peer must be in; the header is then evaluated from the right, skipping trusted proxies.
+  trusted_proxies: 0
+  # trusted_proxies: ["127.0.0.1/32", "::1/128"]
+  # Log the client address with domain and key of every key exchange request at INFO level
+  log_client_ip: false
+# [broker, worker] Optional: key block- and allowlists. Files contain one key per line ('#' starts a
+# comment) and are reloaded within reload_interval seconds after being modified. If a file is deleted
+# or unreadable, its previous keys stay active: empty it instead.
+key_lists:
+  # [broker] Rejected by the key exchange (HTTP 403) and never published. Keys newly added to the
+  # file are also removed from all workers.
+  blocklist: []
+  # blocklist_file: /etc/wgkex/blocklist
+  # [worker] Never removed by the stale peer cleanup or evicted by rebalancing/draining. Keys of
+  # wgkex gateways are protected automatically, do not add them here.
+  allowlist: []
+  # allowlist_file: /etc/wgkex/allowlist
+  reload_interval: 60
 # [worker] The external hostname of this worker
 externalName: gw04.ext.ffmuc.net
-# [worker] Offline peer cleanup timing, in seconds. All values must be positive.
-cleanup:
-  # How often each WireGuard interface is scanned.
-  interval: 3600
-  # A Parker peer with an earlier last handshake is stale. The default allows
-  # multiple 120s config retries and the 180s WireGuard tunnel timeout.
-  parker_stale_timeout: 300
-  # Preserve the historical three-hour timeout for legacy peers.
-  legacy_stale_timeout: 10800
-  # Never-handshaked peers are retained this long after provisioning or worker
-  # startup, then treated as abandoned.
-  initial_handshake_grace: 600
 # [broker, worker]
 parker:
   # Enable Parker support. The broker will still handle non-Parker in the same instance, the worker however will disable non-Parker support in this case.
@@ -116,7 +223,10 @@ mqtt:
 broker_listen:
   host: 0.0.0.0
   port: 5000
-# [broker, worker]
+# [broker, worker] Log level of the root logger (DEBUG, INFO, WARNING, ERROR, CRITICAL), defaults to INFO.
+# Overrides the root level of logging_config.
+log_level: INFO
+# [broker, worker] Optional: a full Python logging configuration (dictConfig format)
 logging_config:
   formatters:
     standard:

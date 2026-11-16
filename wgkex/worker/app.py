@@ -3,15 +3,17 @@
 import signal
 import sys
 import threading
-from typing import Text
+import time
 
 from wgkex.common import logger
 from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
-from wgkex.worker import mqtt
+from wgkex.worker import drain, mqtt, observability
+from wgkex.worker.allowlist import is_protected
+from wgkex.worker.gateway_keys import gateway_keys
 from wgkex.worker.msg_queue import watch_queue
 from wgkex.worker.netlink import wg_flush_stale_peers
-from wgkex.worker.peer_state import PeerMutationCoordinator, peer_mutations
+from wgkex.worker.rebalance import peer_add_tracker
 
 
 class Error(Exception):
@@ -34,51 +36,63 @@ class InvalidDomain(Error):
     """If the domains is invalid and is not listed in the configuration file."""
 
 
+def _parker_prefix_length() -> int:
+    return config.get_config().parker.prefixes.ipv6.length
+
+
 def flush_workers(
-    exit_event: threading.Event,
-    parker: bool,
-    domain: Text,
-    cleanup: config.Cleanup,
-    parker_prefix_length: int = 63,
-    coordinator: PeerMutationCoordinator = peer_mutations,
+    parker: bool, domain: str, exit_event: threading.Event | None = None
 ) -> None:
-    """Flush stale peers on an interruptible interval until shutdown."""
-    while not exit_event.wait(cleanup.interval):
+    """Removes stale peers every peer_cleanup.interval seconds, until exit_event is set."""
+    cleanup_cfg = config.get_config().peer_cleanup
+    wg_interface = "wg-nodes" if parker else f"wg-{domain}"
+    exit_event = exit_event or threading.Event()
+
+    def keep(public_key: str) -> bool:
+        if is_protected(public_key):
+            return True
+        # Peers added by the key exchange may not have done their first handshake yet
+        added_at = peer_add_tracker.added_at(wg_interface, public_key)
+        return (
+            added_at is not None
+            and peer_add_tracker.now() - added_at < cleanup_cfg.timeout_for(parker)
+        )
+
+    parker_kwargs = {}
+    if parker:
+        parker_kwargs = {
+            "initial_handshake_grace": cleanup_cfg.initial_handshake_grace,
+            "parker_prefix_length": _parker_prefix_length(),
+        }
+
+    while not exit_event.wait(cleanup_cfg.interval):
         try:
-            logger.info("Running cleanup task domain=%s parker=%s", domain, parker)
-            results = wg_flush_stale_peers(
+            # Parker uses wg-nodes, which has no static peers of other gateways.
+            if not parker and not gateway_keys.synced:
+                # Without the keys of the other gateways we could remove their static peers
+                logger.warning(
+                    "Skipping cleanup for %s: worker data of the gateways not received from MQTT yet",
+                    domain,
+                )
+                continue
+            logger.info(f"Running cleanup task for {domain}")
+            removed = wg_flush_stale_peers(
                 parker,
                 domain,
-                stale_timeout=cleanup.stale_timeout(parker),
-                initial_handshake_grace=cleanup.initial_handshake_grace,
-                parker_prefix_length=parker_prefix_length,
-                coordinator=coordinator,
+                cleanup_cfg.timeout_for(parker),
+                keep=keep,
+                **parker_kwargs,
             )
-            logger.info(
-                "Cleanup task completed domain=%s parker=%s selected=%s "
-                "deleted=%s deferred=%s failed=%s",
-                domain,
-                parker,
-                len(results),
-                sum(result.status == "deleted" for result in results),
-                sum(result.status == "deferred" for result in results),
-                sum(result.status == "failed" for result in results),
-            )
-        except Exception as error:
+            logger.info("Removed %d stale peers from %s", len(removed), domain)
+            logger.debug("Cleanup results: %s", removed)
+        except Exception as e:  # noqa: BLE001
+            # Don't crash the thread when an exception is encountered
             logger.error(
-                "Cleanup sweep failed domain=%s parker=%s",
-                domain,
-                parker,
-                exc_info=error,
+                "Exception during cleanup task for %s: %s", domain, e, exc_info=True
             )
 
 
-def clean_up_worker(
-    parker: bool,
-    exit_event: threading.Event,
-    worker_config: config.Config,
-    coordinator: PeerMutationCoordinator = peer_mutations,
-) -> list[threading.Thread]:
+def clean_up_worker(parker: bool) -> None:
     """Wraps flush_workers in a thread for all given domains.
 
     Arguments:
@@ -86,25 +100,15 @@ def clean_up_worker(
     """
     if parker:
         thread = threading.Thread(
-            target=flush_workers,
-            args=(
-                exit_event,
-                parker,
-                "parker",
-                worker_config.cleanup,
-                worker_config.parker.prefixes.ipv6.length,
-                coordinator,
-            ),
-            name="peer-cleanup-parker",
+            target=flush_workers, args=(parker, "parker"), daemon=True
         )
         thread.start()
-        return [thread]
+        return
 
-    domains = worker_config.domains
-    prefixes = worker_config.domain_prefixes
+    domains = config.get_config().domains
+    prefixes = config.get_config().domain_prefixes
     logger.debug("Cleaning up the following domains: %s", domains)
     cleanup_counter = 0
-    threads = []
     # ToDo: do we need a check if every domain got gleaned?
     for prefix in prefixes:
         for domain in domains:
@@ -121,26 +125,15 @@ def clean_up_worker(
                     )
                     continue
                 thread = threading.Thread(
-                    target=flush_workers,
-                    args=(
-                        exit_event,
-                        parker,
-                        cleaned_domain,
-                        worker_config.cleanup,
-                        63,
-                        coordinator,
-                    ),
-                    name=f"peer-cleanup-{cleaned_domain}",
+                    target=flush_workers, args=(parker, cleaned_domain), daemon=True
                 )
                 thread.start()
-                threads.append(thread)
     if cleanup_counter < len(domains):
         logger.error(
-            "Not every domain got cleaned. Check domains %s for missing prefixes %s",
-            repr(domains),
-            repr(prefixes),
+            "Not every domain got cleaned. Check domains for missing prefixes: domains %r, prefixes %r",
+            domains,
+            prefixes,
         )
-    return threads
 
 
 def check_all_domains_unique(domains, prefixes):
@@ -169,6 +162,14 @@ def check_all_domains_unique(domains, prefixes):
     return True
 
 
+def start_metrics_server() -> None:
+    """Starts the optional Prometheus metrics listener."""
+    metrics_cfg = config.get_config().metrics
+    port = getattr(metrics_cfg, "worker_port", None)
+    if isinstance(port, int) and port > 0:
+        observability.start_http_server(port, metrics_cfg.worker_host)
+
+
 def main():
     """Starts MQTT listener.
 
@@ -181,18 +182,22 @@ def main():
     def on_exit(sig_number, stack_frame) -> None:
         logger.info("Shutting down...")
         exit_event.set()
+        time.sleep(2)
         sys.exit()
 
+    # SIGTERM is sent by e.g. docker stop and systemd
     signal.signal(signal.SIGINT, on_exit)
     signal.signal(signal.SIGTERM, on_exit)
+    # Drain mode for planned maintenance, see README
+    signal.signal(signal.SIGUSR1, lambda *_: drain.drain_state.request(True))
+    signal.signal(signal.SIGUSR2, lambda *_: drain.drain_state.request(False))
 
-    worker_config = config.get_config()
-    parker_enabled = worker_config.parker.enabled
+    parker_enabled = config.get_config().parker.enabled
     if parker_enabled:
         logger.info("Parker mode is enabled")
     else:
-        domains = worker_config.domains
-        prefixes = worker_config.domain_prefixes
+        domains = config.get_config().domains
+        prefixes = config.get_config().domain_prefixes
         if not domains:
             raise DomainsNotInConfig("Could not locate domains in configuration.")
         if not check_all_domains_unique(domains, prefixes):
@@ -201,19 +206,17 @@ def main():
             if not is_valid_domain(domain):
                 raise InvalidDomain(f"Domain {domain} has invalid prefix.")
 
-    cleanup_threads = clean_up_worker(parker_enabled, exit_event, worker_config)
-    queue_thread = watch_queue(
-        parker_enabled,
-        exit_event,
-        parker_prefix_length=worker_config.parker.prefixes.ipv6.length,
-        initial_handshake_grace=worker_config.cleanup.initial_handshake_grace,
-    )
-    try:
-        mqtt.connect(exit_event)
-    finally:
-        exit_event.set()
-        for thread in [queue_thread, *cleanup_threads]:
-            thread.join()
+    start_metrics_server()
+    clean_up_worker(parker_enabled)
+    if parker_enabled:
+        watch_queue(
+            parker_enabled,
+            parker_prefix_length=_parker_prefix_length(),
+            initial_handshake_grace=config.get_config().peer_cleanup.initial_handshake_grace,
+        )
+    else:
+        watch_queue(parker_enabled)
+    mqtt.connect(exit_event)
 
 
 if __name__ == "__main__":

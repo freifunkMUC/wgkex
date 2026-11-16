@@ -1,12 +1,13 @@
 """Configuration handling class."""
 
 import dataclasses
+import ipaddress
 import logging
 import math
 import os
 import sys
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 import yaml
 
@@ -22,7 +23,8 @@ class ConfigFileNotFoundError(Error):
 def _positive_duration(value: Any, name: str) -> float:
     """Parse a finite, positive duration in seconds."""
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be a positive duration in seconds")
+        message = f"{name} must be a positive duration in seconds"
+        raise ValueError(message)  # noqa: TRY004
     try:
         duration = float(value)
     except (TypeError, ValueError) as error:
@@ -46,26 +48,30 @@ class Worker:
             must never change for a given worker. If not set explicitly in the config,
             it defaults to the worker's position in the workers map.
         weight: The relative weight of a worker, defaults to 1.
-        pop: The PoP (Point of Presence) this worker is located in
+        location: Optional location of the worker, preferred by clients requesting it.
+        pop: The PoP (Point of Presence) this worker is located in (Parker multi-tunnel support).
         endpoint_name: An optional hostname to hand to Parker nodes instead of the
             address the worker announces over MQTT. The port is unaffected. Set it
             to have nodes resolve the concentrator endpoint via DNS.
     """
 
-    id: int
     weight: int
-    pop: str
-    endpoint_name: Optional[str] = None
+    location: str | None = None
+    pop: str = ""
+    id: int = 0
+    endpoint_name: str | None = None
 
     @classmethod
-    def from_dict(cls, worker_cfg: Dict[str, Any]) -> "Worker":
-        worker_id = int(worker_cfg["id"])
+    def from_dict(cls, worker_cfg: dict[str, Any]) -> "Worker":
+        location = worker_cfg.get("location")
+        worker_id = int(worker_cfg.get("id", 0))
         if not 0 <= worker_id <= 2**32 - 1:
             raise ValueError("Worker ID must be an unsigned 32-bit integer")
         endpoint_name = worker_cfg.get("endpoint_name")
         return cls(
-            weight=int(1 if worker_cfg.get("weight") is None else worker_cfg["weight"]),
-            pop=worker_cfg.get("pop") or "",
+            weight=int(worker_cfg["weight"]) if worker_cfg.get("weight") else 1,
+            location=str(location) if location else None,
+            pop=str(worker_cfg.get("pop") or ""),
             id=worker_id,
             endpoint_name=str(endpoint_name) if endpoint_name else None,
         )
@@ -82,13 +88,13 @@ class Workers:
     """
 
     total_weight: int
-    all_pops: Set[str]
+    all_pops: set[str]
     sticky_worker_tolerance: float
-    _workers: Dict[str, Worker]
+    _workers: dict[str, Worker]
 
     @classmethod
     def from_dict(
-        cls, workers_cfg: Dict[str, Dict[str, Any]], sticky_worker_tolerance: int
+        cls, workers_cfg: dict[str, dict[str, Any]], sticky_worker_tolerance: int = 10
     ) -> "Workers":
         d = {
             key: Worker.from_dict({"id": id, **value})
@@ -123,14 +129,372 @@ class Workers:
             sticky_worker_tolerance=sticky_worker_tolerance / 100,
         )
 
-    def get(self, worker: str) -> Optional[Worker]:
+    def get(self, worker: str) -> Worker | None:
         return self._workers.get(worker)
 
     def relative_worker_weight(self, worker_name: str) -> float:
+        """Returns the share of all peers this worker should get according to the configured weights.
+
+        Workers missing from the configuration get the average configured weight.
+        """
         worker = self.get(worker_name)
         if worker is None:
-            return 1 / self.total_weight
+            if worker_name not in _warned_unknown_workers:
+                _warned_unknown_workers.add(worker_name)
+                logging.warning(  # noqa: LOG015
+                    "Worker %s is not in the workers configuration, using the average weight",
+                    worker_name,
+                )
+            return self.average_weight() / self.total_weight
         return worker.weight / self.total_weight
+
+    def location(self, worker_name: str) -> str | None:
+        """Returns the configured location of a worker, if any."""
+        worker = self.get(worker_name)
+        return worker.location if worker is not None else None
+
+    def average_weight(self) -> float:
+        """Returns the average weight of the configured workers, 1 if none are configured."""
+        if not self._workers:
+            return 1
+        return sum(w.weight for w in self._workers.values()) / len(self._workers)
+
+
+# Workers not in the configuration we already warned about
+_warned_unknown_workers: set[str] = set()
+
+
+@dataclasses.dataclass
+class Rebalancing:
+    """A representation of the 'load_balancing.rebalancing' key in the configuration file.
+
+    Active rebalancing makes overloaded workers drop a small number of connected peers per interval.
+    Gluon nodes notice the lost tunnel and redo the key exchange, which lets the broker assign them
+    to an underloaded worker. Both broker and worker need to have it enabled.
+
+    Attributes:
+        enabled: [broker, worker] Whether active rebalancing is enabled. Defaults to False.
+        interval: [broker, worker] Seconds between rebalancing rounds.
+        tolerance: [broker] Relative deviation from a worker's weighted target that is tolerated.
+        min_excess_peers: [broker] Absolute number of excess peers that is always tolerated.
+        stable_time: [broker] Seconds without any worker going online/offline before rebalancing.
+        max_evictions_ratio: [worker] Max share of connected peers evicted per interval (at least 1).
+        eviction_cooldown: [worker] Seconds during which a peer is not evicted again.
+        drain_rate: [broker] Share of its peers a draining worker is asked to evict per interval.
+    """
+
+    enabled: bool = False
+    interval: int = 60
+    tolerance: float = 0.1
+    min_excess_peers: int = 10
+    stable_time: int = 600
+    max_evictions_ratio: float = 0.01
+    eviction_cooldown: int = 3600
+    drain_rate: float = 0.1
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Rebalancing":
+        return cls(
+            enabled=bool(cfg.get("enabled", cls.enabled)),
+            interval=int(cfg.get("interval", cls.interval)),
+            tolerance=float(cfg.get("tolerance", cls.tolerance)),
+            min_excess_peers=int(cfg.get("min_excess_peers", cls.min_excess_peers)),
+            stable_time=int(cfg.get("stable_time", cls.stable_time)),
+            max_evictions_ratio=float(
+                cfg.get("max_evictions_ratio", cls.max_evictions_ratio)
+            ),
+            eviction_cooldown=int(cfg.get("eviction_cooldown", cls.eviction_cooldown)),
+            drain_rate=min(max(float(cfg.get("drain_rate", cls.drain_rate)), 0.0), 1.0),
+        )
+
+
+@dataclasses.dataclass
+class Drain:
+    """A representation of the 'drain' key in the configuration file (worker-only).
+
+    A draining worker publishes status 2: new brokers stop assigning new peers to it and, with
+    rebalancing enabled, ask it to shed its peers. Draining is started with SIGUSR1 (stopped with
+    SIGUSR2) or while the configured file exists.
+
+    Attributes:
+        file: Optional path of a file, the worker is draining while it exists.
+        check_interval: Seconds between checks of the drain file.
+    """
+
+    file: str | None = None
+    check_interval: int = 5
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Drain":
+        return cls(
+            file=cfg.get("file") or None,
+            check_interval=max(int(cfg.get("check_interval", cls.check_interval)), 1),
+        )
+
+
+@dataclasses.dataclass
+class Metrics:
+    """A representation of the 'metrics' key in the configuration file.
+
+    Attributes:
+        broker_endpoint: Serve Prometheus metrics at /metrics on the broker's HTTP listener.
+        worker_port: Port of an HTTP listener serving Prometheus metrics on the worker,
+            None (default) disables it.
+        worker_host: Address the worker metrics listener binds to.
+    """
+
+    broker_endpoint: bool = True
+    worker_port: int | None = None
+    worker_host: str = "0.0.0.0"
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Metrics":
+        port = cfg.get("worker_port")
+        return cls(
+            broker_endpoint=bool(cfg.get("broker_endpoint", cls.broker_endpoint)),
+            worker_port=int(port) if port else None,
+            worker_host=str(cfg.get("worker_host") or cls.worker_host),
+        )
+
+
+@dataclasses.dataclass
+class LoadBalancing:
+    """A representation of the 'load_balancing' key in the configuration file.
+
+    Attributes:
+        pending_assignment_ttl: [broker] Seconds a peer assigned by the v2 API counts towards the
+            load of its worker if the worker metrics do not reflect it yet.
+        pending_assignment_settle_time: [broker] Seconds after which a pending assignment is
+            assumed to be included in newly received worker metrics.
+        metrics_max_age: [broker] Seconds after which a worker is treated as offline for a domain
+            if no connected peers metric was received for it. 0 disables the check.
+        targeted_publish: [broker] Publish keys received via the v2 API only to the chosen worker
+            (wireguard/{domain}/{worker}) instead of all workers, and ask the previously assigned
+            worker to remove the peer when a key moves to another worker.
+        previous_assignment_ttl: [broker] Seconds the broker remembers which worker a key was last
+            assigned to, used for removing the peer from its previous worker.
+        previous_assignment_max_entries: [broker] Maximum number of remembered assignments.
+        location_tolerance: [broker] Workers in the location requested by a client are preferred
+            while their effective peers exceed their weighted target by at most
+            max(location_min_excess_peers, location_tolerance * target).
+        location_min_excess_peers: [broker] See location_tolerance.
+        share_pending_assignments: [broker] Publish assignments to other broker instances and
+            count theirs as pending, for multiple brokers behind a load balancer.
+        broker_id: [broker] Unique name of this broker instance, used for sharing assignments.
+            Defaults to the hostname and a random suffix.
+        rebalancing: Active rebalancing configuration.
+    """
+
+    pending_assignment_ttl: int = 300
+    pending_assignment_settle_time: int = 60
+    metrics_max_age: int = 180
+    targeted_publish: bool = True
+    previous_assignment_ttl: int = 21600
+    previous_assignment_max_entries: int = 100000
+    location_tolerance: float = 0.1
+    location_min_excess_peers: int = 10
+    share_pending_assignments: bool = False
+    broker_id: str | None = None
+    rebalancing: Rebalancing = dataclasses.field(default_factory=Rebalancing)
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "LoadBalancing":
+        return cls(
+            pending_assignment_ttl=int(
+                cfg.get("pending_assignment_ttl", cls.pending_assignment_ttl)
+            ),
+            pending_assignment_settle_time=int(
+                cfg.get(
+                    "pending_assignment_settle_time", cls.pending_assignment_settle_time
+                )
+            ),
+            metrics_max_age=int(cfg.get("metrics_max_age", cls.metrics_max_age)),
+            targeted_publish=bool(cfg.get("targeted_publish", cls.targeted_publish)),
+            previous_assignment_ttl=int(
+                cfg.get("previous_assignment_ttl", cls.previous_assignment_ttl)
+            ),
+            previous_assignment_max_entries=int(
+                cfg.get(
+                    "previous_assignment_max_entries",
+                    cls.previous_assignment_max_entries,
+                )
+            ),
+            location_tolerance=max(
+                float(cfg.get("location_tolerance", cls.location_tolerance)), 0.0
+            ),
+            location_min_excess_peers=max(
+                int(
+                    cfg.get("location_min_excess_peers", cls.location_min_excess_peers)
+                ),
+                0,
+            ),
+            share_pending_assignments=bool(
+                cfg.get("share_pending_assignments", cls.share_pending_assignments)
+            ),
+            broker_id=str(cfg["broker_id"]) if cfg.get("broker_id") else None,
+            rebalancing=Rebalancing.from_dict(cfg.get("rebalancing") or {}),
+        )
+
+
+@dataclasses.dataclass
+class RateLimit:
+    """A representation of the 'rate_limit' key in the configuration file (broker-only).
+
+    Rate-limited key exchange requests still get the normal response, but the key is not published
+    again, so clients never fall back to the v1 API. Limits of 0 disable the respective check.
+
+    Attributes:
+        per_client_requests: Requests allowed per client address and per_client_period.
+        per_client_period: Seconds in which per_client_requests are allowed (token bucket).
+        global_requests: Requests allowed over all clients per global_period.
+        global_period: Seconds in which global_requests are allowed.
+        ipv6_prefix_length: IPv6 clients are limited per prefix of this length.
+        max_tracked_clients: Maximum number of client addresses tracked at once.
+    """
+
+    per_client_requests: int = 30
+    per_client_period: int = 60
+    global_requests: int = 6000
+    global_period: int = 60
+    ipv6_prefix_length: int = 64
+    max_tracked_clients: int = 100000
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "RateLimit":
+        def get(name: str, minimum: int) -> int:
+            return max(int(cfg.get(name, getattr(cls, name))), minimum)
+
+        return cls(
+            per_client_requests=get("per_client_requests", 0),
+            per_client_period=get("per_client_period", 1),
+            global_requests=get("global_requests", 0),
+            global_period=get("global_period", 1),
+            ipv6_prefix_length=min(get("ipv6_prefix_length", 0), 128),
+            max_tracked_clients=get("max_tracked_clients", 1),
+        )
+
+
+@dataclasses.dataclass
+class Broker:
+    """A representation of the 'broker' key in the configuration file (broker-only).
+
+    Attributes:
+        trusted_proxies: Reverse proxies whose X-Forwarded-For header is trusted to determine the
+            client address (used for rate limiting and log_client_ip). Either a number of proxies
+            every request passes through, or a list of proxy networks (CIDR) checked against the
+            TCP peer address. 0 or empty: always use the TCP peer address.
+        log_client_ip: Log the client address together with domain and key of each key exchange.
+    """
+
+    trusted_proxies: int | list[ipaddress.IPv4Network | ipaddress.IPv6Network] = 0
+    log_client_ip: bool = False
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "Broker":
+        proxies = cfg.get("trusted_proxies") or 0
+        if isinstance(proxies, str):
+            proxies = [proxies]
+        if isinstance(proxies, list):
+            trusted: int | list = [
+                ipaddress.ip_network(str(p).strip(), strict=False) for p in proxies
+            ]
+        else:
+            trusted = max(int(proxies), 0)
+        return cls(
+            trusted_proxies=trusted,
+            log_client_ip=bool(cfg.get("log_client_ip", False)),
+        )
+
+
+@dataclasses.dataclass
+class KeyLists:
+    """A representation of the 'key_lists' key in the configuration file.
+
+    Files contain one public key per line ('#' starts a comment) and are reloaded when modified.
+
+    Attributes:
+        blocklist: [broker] Keys which are rejected by the key exchange and never published.
+        blocklist_file: [broker] Optional file with additional blocked keys.
+        allowlist: [worker] Keys which are never removed by the stale peer cleanup or evicted by
+            rebalancing/draining.
+        allowlist_file: [worker] Optional file with additional allowlisted keys.
+        reload_interval: Seconds between checks of the files for modifications.
+    """
+
+    blocklist: list[str] = dataclasses.field(default_factory=list)
+    blocklist_file: str | None = None
+    allowlist: list[str] = dataclasses.field(default_factory=list)
+    allowlist_file: str | None = None
+    reload_interval: int = 60
+
+    @classmethod
+    def from_dict(cls, cfg: dict[str, Any]) -> "KeyLists":
+        return cls(
+            blocklist=[str(k) for k in cfg.get("blocklist") or []],
+            blocklist_file=cfg.get("blocklist_file") or None,
+            allowlist=[str(k) for k in cfg.get("allowlist") or []],
+            allowlist_file=cfg.get("allowlist_file") or None,
+            reload_interval=max(
+                int(cfg.get("reload_interval", cls.reload_interval)), 1
+            ),
+        )
+
+
+@dataclasses.dataclass
+class PeerCleanup:
+    """A representation of the 'peer_cleanup' key in the configuration file (worker-only).
+
+    For compatibility with early Parker deployments, the keys of a 'cleanup' section are
+    accepted as well ('legacy_stale_timeout' maps to stale_timeout), 'peer_cleanup' wins.
+
+    Attributes:
+        stale_timeout: Seconds without a handshake after which a (legacy) peer is removed.
+        interval: Seconds between two cleanup runs.
+        parker_stale_timeout: Seconds without a handshake after which a Parker peer is removed.
+        initial_handshake_grace: Seconds a never-handshaked Parker peer is kept after it was
+            provisioned or after the worker started.
+    """
+
+    stale_timeout: int = 1800
+    interval: int = 300
+    parker_stale_timeout: float = 300
+    initial_handshake_grace: float = 600
+
+    @classmethod
+    def from_dict(
+        cls, cfg: dict[str, Any], parker_cleanup: dict[str, Any] | None = None
+    ) -> "PeerCleanup":
+        if parker_cleanup:
+            if not isinstance(parker_cleanup, dict):
+                raise ValueError("cleanup must be a mapping")
+            aliased = {
+                "interval": parker_cleanup.get("interval"),
+                "stale_timeout": parker_cleanup.get("legacy_stale_timeout"),
+                "parker_stale_timeout": parker_cleanup.get("parker_stale_timeout"),
+                "initial_handshake_grace": parker_cleanup.get(
+                    "initial_handshake_grace"
+                ),
+            }
+            cfg = {
+                **{k: v for k, v in aliased.items() if v is not None},
+                **cfg,
+            }
+        return cls(
+            stale_timeout=int(cfg.get("stale_timeout", cls.stale_timeout)),
+            interval=int(cfg.get("interval", cls.interval)),
+            parker_stale_timeout=_positive_duration(
+                cfg.get("parker_stale_timeout", cls.parker_stale_timeout),
+                "peer_cleanup.parker_stale_timeout",
+            ),
+            initial_handshake_grace=_positive_duration(
+                cfg.get("initial_handshake_grace", cls.initial_handshake_grace),
+                "peer_cleanup.initial_handshake_grace",
+            ),
+        )
+
+    def timeout_for(self, parker: bool) -> float:
+        """Returns the stale timeout for the given worker mode."""
+        return self.parker_stale_timeout if parker else self.stale_timeout
 
 
 @dataclasses.dataclass
@@ -142,11 +506,11 @@ class BrokerListen:
         port: The port the broker should listen to for the HTTP API.
     """
 
-    host: Optional[str]
-    port: Optional[int]
+    host: str | None
+    port: int | None
 
     @classmethod
-    def from_dict(cls, broker_listen: Dict[str, Any]) -> "BrokerListen":
+    def from_dict(cls, broker_listen: dict[str, Any]) -> "BrokerListen":
         return cls(
             host=broker_listen.get("host"),
             port=broker_listen.get("port"),
@@ -174,7 +538,7 @@ class MQTT:
     keepalive: int = 5
 
     @classmethod
-    def from_dict(cls, mqtt_cfg: Dict[str, str]) -> "MQTT":
+    def from_dict(cls, mqtt_cfg: dict[str, str]) -> "MQTT":
         """seems to generate a mqtt config object from dictionary
 
         Arguments:
@@ -191,42 +555,6 @@ class MQTT:
             broker_port=int(mqtt_cfg.get("broker_port", cls.broker_port)),
             keepalive=int(mqtt_cfg.get("keepalive", cls.keepalive)),
         )
-
-
-@dataclasses.dataclass(frozen=True)
-class Cleanup:
-    """Worker peer cleanup timing in seconds."""
-
-    interval: float = 3600
-    parker_stale_timeout: float = 300
-    legacy_stale_timeout: float = 10800
-    initial_handshake_grace: float = 600
-
-    @classmethod
-    def from_dict(cls, cleanup_cfg: Dict[str, Any]) -> "Cleanup":
-        if not isinstance(cleanup_cfg, dict):
-            raise ValueError("cleanup must be a mapping")
-        return cls(
-            interval=_positive_duration(
-                cleanup_cfg.get("interval", cls.interval), "cleanup.interval"
-            ),
-            parker_stale_timeout=_positive_duration(
-                cleanup_cfg.get("parker_stale_timeout", cls.parker_stale_timeout),
-                "cleanup.parker_stale_timeout",
-            ),
-            legacy_stale_timeout=_positive_duration(
-                cleanup_cfg.get("legacy_stale_timeout", cls.legacy_stale_timeout),
-                "cleanup.legacy_stale_timeout",
-            ),
-            initial_handshake_grace=_positive_duration(
-                cleanup_cfg.get("initial_handshake_grace", cls.initial_handshake_grace),
-                "cleanup.initial_handshake_grace",
-            ),
-        )
-
-    def stale_timeout(self, parker: bool) -> float:
-        """Return the stale timeout for the selected worker mode."""
-        return self.parker_stale_timeout if parker else self.legacy_stale_timeout
 
 
 @dataclasses.dataclass
@@ -262,10 +590,10 @@ class Parker:
                 netbox_additional_data: Additional data to send to NetBox when reserving an IPv4 prefix when not using 464XLAT.
             """
 
-            clat_subnet: Optional[str] = None
-            length: Optional[int] = None
-            netbox_filter: Optional[Dict[str, Any]] = None
-            netbox_additional_data: Optional[Dict[str, Any]] = None
+            clat_subnet: str | None = None
+            length: int | None = None
+            netbox_filter: dict[str, Any] | None = None
+            netbox_additional_data: dict[str, Any] | None = None
 
         @dataclasses.dataclass
         class IPv6:
@@ -278,8 +606,8 @@ class Parker:
             """
 
             length: int
-            netbox_filter: Optional[Dict[str, Any]] = None
-            netbox_additional_data: Optional[Dict[str, Any]] = None
+            netbox_filter: dict[str, Any] | None = None
+            netbox_additional_data: dict[str, Any] | None = None
 
         ipv4: IPv4
         ipv6: IPv6
@@ -296,7 +624,7 @@ class Parker:
     wg_keepalive: int = 25
 
     @classmethod
-    def from_dict(cls, parker_cfg: Dict[str, Any]) -> "Parker":
+    def from_dict(cls, parker_cfg: dict[str, Any]) -> "Parker":
         """Generates a parker config object from a dictionary.
 
         Arguments:
@@ -413,7 +741,7 @@ class Netbox:
     api_key: str
 
     @classmethod
-    def from_dict(cls, netbox_cfg: Dict[str, str]) -> "Netbox":
+    def from_dict(cls, netbox_cfg: dict[str, str]) -> "Netbox":
         """Generates a netbox config object from a dictionary.
 
         Arguments:
@@ -438,22 +766,35 @@ class Config:
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
         external_name: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        load_balancing: Load balancing and rebalancing configuration.
+        peer_cleanup: Stale peer cleanup configuration (worker-only).
+        drain: Drain mode configuration (worker-only).
+        metrics: Prometheus metrics configuration.
+        rate_limit: Key exchange rate limiting (broker-only).
+        key_lists: Key block- and allowlists.
+        broker: Client address handling of the broker.
     """
 
-    raw: Dict[str, Any]
-    domains: List[str]
-    domain_prefixes: List[str]
-    workers: Workers
-    parker: Parker
-    cleanup: Cleanup
-    external_name: Optional[str]
-    mqtt: MQTT
+    raw: dict[str, Any]
+    domains: list[str]
+    domain_prefixes: list[str]
     broker_listen: BrokerListen
-    netbox: Optional[Netbox] = None
-    broker_signing_key: Optional[str] = None
+    mqtt: MQTT
+    workers: Workers
+    external_name: str | None
+    parker: Parker
+    load_balancing: LoadBalancing = dataclasses.field(default_factory=LoadBalancing)
+    peer_cleanup: PeerCleanup = dataclasses.field(default_factory=PeerCleanup)
+    drain: Drain = dataclasses.field(default_factory=Drain)
+    metrics: Metrics = dataclasses.field(default_factory=Metrics)
+    rate_limit: RateLimit = dataclasses.field(default_factory=RateLimit)
+    key_lists: KeyLists = dataclasses.field(default_factory=KeyLists)
+    broker: Broker = dataclasses.field(default_factory=Broker)
+    netbox: Netbox | None = None
+    broker_signing_key: str | None = None
 
     @classmethod
-    def from_dict(cls, cfg: Dict[str, Any]) -> "Config":
+    def from_dict(cls, cfg: dict[str, Any]) -> "Config":
         """Creates a Config object from a configuration file.
 
         Arguments:
@@ -467,7 +808,6 @@ class Config:
             cfg.get("workers", {}), cfg.get("sticky_worker_tolerance", 10)
         )
         parker = Parker.from_dict(cfg.get("parker", {}))
-        cleanup = Cleanup.from_dict(cfg.get("cleanup", {}))
         broker_signing_key = cfg.get("broker_signing_key", None)
 
         netbox_cfg = None
@@ -485,8 +825,16 @@ class Config:
             mqtt=mqtt_cfg,
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
+            load_balancing=LoadBalancing.from_dict(cfg.get("load_balancing") or {}),
+            peer_cleanup=PeerCleanup.from_dict(
+                cfg.get("peer_cleanup") or {}, cfg.get("cleanup")
+            ),
+            drain=Drain.from_dict(cfg.get("drain") or {}),
+            metrics=Metrics.from_dict(cfg.get("metrics") or {}),
+            rate_limit=RateLimit.from_dict(cfg.get("rate_limit") or {}),
+            key_lists=KeyLists.from_dict(cfg.get("key_lists") or {}),
+            broker=Broker.from_dict(cfg.get("broker") or {}),
             parker=parker,
-            cleanup=cleanup,
             netbox=netbox_cfg,
             broker_signing_key=broker_signing_key,
         )
@@ -496,7 +844,7 @@ class Config:
         return self.raw.get(key)
 
 
-_parsed_config: Optional[Config] = None
+_parsed_config: Config | None = None
 
 
 def get_config() -> Config:
@@ -513,12 +861,12 @@ def get_config() -> Config:
         try:
             config = yaml.safe_load(cfg_contents)
         except yaml.YAMLError as e:
-            print("Failed to load YAML file: %s" % e)
+            print(f"Failed to load YAML file: {e}")
             sys.exit(1)
         try:
             config = Config.from_dict(config)
         except (KeyError, TypeError, AttributeError) as e:
-            print("Failed to lint file: %s" % e)
+            print(f"Failed to lint file: {e}")
             sys.exit(2)
         _parsed_config = config
     return _parsed_config
@@ -533,7 +881,7 @@ def fetch_config_from_disk() -> str:
         The file contents as string.
     """
     config_file = os.environ.get(WG_CONFIG_OS_ENV, WG_CONFIG_DEFAULT_LOCATION)
-    logging.debug("getting config_file: %s", repr(config_file))
+    logging.debug("getting config_file: %s", repr(config_file))  # noqa: LOG015
     try:
         with open(config_file, "r") as stream:
             return stream.read()

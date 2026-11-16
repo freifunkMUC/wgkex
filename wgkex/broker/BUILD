@@ -13,14 +13,13 @@ py_library(
 )
 
 py_test(
-    name="app_test",
-    srcs=["app_test.py"],
+    name="parker_app_test",
+    srcs=["parker_app_test.py"],
     deps = [
        "//wgkex/broker:app",
        "//wgkex/broker:parker",
        "//wgkex/config:config",
        requirement("flask-mqtt"),
-       requirement("mock"),
        requirement("paho-mqtt"),
     ],
     size="small",
@@ -40,7 +39,6 @@ py_test(
     srcs=["ipam_netbox_test.py"],
     deps = [
        "//wgkex/broker:ipam",
-       requirement("mock"),
     ],
     size="small",
 )
@@ -61,7 +59,21 @@ py_test(
     srcs=["metrics_test.py"],
     deps = [
        "//wgkex/broker:metrics",
-       requirement("mock"),
+    ],
+    size="small",
+)
+
+py_library(
+    name = "assignments",
+    srcs = ["assignments.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name="assignments_test",
+    srcs=["assignments_test.py"],
+    deps = [
+       "//wgkex/broker:assignments",
     ],
     size="small",
 )
@@ -84,7 +96,6 @@ py_test(
        "//wgkex/broker:parker",
        "//wgkex/broker:signer",
        "//wgkex/config:config",
-       requirement("mock"),
        requirement("paho-mqtt"),
     ],
     size="small",
@@ -108,7 +119,6 @@ py_test(
        "//wgkex/broker:parker",
        "//wgkex/config:config",
        requirement("flask-mqtt"),
-       requirement("mock"),
     ],
     size="small",
 )
@@ -131,11 +141,68 @@ py_binary(
     deps=[
         requirement("flask"),
         requirement("flask-mqtt"),
+        requirement("prometheus-client"),
         requirement("waitress"),
         "//wgkex/broker:ipam",
         "//wgkex/broker:signer",
         "//wgkex/config:config",
+        "//wgkex/common:keylist",
+        "//wgkex/common:logger",
         "//wgkex/common:mqtt",
-        ":metrics"
+        "//wgkex/common:utils",
+        ":assignments",
+        ":metrics",
+        ":observability",
+        ":parker",
+        ":ratelimit",
     ],
+)
+
+py_library(
+    name = "observability",
+    srcs = ["observability.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       requirement("prometheus-client"),
+       ":metrics",
+    ],
+)
+
+py_test(
+    name="app_test",
+    srcs=["app_test.py"],
+    deps=[
+        "//wgkex/broker:app",
+        "//wgkex/common:mqtt",
+        "//wgkex/config:config",
+    ],
+    size="small",
+)
+
+py_library(
+    name = "ratelimit",
+    srcs = ["ratelimit.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name="ratelimit_test",
+    srcs=["ratelimit_test.py"],
+    deps = [
+       "//wgkex/broker:ratelimit",
+    ],
+    size="small",
+)
+
+py_test(
+    name="openapi_test",
+    srcs=["openapi_test.py", "app_test.py"],
+    data=["//Docs:openapi.yaml"],
+    deps=[
+        requirement("PyYAML"),
+        "//wgkex/broker:app",
+        "//wgkex/common:mqtt",
+        "//wgkex/config:config",
+    ],
+    size="small",
 )

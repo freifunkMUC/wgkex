@@ -1,4 +1,4 @@
-FROM gcr.io/bazel-public/bazel:9.0.0 AS builder
+FROM gcr.io/bazel-public/bazel:9.3.1 AS builder
 # Make sure .bazelversion and the version of image are identical
 
 WORKDIR /wgkex
@@ -11,7 +11,7 @@ RUN ["bazel", "build", "//wgkex/worker:app"]
 RUN ["cp", "-rL", "bazel-bin", "bazel"]
 
 
-FROM python:3.14.6-slim-bookworm
+FROM python:3.15.0-slim-bookworm
 WORKDIR /wgkex
 
 COPY --from=builder /wgkex/bazel /wgkex/

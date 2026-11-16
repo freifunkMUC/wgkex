@@ -4,6 +4,8 @@ set -e
 : "${WGKEX_DOMAINS:=ffmuc_muc_cty, ffmuc_muc_nord, ffmuc_muc_ost, ffmuc_muc_sued, ffmuc_muc_west, ffmuc_welt, ffwert_city}"
 : "${WGKEX_DOMAIN_PREFIXES:=ffmuc_, ffdon_, ffwert_}"
 : "${WGKEX_DEBUG:=DEBUG}"
+: "${WGKEX_BROKER_LISTEN_HOST:=0.0.0.0}"
+: "${WGKEX_BROKER_LISTEN_PORT:=5000}"
 : "${MQTT_BROKER_URL:=mqtt}"
 : "${MQTT_BROKER_PORT:=1883}"
 : "${MQTT_USERNAME:=}"
@@ -25,6 +27,9 @@ for i in $WGKEX_DOMAIN_PREFIXES; do
 done
 cat <<EOF
 log_level: $WGKEX_DEBUG
+broker_listen:
+  host: $WGKEX_BROKER_LISTEN_HOST
+  port: $WGKEX_BROKER_LISTEN_PORT
 mqtt:
   broker_url: $MQTT_BROKER_URL
   broker_port: $MQTT_BROKER_PORT
