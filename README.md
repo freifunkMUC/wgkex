@@ -76,6 +76,11 @@ The broker publishes `/api/v1` keys to all workers and `/api/v2` keys only to th
 All components read their configuration from `/etc/wgkex.yaml`, or from the file in the environment variable
 `WGKEX_CONFIG_FILE`. Start from [`wgkex.yaml.example`](wgkex.yaml.example).
 
+Environment variables `WGKEX__<KEY>[__<SUBKEY>…]` override single keys of that file, e.g. for secrets:
+`WGKEX__MQTT__PASSWORD=…` sets `mqtt.password`. Keys match case-insensitively. Values are read like in the file
+(`WGKEX__MQTT__TLS=false`, lists and maps as `[a, b]` or `WGKEX__WORKERS='{gw04.example.org: {weight: 25}}'`), only
+`username` and `password` are taken verbatim. With at least one such variable set, the file is optional.
+
 ### Docker
 
 Images are published to [`ghcr.io/freifunkmuc/wgkex`](https://github.com/freifunkMUC/wgkex/pkgs/container/wgkex) on
