@@ -557,7 +557,7 @@ class MQTTTest(unittest.TestCase):
                 password="password",
                 keepalive=5,
             ),
-            parker=mock.MagicMock(enabled=True),
+            parker=mock.MagicMock(enabled=True, route_gate=None),
         )
         config_mock.return_value = cfg
         client = mqtt_client.return_value
@@ -633,6 +633,20 @@ class MQTTTest(unittest.TestCase):
         message.topic = f"parker/wireguard/{socket.gethostname()}".encode()
         mqtt.on_message_parker(None, None, message)
         self.assertEqual(mqtt.q.get_nowait(), '{"PublicKey":"key"}')
+
+    def test_on_message_parker_unroute_uses_route_gate(self):
+        message = paho.mqtt.client.MQTTMessage()
+        message.topic = b"parker/wireguard/all"
+        message.payload = b'{"PublicKey":"key","Unroute":true}'
+        gate = mock.MagicMock()
+        with mock.patch.object(mqtt.route_gate, "gate", gate):
+            mqtt.on_message_parker(None, None, message)
+        gate.unroute.assert_called_once_with("key")
+        self.assertTrue(mqtt.q.empty())
+
+        with mock.patch.object(mqtt.route_gate, "gate", None):
+            mqtt.on_message_parker(None, None, message)
+        self.assertTrue(mqtt.q.empty())
 
     def test_metrics_loop_validation_exception_and_offline_publish(self):
         with self.assertRaisesRegex(ValueError, "Domain must be passed"):

@@ -19,14 +19,19 @@ class NetboxIPAM(ParkerIPAM):
     parent_prefix_v4: pynetbox.models.ipam.Prefixes | None
     parent_prefix_v6: pynetbox.models.ipam.Prefixes
 
-    def __init__(self, api_url, token, xlat: bool = False) -> None:
+    def __init__(
+        self,
+        api_url,
+        token,
+        xlat: bool = False,
+        v6_filter: dict[str, Any] | None = None,
+    ) -> None:
         self.nb = pynetbox.api(api_url, token=token)
         self.xlat = xlat
         self.parent_prefix_v4 = None
 
-        v6_filter: dict[str, Any] = (
-            config.get_config().parker.prefixes.ipv6.netbox_filter or {}
-        )
+        if v6_filter is None:
+            v6_filter = config.get_config().parker.prefixes.ipv6.netbox_filter or {}
         # https://demo.netbox.dev/api/schema/swagger-ui/#/ipam/ipam_prefixes_list
         prefixes_v6 = self.nb.ipam.prefixes.filter(family=6, **v6_filter)
         if len(prefixes_v6) != 1:
@@ -273,7 +278,11 @@ class NetboxIPAM(ParkerIPAM):
         raise NotImplementedError
 
     def _update_prefix(
-        self, pubkey: str, addr_family: int, selected_concentrators: list[str]
+        self,
+        pubkey: str,
+        addr_family: int,
+        selected_concentrators: list[str],
+        primary: bool | None = None,
     ) -> None:
         prefix = self._deduplicate_prefixes(pubkey, addr_family)
 
@@ -283,6 +292,8 @@ class NetboxIPAM(ParkerIPAM):
                 timespec="seconds"
             )
             desc["selected_concentrators"] = selected_concentrators
+            if primary is not None:
+                desc["primary"] = primary
 
             try:
                 prefix.description = json.dumps(desc)
@@ -296,9 +307,29 @@ class NetboxIPAM(ParkerIPAM):
                 )
 
     def update_prefix(
-        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: list[str]
+        self,
+        pubkey: str,
+        ipv4: bool,
+        ipv6: bool,
+        selected_concentrators: list[str],
+        primary: bool | None = None,
     ) -> None:
         if ipv4:
             self._update_prefix(pubkey, 4, selected_concentrators)
         if ipv6:
-            self._update_prefix(pubkey, 6, selected_concentrators)
+            self._update_prefix(pubkey, 6, selected_concentrators, primary)
+
+    def is_primary(self, pubkey: str) -> bool:
+        return any(
+            json.loads(prefix.description).get("primary") is True
+            for prefix in self._get_prefixes(pubkey, 6)
+        )
+
+    def count_primary(self) -> int:
+        # _update_prefix writes the description with json.dumps, which gives
+        # '"primary": true'.
+        return self.nb.ipam.prefixes.count(
+            family=6,
+            within=self.parent_prefix_v6.prefix,
+            description__ic='"primary": true',
+        )

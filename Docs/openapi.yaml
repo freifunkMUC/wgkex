@@ -139,6 +139,7 @@ paths:
         - $ref: "#/components/parameters/ParkerPubkey"
         - $ref: "#/components/parameters/ParkerNonce"
         - $ref: "#/components/parameters/ParkerV6MTU"
+        - $ref: "#/components/parameters/ParkerPreferredSite"
       responses:
         "200":
           $ref: "#/components/responses/ParkerConfig"
@@ -159,6 +160,7 @@ paths:
         - $ref: "#/components/parameters/ParkerPubkey"
         - $ref: "#/components/parameters/ParkerNonce"
         - $ref: "#/components/parameters/ParkerV6MTU"
+        - $ref: "#/components/parameters/ParkerPreferredSite"
       responses:
         "200":
           $ref: "#/components/responses/ParkerConfig"
@@ -179,6 +181,7 @@ paths:
         - $ref: "#/components/parameters/ParkerPubkey"
         - $ref: "#/components/parameters/ParkerNonce"
         - $ref: "#/components/parameters/ParkerV6MTU"
+        - $ref: "#/components/parameters/ParkerPreferredSite"
       responses:
         "200":
           $ref: "#/components/responses/ParkerConfig"
@@ -190,6 +193,59 @@ paths:
           $ref: "#/components/responses/RateLimited"
         "500":
           $ref: "#/components/responses/ParkerError"
+  /api/v3/switch:
+    get:
+      tags: [parker]
+      operationId: parkerSwitchV3
+      summary: Report that a node moved its tunnel of a site to another pgw
+      description: |
+        Only with `parker.sites`. The broker accepts the report only after the new pgw sent a fresh handshake of the
+        node. Then it stores the new pgw as the preferred pgw of the site and tells the other pgws of the site to
+        remove the route to the node. They keep the peer.
+      parameters:
+        - $ref: "#/components/parameters/ParkerPubkey"
+        - name: site
+          in: query
+          required: true
+          description: The site of the tunnel, for example `muc`.
+          schema:
+            type: string
+        - name: pgw
+          in: query
+          required: true
+          description: The worker name of the new pgw.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The switch is stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  Message:
+                    type: string
+              example:
+                Message: OK
+        "400":
+          description: Multi-site Parker is not enabled, or the public key, site or pgw is not valid.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No fresh handshake of the node on this pgw yet. The node tries again later.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The broker could not store the switch.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /metrics:
     get:
       tags: [operations]
@@ -255,6 +311,15 @@ components:
       description: The IPv6 MTU of the node's uplink, defaults to 1280. The returned `mtu` is at most 1375.
       schema:
         type: integer
+    ParkerPreferredSite:
+      name: preferred_site
+      in: query
+      required: false
+      description: |
+        Only with `parker.sites`. The site that the node owner prefers as primary site. The broker uses it only when
+        the site is known and has capacity.
+      schema:
+        type: string
   responses:
     ParkerConfig:
       description: |

@@ -69,6 +69,40 @@ def _parker_config() -> config.Config:
     )
 
 
+def _multisite_config(vie_capacity=None, vie_weight=1) -> config.Config:
+    cfg = _parker_config()
+    cfg.parker = config.Parker.from_dict(
+        {
+            "enabled": True,
+            "464xlat": True,
+            "ipam": "json",
+            "prefixes": {
+                "ipv4": {"clat_subnet": "10.80.96.0/22"},
+                "ipv6": {"length": 63},
+            },
+            "sites": {
+                "muc": {"tunnel_id": 101, "dns64": "2001:db8:1::64", "json_file": "m"},
+                "vie": {
+                    "tunnel_id": 102,
+                    "dns64": "2001:db8:2::64",
+                    "json_file": "v",
+                    "capacity": vie_capacity,
+                    "weight": vie_weight,
+                },
+            },
+        }
+    )
+    cfg.workers = config.Workers.from_dict(
+        {
+            "muc1": {"id": 1, "pop": "muc"},
+            "muc2": {"id": 2, "pop": "muc"},
+            "vie1": {"id": 3, "pop": "vie"},
+        },
+        10,
+    )
+    return cfg
+
+
 def _message(topic: str, payload: bytes) -> paho.mqtt.client.MQTTMessage:
     message = paho.mqtt.client.MQTTMessage()
     message.topic = topic.encode()
@@ -104,6 +138,7 @@ class TestBrokerApp(unittest.TestCase):
 
         cfg = mock.MagicMock()
         cfg.parker.enabled = True
+        cfg.parker.sites = {}
         cfg.parker.ipam = config.Parker.IPAM.JSON
         with (
             mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
@@ -124,7 +159,7 @@ class TestBrokerApp(unittest.TestCase):
         ):
             self.assertEqual(self.broker_app._load_parker_ipam(), "netbox-ipam")
         netbox.assert_called_once_with(
-            api_url="https://netbox", token="token", xlat=False
+            api_url="https://netbox", token="token", xlat=False, v6_filter=None
         )
 
         cfg.netbox = None
@@ -738,6 +773,296 @@ class TestBrokerApp(unittest.TestCase):
                 None, b"", _message("parker/wireguard-worker/worker/status", b"invalid")
             )
         get.assert_not_called()
+
+    def _site_ipams(self, stored=None, counts=None, offline=()):
+        counts = counts or {}
+        site_ipams = {}
+        for site, net in (("muc", "2001:db8:10::/63"), ("vie", "2001:db8:20::/63")):
+            site_ipams[site] = mock.MagicMock()
+            site_ipams[site].get_or_allocate_prefix.return_value = (
+                None,
+                ipaddress.IPv6Network(net),
+                [f"{site}1"] if site == stored else [],
+            )
+            site_ipams[site].is_primary.return_value = site == stored
+            site_ipams[site].count_primary.return_value = counts.get(site, 0)
+        for name in ("muc1", "muc2", "vie1"):
+            self.broker_app.parker_worker_metrics.set_online(name)
+            self.broker_app.parker_worker_data[name] = {
+                "LinkAddress": "fe80::1",
+                "ExternalAddress": f"{name}.example",
+                "Port": 10000,
+                "PublicKey": f"{name}-key",
+            }
+        for name in offline:
+            self.broker_app.parker_worker_metrics.set_offline(name)
+        self.broker_app.primary_counts.clear()
+        return site_ipams
+
+    def _multisite_exchange(self, query, cfg=None, best=(), **ipam_args):
+        cfg = cfg or _multisite_config()
+        site_ipams = self._site_ipams(**ipam_args)
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "ipam", None),
+            mock.patch.object(self.broker_app, "site_ipams", site_ipams),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+            mock.patch.object(
+                self.broker_app.parker_worker_metrics,
+                "get_best_workers",
+                return_value=[
+                    self.broker_app.WorkerResult(name, 0, 0, 0, 0) for name in best
+                ],
+            ),
+            mock.patch.object(
+                self.broker_app, "sign_response", return_value=b"signature"
+            ),
+        ):
+            response = self.broker_app.app.test_client().get(
+                "/config",
+                query_string={"pubkey": _PUBLIC_KEY, "nonce": "n", **query},
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+        published = [
+            (call.args[0], json.loads(call.args[1]))
+            for call in mqtt.publish.call_args_list
+        ]
+        return json.loads(response.data.split(b"\n", 1)[0]), published, site_ipams
+
+    def test_multisite_exchange_gives_all_sites(self):
+        payload, published, site_ipams = self._multisite_exchange(
+            {},
+            best=("muc2", "vie1"),
+            counts={"muc": 5, "vie": 3},
+        )
+
+        # A new node gets the site with the lowest load.
+        self.assertEqual(payload["primary_site"], "vie")
+        self.assertEqual(payload["range6"], "2001:db8:20::/64")
+        self.assertEqual(payload["xlat_range6"], "2001:db8:20:1::/64")
+        self.assertEqual([c["id"] for c in payload["concentrators"]], [101, 102])
+        self.assertEqual(
+            [c["endpoint"] for c in payload["concentrators"]],
+            ["muc2.example:10000", "vie1.example:10000"],
+        )
+        muc = payload["sites"]["muc"]
+        self.assertEqual(muc["range6"], "2001:db8:10::/64")
+        self.assertEqual(muc["dns64"], "2001:db8:1::64")
+        self.assertEqual(muc["concentrator"], 101)
+        self.assertEqual(
+            [(p["name"], p["id"], p["preferred"]) for p in muc["pgws"]],
+            [("muc1", 1, False), ("muc2", 2, True)],
+        )
+        self.assertEqual(
+            [(topic, data["Range6"]) for topic, data in published],
+            [
+                ("parker/wireguard/muc1", "2001:db8:10::/63"),
+                ("parker/wireguard/muc2", "2001:db8:10::/63"),
+                ("parker/wireguard/vie1", "2001:db8:20::/63"),
+            ],
+        )
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc2"], primary=False
+        )
+        site_ipams["vie"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["vie1"], primary=True
+        )
+
+    def test_multisite_primary_site_is_sticky(self):
+        payload, _, site_ipams = self._multisite_exchange(
+            {}, best=("muc1", "vie1"), stored="muc", counts={"muc": 9, "vie": 1}
+        )
+
+        self.assertEqual(payload["primary_site"], "muc")
+        self.assertEqual(payload["range6"], "2001:db8:10::/64")
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc1"], primary=True
+        )
+        site_ipams["vie"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["vie1"], primary=False
+        )
+
+    def test_multisite_preferred_site_moves_node(self):
+        payload, published, site_ipams = self._multisite_exchange(
+            {"preferred_site": "vie"}, best=("muc1", "vie1"), stored="muc"
+        )
+
+        self.assertEqual(payload["primary_site"], "vie")
+        self.assertEqual(payload["range6"], "2001:db8:20::/64")
+        # The peer stays on all pgws of both sites.
+        self.assertFalse(any(data.get("Remove") for _, data in published))
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc1"], primary=False
+        )
+        site_ipams["vie"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["vie1"], primary=True
+        )
+
+    def test_multisite_offline_primary_site_is_not_stored(self):
+        payload, published, site_ipams = self._multisite_exchange(
+            {},
+            best=("vie1",),
+            stored="muc",
+            counts={"muc": 1, "vie": 9},
+            offline=("muc1", "muc2"),
+        )
+
+        # The node gets vie for this response only. muc stays its primary site.
+        self.assertEqual(payload["range6"], "2001:db8:20::/64")
+        self.assertEqual(
+            [(topic, data.get("Remove", False)) for topic, data in published],
+            [("parker/wireguard/vie1", False)],
+        )
+        site_ipams["muc"].update_prefix.assert_not_called()
+        site_ipams["vie"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["vie1"], primary=False
+        )
+        # The counts do not change.
+        self.assertEqual(
+            {name: e[0] for name, e in self.broker_app.primary_counts.items()},
+            {"vie": 9},
+        )
+
+        # When muc is online again, the node gets muc again.
+        payload, _, _ = self._multisite_exchange(
+            {}, best=("muc1",), stored="muc", counts={"muc": 1, "vie": 9}
+        )
+        self.assertEqual(payload["range6"], "2001:db8:10::/64")
+
+    def test_select_primary_site_capacity_and_preference(self):
+        select = self.broker_app._select_primary_site
+        for vie_capacity, counts, stored, preferred, offline, expected in (
+            # The preference is used when the site has capacity.
+            (None, {"muc": 1, "vie": 9}, None, "vie", (), ("vie", "vie")),
+            # A full, offline or unknown preferred site is ignored.
+            (3, {"muc": 1, "vie": 3}, "muc", "vie", (), ("muc", "muc")),
+            (None, {"muc": 1, "vie": 0}, "muc", "vie", ("vie1",), ("muc", "muc")),
+            (None, {"muc": 1, "vie": 0}, "muc", "ber", (), ("muc", "muc")),
+            # A site over capacity gives its nodes to other sites.
+            (3, {"muc": 9, "vie": 4}, "vie", None, (), ("muc", "muc")),
+            # A site with capacity 0 gets no new nodes, also when preferred.
+            (0, {"muc": 9, "vie": 0}, None, "vie", (), ("muc", "muc")),
+            # An offline stored site is kept, the response uses another site.
+            (None, {"muc": 1, "vie": 9}, "muc", None, ("muc1", "muc2"), ("muc", "vie")),
+            # A new node does not get an offline site.
+            (None, {"muc": 1, "vie": 9}, None, None, ("muc1", "muc2"), ("vie", "vie")),
+        ):
+            with self.subTest(
+                counts=counts, stored=stored, preferred=preferred, offline=offline
+            ):
+                cfg = _multisite_config(vie_capacity=vie_capacity)
+                site_ipams = self._site_ipams(
+                    stored=stored, counts=counts, offline=offline
+                )
+                with (
+                    mock.patch.object(
+                        self.broker_app.config, "get_config", return_value=cfg
+                    ),
+                    mock.patch.object(self.broker_app, "site_ipams", site_ipams),
+                ):
+                    self.assertEqual(
+                        select(_PUBLIC_KEY, preferred), (stored, *expected)
+                    )
+
+    def test_select_primary_site_distributes_new_nodes_by_weight(self):
+        for vie_weight, expected in (
+            (1, {"muc": 6, "vie": 6}),
+            (2, {"muc": 4, "vie": 8}),
+        ):
+            with self.subTest(vie_weight=vie_weight):
+                cfg = _multisite_config(vie_weight=vie_weight)
+                site_ipams = self._site_ipams()
+                with (
+                    mock.patch.object(
+                        self.broker_app.config, "get_config", return_value=cfg
+                    ),
+                    mock.patch.object(self.broker_app, "site_ipams", site_ipams),
+                ):
+                    for _ in range(12):
+                        stored, site, _ = self.broker_app._select_primary_site(
+                            _PUBLIC_KEY, None
+                        )
+                        self.broker_app._move_primary_count(stored, site)
+                    self.assertEqual(
+                        {
+                            name: int(count)
+                            for name, (
+                                count,
+                                _,
+                            ) in self.broker_app.primary_counts.items()
+                        },
+                        expected,
+                    )
+
+    def test_switch_needs_fresh_handshake_on_new_pgw(self):
+        cfg = _multisite_config()
+        self.broker_app.handshakes.clear()
+        query = {"pubkey": _PUBLIC_KEY, "site": "muc", "pgw": "muc2"}
+        site_ipams = {"muc": mock.MagicMock(), "vie": mock.MagicMock()}
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+            mock.patch.object(self.broker_app, "site_ipams", site_ipams),
+        ):
+            client = self.broker_app.app.test_client()
+            self.assertEqual(
+                client.get("/api/v3/switch", query_string=query).status_code, 409
+            )
+            bad = {**query, "pgw": "vie1"}
+            self.assertEqual(
+                client.get("/api/v3/switch", query_string=bad).status_code, 400
+            )
+
+            self.broker_app.handle_mqtt_message_parker_handshake(
+                None,
+                None,
+                _message(
+                    "parker/wireguard-worker/muc1/handshake",
+                    json.dumps({"PublicKey": _PUBLIC_KEY}).encode(),
+                ),
+            )
+            self.assertEqual(
+                client.get("/api/v3/switch", query_string=query).status_code, 409
+            )
+
+            self.broker_app.handle_mqtt_message_parker_handshake(
+                None,
+                None,
+                _message(
+                    "parker/wireguard-worker/muc2/handshake",
+                    json.dumps({"PublicKey": _PUBLIC_KEY}).encode(),
+                ),
+            )
+            self.assertEqual(
+                client.get("/api/v3/switch", query_string=query).status_code, 200
+            )
+            mqtt.publish.assert_called_once_with(
+                "parker/wireguard/muc1",
+                json.dumps({"PublicKey": _PUBLIC_KEY, "Unroute": True}).encode(),
+                qos=1,
+            )
+            # The reported pgw is the new preferred pgw of the site.
+            site_ipams["muc"].update_prefix.assert_called_once_with(
+                _PUBLIC_KEY, False, True, ["muc2"]
+            )
+            site_ipams["vie"].update_prefix.assert_not_called()
+
+            # When the broker cannot store the pgw, it does not unroute.
+            mqtt.publish.reset_mock()
+            site_ipams["muc"].update_prefix.side_effect = RuntimeError("down")
+            self.assertEqual(
+                client.get("/api/v3/switch", query_string=query).status_code, 500
+            )
+            mqtt.publish.assert_not_called()
+
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app.time, "monotonic", return_value=10**9),
+        ):
+            response = self.broker_app.app.test_client().get(
+                "/api/v3/switch", query_string=query
+            )
+        self.assertEqual(response.status_code, 409)
 
 
 if __name__ == "__main__":

@@ -21,11 +21,13 @@ from wgkex.common import logger
 #   },
 #   "concentrators": {
 #     "<public_key>": ["gw01.example", "gw03.example"]
-#   }
+#   },
+#   "primary": ["<public_key>"]
 # }
 # "concentrators" holds the workers last handed out to a node. It is written by
 # update_prefix() and is what makes the broker's sticky worker selection work
 # across requests; files without the key are read as "nothing selected yet".
+# "primary" (multi-site only) holds the nodes that have this site as primary site.
 
 FILE_PATH = "/var/local/wgkex/broker/ipv6_ranges.json"
 
@@ -48,22 +50,23 @@ class JSONFileIPAM(ParkerIPAM):
 
     def _read(
         self,
-    ) -> tuple[ipaddress.IPv6Network, dict[str, str], dict[str, list[str]]]:
+    ) -> tuple[ipaddress.IPv6Network, dict[str, str], dict[str, list[str]], set[str]]:
         """Reads the storage file. Must be called with the storage lock held.
 
         Returns:
-            The parent prefix, the prefixes per public key and the last selected
-            concentrators per public key.
+            The parent prefix, the prefixes per public key, the last selected
+            concentrators per public key and the nodes with this primary site.
         """
         parent_prefix = ipaddress.IPv6Network("2001:db8:ed0::/56")
         ranges: dict[str, str] = {}
         concentrators: dict[str, list[str]] = {}
+        primary: set[str] = set()
 
         try:
             with open(self.file_path, "r", encoding="utf-8") as ranges_file:
                 json_content = json.load(ranges_file)
         except FileNotFoundError:
-            return parent_prefix, ranges, concentrators
+            return parent_prefix, ranges, concentrators, primary
         except json.JSONDecodeError as error:
             logger.error(
                 "Could not decode JSON IPAM storage %s",
@@ -95,7 +98,11 @@ class JSONFileIPAM(ParkerIPAM):
                 continue
             concentrators[pubkey] = workers
 
-        return parent_prefix, ranges, concentrators
+        stored_primary = json_content.get("primary", [])
+        if isinstance(stored_primary, list):
+            primary = {key for key in stored_primary if isinstance(key, str)}
+
+        return parent_prefix, ranges, concentrators, primary
 
     def get_or_allocate_prefix(
         self,
@@ -117,7 +124,7 @@ class JSONFileIPAM(ParkerIPAM):
             return None, None, []
 
         with self._locked_storage():
-            parent_prefix, ranges, concentrators = self._read()
+            parent_prefix, ranges, concentrators, primary = self._read()
             selected_concentrators = concentrators.get(pubkey, [])
 
             range6 = ranges.get(pubkey)
@@ -147,7 +154,7 @@ class JSONFileIPAM(ParkerIPAM):
                     range6,
                 )
                 ranges[pubkey] = range6
-                self._atomic_write(parent_prefix, ranges, concentrators)
+                self._atomic_write(parent_prefix, ranges, concentrators, primary)
 
             return None, ipaddress.IPv6Network(range6), selected_concentrators
 
@@ -156,6 +163,7 @@ class JSONFileIPAM(ParkerIPAM):
         parent_prefix: ipaddress.IPv6Network,
         ranges: dict[str, str],
         concentrators: dict[str, list[str]],
+        primary: set[str],
     ) -> None:
         existing_mode: int | None = None
         try:
@@ -175,6 +183,7 @@ class JSONFileIPAM(ParkerIPAM):
                         "parent_prefix": str(parent_prefix),
                         "ranges": ranges,
                         "concentrators": concentrators,
+                        "primary": sorted(primary),
                     },
                     ranges_file,
                 )
@@ -191,7 +200,12 @@ class JSONFileIPAM(ParkerIPAM):
         raise NotImplementedError
 
     def update_prefix(
-        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: list[str]
+        self,
+        pubkey: str,
+        ipv4: bool,
+        ipv6: bool,
+        selected_concentrators: list[str],
+        primary: bool | None = None,
     ) -> None:
         """Persists the concentrators handed out to a node, so the next request for
         the same public key can stick to them."""
@@ -200,14 +214,23 @@ class JSONFileIPAM(ParkerIPAM):
 
         try:
             with self._locked_storage():
-                parent_prefix, ranges, concentrators = self._read()
+                parent_prefix, ranges, concentrators, primary_keys = self._read()
                 # get_best_workers() iterates a set, so an unchanged selection
                 # can arrive in a different order after a broker restart; store
                 # it sorted or the comparison below would rewrite the file on
                 # every request.
                 new_concentrators = sorted(selected_concentrators)
 
-                if concentrators.get(pubkey, []) == new_concentrators:
+                new_primary = set(primary_keys)
+                if primary is True:
+                    new_primary.add(pubkey)
+                elif primary is False:
+                    new_primary.discard(pubkey)
+
+                if (
+                    concentrators.get(pubkey, []) == new_concentrators
+                    and new_primary == primary_keys
+                ):
                     # Nothing changed, don't rewrite the file on every request.
                     return
 
@@ -221,7 +244,7 @@ class JSONFileIPAM(ParkerIPAM):
                     new_concentrators,
                     pubkey,
                 )
-                self._atomic_write(parent_prefix, ranges, concentrators)
+                self._atomic_write(parent_prefix, ranges, concentrators, new_primary)
         except Exception as error:  # noqa: BLE001
             # Losing this update only costs the node its sticky concentrators on
             # the next request, so don't fail the response over it. A structurally
@@ -232,3 +255,11 @@ class JSONFileIPAM(ParkerIPAM):
                 self.file_path,
                 exc_info=error,
             )
+
+    def is_primary(self, pubkey: str) -> bool:
+        with self._locked_storage():
+            return pubkey in self._read()[3]
+
+    def count_primary(self) -> int:
+        with self._locked_storage():
+            return len(self._read()[3])

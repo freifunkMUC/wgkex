@@ -29,6 +29,9 @@ _PARKER_PREFIX_LENGTH = 63
 _PARKER_INTERFACE = "wg-nodes"  # TODO make interface name configurable
 _NETLINK_DUMP_RETRIES = 1
 _ABSENT_ERRNOS = {errno.ENOENT, errno.ENODEV, errno.ESRCH}
+# When set, the route gate (route_gate.py) owns the Parker routes and the
+# peer provisioning does not add them.
+parker_routes_gated = False
 
 
 class _Handles:
@@ -500,7 +503,10 @@ def parker_link_handler(
         _run_operation("wireguard", client, update_wireguard_peer, operations)
         return operations
     _run_operation("wireguard", client, update_wireguard_peer, operations)
-    _run_operation("route", client, route_handler, operations)
+    if parker_routes_gated:
+        operations["route"] = OperationOutcome(status="gated")
+    else:
+        _run_operation("route", client, route_handler, operations)
     for previous_range6 in client.previous_ranges6:
         if previous_range6 == client.range6:
             continue

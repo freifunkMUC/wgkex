@@ -18,6 +18,7 @@ from wgkex.common.mqtt import (
     TOPIC_CONNECTED_PEERS,
     TOPIC_PARKER_CONNECTED_PEERS,
     TOPIC_PARKER_WG_PEER,
+    TOPIC_PARKER_WORKER_HANDSHAKE,
     TOPIC_PARKER_WORKER_STATUS,
     TOPIC_PARKER_WORKER_WG_DATA,
     TOPIC_WG_KEY,
@@ -28,7 +29,7 @@ from wgkex.common.mqtt import (
     WG_KEY_ALL_WORKERS,
 )
 from wgkex.config.config import get_config
-from wgkex.worker import drain
+from wgkex.worker import drain, netlink, route_gate
 from wgkex.worker.gateway_keys import gateway_keys, is_gateway_key
 from wgkex.worker.msg_queue import PeerOp, q
 from wgkex.worker.netlink import (
@@ -158,6 +159,24 @@ def connect(exit_event: threading.Event) -> None:
     threading.Thread(
         target=republish_announcement_loop, args=(exit_event, client), daemon=True
     ).start()
+
+    gate_cfg = get_config().parker.route_gate if parker_enabled else None
+    if gate_cfg is not None:
+        route_gate.gate = route_gate.RouteGate(
+            gate_cfg.handshake_max_age,
+            get_config().parker.prefixes.ipv6.length,
+            on_route=lambda public_key: client.publish(
+                TOPIC_PARKER_WORKER_HANDSHAKE.format(worker=_HOSTNAME),
+                json.dumps({"PublicKey": public_key}),
+                qos=1,
+            ),
+        )
+        netlink.parker_routes_gated = True
+        threading.Thread(
+            target=route_gate.gate.run,
+            args=(exit_event, gate_cfg.interval),
+            name="route-gate",
+        ).start()
 
     if parker_enabled:
         # Schedule repeated metrics publishing
@@ -515,8 +534,20 @@ def on_message_parker(
             _HOSTNAME,
         )
         return
+    payload = str(message.payload.decode("utf-8"))
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        data = None
+    if isinstance(data, dict) and data.get("Unroute"):
+        public_key = data.get("PublicKey")
+        if route_gate.gate is None or not isinstance(public_key, str):
+            logger.warning("Ignoring Unroute message without route gate or key")
+            return
+        route_gate.gate.unroute(public_key)
+        return
     # TODO: ensure payload is a dict mathing a TBD shared data class
-    q.put(str(message.payload.decode("utf-8")))
+    q.put(payload)
 
 
 def republish_announcement_loop(

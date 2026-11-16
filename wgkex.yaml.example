@@ -202,6 +202,29 @@ parker:
       netbox_filter: {}
       # See parker.prefixes.ipv4.netbox_additional_data
       netbox_additional_data: {}
+  # [broker] Optional. Multi-site active/standby. When set, each site has its own
+  # IPv6 parent prefix and concentrator tunnel, and the global ipv6 netbox_filter is not used.
+  # Each node gets all sites.
+  # The broker selects the primary site of a node: the site that the node asks for
+  # (preferred_site) if it has capacity, else the stored site (sticky), else the site
+  # with the lowest load (nodes / weight). When the stored site is offline, the node
+  # gets another site for one response only.
+  #sites:
+  #  muc:
+  #    tunnel_id: 101            # concentrator id of the site tunnel, unique
+  #    dns64: 2001:db8:1::64     # optional DNS64 server of the site
+  #    netbox_filter: {}         # parent prefix of the site (ipam: netbox)
+  #    #json_file: muc.json      # prefix store of the site (ipam: json)
+  #    #capacity: 2000           # optional maximum of nodes with this primary site
+  #    #weight: 1                # optional relative share of new nodes, default 1
+  #  vie:
+  #    tunnel_id: 102
+  #    netbox_filter: {}
+  # [worker] Optional. Install the route of a node only on the pgw with a fresh
+  # handshake (seconds). The broker uses handshake_max_age to validate switch reports.
+  #route_gate:
+  #  handshake_max_age: 180
+  #  interval: 1
 
 # [broker]
 broker_signing_key: ''

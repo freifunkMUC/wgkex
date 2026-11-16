@@ -73,6 +73,27 @@ py_test(
 )
 
 py_library(
+    name = "route_gate",
+    srcs = ["route_gate.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       requirement("pyroute2"),
+       "//wgkex/common:logger",
+       ":netlink",
+       ":peer_state",
+    ],
+)
+
+py_test(
+    name = "route_gate_test",
+    srcs = ["route_gate_test.py"],
+    deps = [
+       ":route_gate",
+    ],
+    size="small",
+)
+
+py_library(
     name = "mqtt",
     srcs = ["mqtt.py"],
     visibility = ["//visibility:public"],
@@ -89,6 +110,7 @@ py_library(
        ":netlink",
        ":rebalance",
        ":peer_state",
+       ":route_gate",
     ],
 )
 

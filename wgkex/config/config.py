@@ -132,6 +132,10 @@ class Workers:
     def get(self, worker: str) -> Worker | None:
         return self._workers.get(worker)
 
+    def names_in_pop(self, pop: str) -> list[str]:
+        """Return the names of all configured workers in a PoP, sorted."""
+        return sorted(name for name, w in self._workers.items() if w.pop == pop)
+
     def relative_worker_weight(self, worker_name: str) -> float:
         """Returns the share of all peers this worker should get according to the configured weights.
 
@@ -616,12 +620,50 @@ class Parker:
         JSON = "json"
         NETBOX = "netbox"
 
+    @dataclasses.dataclass(frozen=True)
+    class Site:
+        """One site (PoP) of a multi-site Parker network.
+
+        Attributes:
+            name: The site name. It is the same as the 'pop' of its workers.
+            tunnel_id: The concentrator ID of the node tunnel to this site. It
+                stays the same when the node changes the pgw in the site.
+            dns64: The DNS64 server of the site, sent to the nodes.
+            netbox_filter: The NetBox filter for the parent prefix of the site.
+            json_file: The JSON IPAM file of the site.
+            capacity: The maximum number of nodes with this primary site.
+                None means no limit.
+            weight: The relative share of new nodes for this site.
+        """
+
+        name: str
+        tunnel_id: int
+        dns64: str | None = None
+        netbox_filter: dict[str, Any] | None = None
+        json_file: str | None = None
+        capacity: int | None = None
+        weight: float = 1
+
+    @dataclasses.dataclass(frozen=True)
+    class RouteGate:
+        """Worker: install the /63 route of a node only with a fresh handshake.
+
+        Attributes:
+            handshake_max_age: A handshake older than this (seconds) is not fresh.
+            interval: How often the worker checks the handshakes (seconds).
+        """
+
+        handshake_max_age: float = 180
+        interval: float = 1
+
     enabled: bool
     xlat: bool
     prefixes: Prefixes
     ipam: IPAM
     retry_interval: int = 120
     wg_keepalive: int = 25
+    sites: dict[str, Site] = dataclasses.field(default_factory=dict)
+    route_gate: RouteGate | None = None
 
     @classmethod
     def from_dict(cls, parker_cfg: dict[str, Any]) -> "Parker":
@@ -687,12 +729,16 @@ class Parker:
             raise ValueError(
                 "Parker IPv6 allocation prefix length must be between 0 and 63"
             )
-        if ipam == cls.IPAM.NETBOX and (
-            "netbox_filter" not in pfx["ipv6"]
-            or not isinstance(pfx["ipv6"]["netbox_filter"], dict)
+        if (
+            ipam == cls.IPAM.NETBOX
+            and not parker_cfg.get("sites")
+            and (
+                "netbox_filter" not in pfx["ipv6"]
+                or not isinstance(pfx["ipv6"]["netbox_filter"], dict)
+            )
         ):
             raise ValueError(
-                "Parker prefixes config must contain 'netbox_filter' key for 'ipv6' when using NetBox as IPAM and not using 464xlat"
+                "Parker prefixes config must contain 'netbox_filter' key for 'ipv6' when using NetBox as IPAM and no 'sites'"
             )
 
         # TODO remove this block when non-464XLAT mode is fully supported
@@ -701,6 +747,22 @@ class Parker:
 
         retry_interval = int(parker_cfg.get("retry_interval", cls.retry_interval))
         wg_keepalive = int(parker_cfg.get("wg_keepalive", cls.wg_keepalive))
+        sites = cls._sites_from_dict(parker_cfg, ipam)
+
+        route_gate = None
+        gate_cfg = parker_cfg.get("route_gate")
+        if gate_cfg is not None:
+            if not isinstance(gate_cfg, dict):
+                raise ValueError("parker.route_gate must be a mapping")
+            route_gate = cls.RouteGate(
+                handshake_max_age=_positive_duration(
+                    gate_cfg.get("handshake_max_age", 180),
+                    "parker.route_gate.handshake_max_age",
+                ),
+                interval=_positive_duration(
+                    gate_cfg.get("interval", 1), "parker.route_gate.interval"
+                ),
+            )
 
         return cls(
             enabled=enabled,
@@ -725,7 +787,57 @@ class Parker:
             ipam=ipam,
             retry_interval=retry_interval,
             wg_keepalive=wg_keepalive,
+            sites=sites,
+            route_gate=route_gate,
         )
+
+    @classmethod
+    def _sites_from_dict(
+        cls, parker_cfg: dict[str, Any], ipam: "Parker.IPAM"
+    ) -> dict[str, "Parker.Site"]:
+        sites_cfg = parker_cfg.get("sites") or {}
+        if not isinstance(sites_cfg, dict):
+            raise ValueError("parker.sites must be a mapping")  # noqa: TRY004
+        sites: dict[str, Parker.Site] = {}
+        for name, site_cfg in sites_cfg.items():
+            if not isinstance(site_cfg, dict) or "tunnel_id" not in site_cfg:
+                raise ValueError(f"parker.sites.{name} must set tunnel_id")
+            netbox_filter = site_cfg.get("netbox_filter")
+            json_file = site_cfg.get("json_file")
+            if ipam == cls.IPAM.NETBOX and not isinstance(netbox_filter, dict):
+                raise ValueError(f"parker.sites.{name} must set netbox_filter")
+            if ipam == cls.IPAM.JSON and not json_file:
+                raise ValueError(f"parker.sites.{name} must set json_file")
+            capacity = site_cfg.get("capacity")
+            if capacity is not None and (
+                isinstance(capacity, bool)
+                or not isinstance(capacity, int)
+                or capacity < 0
+            ):
+                raise ValueError(
+                    f"parker.sites.{name}.capacity must be an integer >= 0"
+                )
+            weight = site_cfg.get("weight", 1)
+            if (
+                isinstance(weight, bool)
+                or not isinstance(weight, (int, float))
+                or not math.isfinite(weight)
+                or weight <= 0
+            ):
+                raise ValueError(f"parker.sites.{name}.weight must be a number > 0")
+            sites[str(name)] = cls.Site(
+                name=str(name),
+                tunnel_id=int(site_cfg["tunnel_id"]),
+                dns64=site_cfg.get("dns64"),
+                netbox_filter=netbox_filter,
+                json_file=json_file,
+                capacity=capacity,
+                weight=float(weight),
+            )
+        tunnel_ids = [site.tunnel_id for site in sites.values()]
+        if len(set(tunnel_ids)) != len(tunnel_ids):
+            raise ValueError("parker.sites tunnel_id values must be unique")
+        return sites
 
 
 @dataclasses.dataclass

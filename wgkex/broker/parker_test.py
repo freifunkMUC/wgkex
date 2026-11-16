@@ -55,6 +55,9 @@ class TestParkerQuery(unittest.TestCase):
         self.assertEqual(q.v6mtu, 1400)
         self.assertEqual(q.pubkey, data["pubkey"])
         self.assertEqual(q.nonce, "n1")
+        self.assertIsNone(q.preferred_site)
+        q = ParkerQuery.from_dict({**data, "preferred_site": "vie"})
+        self.assertEqual(q.preferred_site, "vie")
 
     def test_parker_query_from_dict_invalid_pubkey(self):
         from wgkex.broker.parker import ParkerQuery
