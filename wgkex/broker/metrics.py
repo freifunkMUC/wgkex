@@ -439,6 +439,15 @@ class WorkerMetricsCollection:
             len(assignments) for assignments in self._pending.values()
         )
 
+        # Normalize the weights over the workers of this collection only. The workers config
+        # can also hold classic gateways, which never report here.
+        weights = {
+            w: workers_cfg.relative_worker_weight(w)
+            for w in self.data
+            if not require_configured or workers_cfg.get(w) is not None
+        }
+        total_weight = sum(weights.values()) or 1
+
         for pop in workers_cfg.all_pops:
             candidates: list[WorkerResult] = []
 
@@ -461,7 +470,7 @@ class WorkerMetricsCollection:
                     continue
 
                 peers = self.get_effective_peer_count(wm.worker)
-                rel_weight = workers_cfg.relative_worker_weight(wm.worker)
+                rel_weight = weights[wm.worker] / total_weight
                 target = round(rel_weight * total_peers)
                 diff = peers - target
                 logger.debug(

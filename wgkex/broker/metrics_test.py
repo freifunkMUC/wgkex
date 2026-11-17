@@ -236,6 +236,28 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual([result.name for result in results], ["2"])
 
     @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
+    def test_sticky_pgw_kept_with_classic_workers_in_config(self, config_mock):
+        """Classic gateways in the same workers config must not shrink the pgw targets."""
+        workers = {f"gw{i:02d}": {"id": 10 + i, "weight": 100} for i in range(8)}
+        workers["pgw1"] = {"id": 1, "weight": 100, "pop": "a"}
+        workers["pgw2"] = {"id": 2, "weight": 100, "pop": "a"}
+        test_config = mock.MagicMock(spec=config.Config)
+        test_config.workers = config.Workers.from_dict(workers, 25)
+        config_mock.return_value = test_config
+
+        worker_metrics = WorkerMetricsCollection()
+        worker_metrics.update("pgw1", "d", "connected_peers", 52)
+        worker_metrics.update("pgw2", "d", "connected_peers", 48)
+        worker_metrics.set_online("pgw1")
+        worker_metrics.set_online("pgw2")
+
+        results = worker_metrics.get_best_workers(
+            "d", current_selected_workers=["pgw1"], require_configured=True
+        )
+        self.assertEqual([r.name for r in results], ["pgw1"])
+        self.assertEqual(results[0].target, 50)
+
+    @mock.patch("wgkex.broker.metrics.config.get_config", autospec=True)
     def test_get_best_workers_skips_draining_workers(self, config_mock):
         test_config = mock.MagicMock(spec=config.Config)
         test_config.workers = config.Workers.from_dict(
