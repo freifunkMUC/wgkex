@@ -1,25 +1,27 @@
 """Unit tests for netlink.py"""
 
-# pyroute2 decides imports based on platform. WireGuard is specific to Linux only. Mock pyroute2.WireGuard so that
-# any testing platform can execute tests.
-import importlib
-import sys
+# pyroute2 decides imports based on platform. WireGuard is specific to Linux only. Replace the pyroute2 name inside
+# wgkex.worker.netlink with a mock so that any testing platform can execute tests, regardless of which test module
+# imported netlink first.
 import unittest
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
 import pyroute2.netlink.exceptions as pyroute2_netlink_exceptions
 
+from wgkex.worker import netlink, observability
+
 pyroute2_module_mock = mock.MagicMock()
 pyroute2_module_mock.netlink.exceptions = pyroute2_netlink_exceptions
-sys.modules["pyroute2"] = pyroute2_module_mock
-sys.modules["pyroute2.netlink"] = mock.MagicMock()
-from pyroute2 import IPRoute, WireGuard
+IPRoute = pyroute2_module_mock.IPRoute
+WireGuard = pyroute2_module_mock.WireGuard
 
-from wgkex.worker import observability
 
-sys.modules.pop("wgkex.worker.netlink", None)
-netlink = importlib.import_module("wgkex.worker.netlink")
+def setUpModule() -> None:
+    patcher = mock.patch.object(netlink, "pyroute2", pyroute2_module_mock)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
 
 _WG_CLIENT_ADD = netlink.WireGuardClient(
     public_key="public_key", domain="add", remove=False
@@ -309,7 +311,7 @@ class NetlinkTest(unittest.TestCase):
 
         self.assertListEqual(["CONNECTED"], netlink.get_connected_peers("wg-welt"))
 
-    @mock.patch("pyroute2.WireGuard")
+    @mock.patch("wgkex.worker.netlink.pyroute2.WireGuard")
     def test_get_connected_peers_count_NetlinkDumpInterrupted(self, pyroute2_wg_mock):
         """Tests getting the correct number of connected peers for an interface."""
 

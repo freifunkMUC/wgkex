@@ -1,22 +1,24 @@
 """Behavioral tests for the Parker stale peer cleanup in netlink.py."""
 
 import errno
-import importlib
-import sys
 import unittest
 from unittest import mock
 
 import pyroute2.netlink.exceptions as pyroute2_netlink_exceptions
 
+from wgkex.worker import netlink
+from wgkex.worker.peer_state import PeerMutationCoordinator
+
 pyroute2_module_mock = mock.MagicMock()
 pyroute2_module_mock.netlink.exceptions = pyroute2_netlink_exceptions
-sys.modules["pyroute2"] = pyroute2_module_mock
-sys.modules["pyroute2.netlink"] = mock.MagicMock()
-from pyroute2 import IPRoute, WireGuard
+IPRoute = pyroute2_module_mock.IPRoute
+WireGuard = pyroute2_module_mock.WireGuard
 
-sys.modules.pop("wgkex.worker.netlink", None)
-netlink = importlib.import_module("wgkex.worker.netlink")
-from wgkex.worker.peer_state import PeerMutationCoordinator
+
+def setUpModule() -> None:
+    patcher = mock.patch.object(netlink, "pyroute2", pyroute2_module_mock)
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 class MutableClock:
