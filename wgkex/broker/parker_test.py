@@ -7,6 +7,7 @@ from unittest import mock
 
 import paho.mqtt.client
 
+import wgkex.broker
 from wgkex.config import config
 
 
@@ -108,6 +109,18 @@ class TestParkerQuery(unittest.TestCase):
             )
 
 
+def _evict_broker_modules(*names: str) -> None:
+    """Drops imported broker modules from sys.modules and from the wgkex.broker package.
+
+    `from wgkex.broker import app` prefers the package attribute over sys.modules, so
+    popping sys.modules alone would hand a stale, stubbed module to later tests.
+    """
+    for name in names:
+        sys.modules.pop(f"wgkex.broker.{name}", None)
+        if hasattr(wgkex.broker, name):
+            delattr(wgkex.broker, name)
+
+
 class TestParker(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -115,12 +128,12 @@ class TestParker(unittest.TestCase):
         test_config = _get_test_config()
         config._parsed_config = test_config
 
-        # Stub out signer module before importing broker.app which imports it at module level
-        cls._original_modules = {
-            name: sys.modules.get(name)
-            for name in ("wgkex.broker.signer", "flask_mqtt")
-        }
-        sys.modules["wgkex.broker.signer"] = mock.MagicMock()
+        # Stub signer and flask_mqtt (no network at import) only while the broker app is
+        # imported; patch.dict restores sys.modules, including dropping the app itself.
+        cls._modules_patcher = mock.patch.dict(
+            sys.modules, {"wgkex.broker.signer": mock.MagicMock()}
+        )
+        cls._modules_patcher.start()
 
         # Stub out flask_mqtt.Mqtt to avoid network connections during import
         flask_mqtt_stub = mock.MagicMock()
@@ -167,18 +180,14 @@ class TestParker(unittest.TestCase):
 
         flask_mqtt_stub.Mqtt = MqttStub
         sys.modules["flask_mqtt"] = flask_mqtt_stub
-        sys.modules.pop("wgkex.broker.app", None)
+        _evict_broker_modules("app")
         importlib.import_module("wgkex.broker.app")
 
     @classmethod
     def tearDownClass(cls) -> None:
         config._parsed_config = None
-        for name, module in cls._original_modules.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
-        sys.modules.pop("wgkex.broker.app", None)
+        cls._modules_patcher.stop()
+        _evict_broker_modules("app", "signer")
 
     def test_join_host_port(self):
         from wgkex.broker import app as broker_app
