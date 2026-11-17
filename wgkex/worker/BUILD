@@ -102,6 +102,7 @@ py_library(
        requirement("pyroute2"),
        "//wgkex/common:logger",
        "//wgkex/common:mqtt",
+       "//wgkex/common:subscriptions",
        "//wgkex/common:utils",
        "//wgkex/config:config",
        ":drain",

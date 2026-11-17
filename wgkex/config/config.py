@@ -1,5 +1,6 @@
 """Configuration handling class."""
 
+import copy
 import dataclasses
 import ipaddress
 import logging
@@ -36,6 +37,78 @@ def _positive_duration(value: Any, name: str) -> float:
 
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
 WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
+WG_CONFIG_ENV_PREFIX = "WGKEX__"
+# Keys that are not lower case in the configuration file.
+_ENV_KEY_CASE = {"externalname": "externalName"}
+# Credentials are taken verbatim, so a password like "0123" or "true" is not converted.
+_ENV_RAW_KEYS = {"username", "password"}
+
+
+def _parse_env_value(key: str, value: str) -> Any:
+    """Reads an override like a value in the YAML file; usernames and passwords stay strings."""
+    if key.lower() in _ENV_RAW_KEYS:
+        return value
+    try:
+        return yaml.safe_load(value)
+    except yaml.YAMLError:
+        # Not the parser message: it could quote part of a secret.
+        raise ValueError("invalid YAML value") from None
+
+
+def _env_key(node: dict[str, Any], part: str) -> str:
+    lower = part.lower()
+    for key in node:
+        if isinstance(key, str) and key.lower() == lower:
+            return key
+    return _ENV_KEY_CASE.get(lower, lower)
+
+
+def env_overrides_present(environ: dict[str, str] | None = None) -> bool:
+    """Returns True if any WGKEX__ override is set in the environment."""
+    environ = os.environ if environ is None else environ
+    return any(name.startswith(WG_CONFIG_ENV_PREFIX) for name in environ)
+
+
+def apply_env_overrides(
+    cfg: dict[str, Any], environ: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Applies WGKEX__<KEY>[__<SUBKEY>...] environment variables on top of the configuration.
+
+    WGKEX__MQTT__PASSWORD=secret sets mqtt.password. Keys match the configuration file case-insensitively,
+    values are read like in the YAML file (except usernames and passwords, which stay strings).
+    Variables are applied in sorted order, so a nested variable wins over a map set by its parent variable.
+
+    Arguments:
+        cfg: The configuration file as a dict (not modified).
+        environ: The environment, defaults to os.environ.
+
+    Raises:
+        ValueError: If a variable name is malformed, a value cannot be parsed or a key is not a map.
+    Returns:
+        A new dict with the overrides applied.
+    """
+    environ = os.environ if environ is None else environ
+    result = copy.deepcopy(cfg)
+    for name in sorted(environ):
+        if not name.startswith(WG_CONFIG_ENV_PREFIX):
+            continue
+        path = name[len(WG_CONFIG_ENV_PREFIX) :].split("__")
+        if not all(path):
+            raise ValueError(f"{name}: empty key")
+        try:
+            value = _parse_env_value(path[-1], environ[name])
+        except ValueError as e:
+            raise ValueError(f"{name}: {e}") from None
+        node = result
+        for part in path[:-1]:
+            key = _env_key(node, part)
+            if node.get(key) is None:
+                node[key] = {}
+            if not isinstance(node[key], dict):
+                raise ValueError(f"{name}: {key} is not a map")  # noqa: TRY004
+            node = node[key]
+        node[_env_key(node, path[-1])] = value
+    return result
 
 
 @dataclasses.dataclass
@@ -517,7 +590,7 @@ class BrokerListen:
     def from_dict(cls, broker_listen: dict[str, Any]) -> "BrokerListen":
         return cls(
             host=broker_listen.get("host"),
-            port=broker_listen.get("port"),
+            port=int(broker_listen["port"]) if broker_listen.get("port") else None,
         )
 
 
@@ -1003,15 +1076,28 @@ def get_config() -> Config:
     """
     global _parsed_config
     if _parsed_config is None:
-        cfg_contents = fetch_config_from_disk()
+        try:
+            cfg_contents = fetch_config_from_disk()
+        except ConfigFileNotFoundError:
+            if not env_overrides_present():
+                raise
+            cfg_contents = "{}"
         try:
             config = yaml.safe_load(cfg_contents)
         except yaml.YAMLError as e:
             print(f"Failed to load YAML file: {e}")
             sys.exit(1)
+        if config is None:
+            config = {}
+        if isinstance(config, dict) and env_overrides_present():
+            try:
+                config = apply_env_overrides(config)
+            except ValueError as e:
+                print(f"Failed to apply environment overrides: {e}")
+                sys.exit(1)
         try:
             config = Config.from_dict(config)
-        except (KeyError, TypeError, AttributeError) as e:
+        except (KeyError, TypeError, AttributeError, ValueError) as e:
             print(f"Failed to lint file: {e}")
             sys.exit(2)
         _parsed_config = config

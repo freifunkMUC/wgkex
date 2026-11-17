@@ -159,6 +159,7 @@ py_binary(
         "//wgkex/common:keylist",
         "//wgkex/common:logger",
         "//wgkex/common:mqtt",
+        "//wgkex/common:subscriptions",
         "//wgkex/common:utils",
         ":assignments",
         ":metrics",

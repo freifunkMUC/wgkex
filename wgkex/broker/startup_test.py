@@ -24,6 +24,9 @@ class MqttStub:
     def on_message(self):
         return lambda func: func
 
+    def on_subscribe(self):
+        return lambda func: func
+
 
 class TestBrokerStartup(unittest.TestCase):
     def tearDown(self) -> None:

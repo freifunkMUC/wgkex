@@ -31,6 +31,9 @@ class MqttStub:
     def on_message(self):
         return lambda func: func
 
+    def on_subscribe(self):
+        return lambda func: func
+
     def subscribe(self, *args, **kwargs):
         return None
 
@@ -189,6 +192,7 @@ class TestBrokerApp(unittest.TestCase):
 
     def test_mqtt_connect_success_and_failure(self):
         mqtt = mock.MagicMock()
+        mqtt.subscribe.return_value = (0, 1)
         client = mock.MagicMock(host="mqtt", port=1883)
         with (
             mock.patch.object(

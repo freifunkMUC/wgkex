@@ -53,6 +53,7 @@ from wgkex.common.mqtt import (
     WG_KEY_ALL_WORKERS,
     MQTTTopics,
 )
+from wgkex.common.subscriptions import SubscriptionGuard
 from wgkex.common.utils import (
     WG_PUBKEY_PATTERN,  # noqa: F401 re-exported for compatibility
     is_valid_domain,
@@ -180,6 +181,7 @@ def _load_site_ipams() -> dict[str, ParkerIPAM]:
 app = _fetch_app_config()
 # Connected via init_app() at the end of this module, after all handlers are registered.
 mqtt = Mqtt()
+subscriptions = SubscriptionGuard()
 _load_balancing_cfg = config.get_config().load_balancing
 worker_metrics = WorkerMetricsCollection(
     pending_ttl=_load_balancing_cfg.pending_assignment_ttl,
@@ -1034,22 +1036,36 @@ def handle_mqtt_connect(
         )
         return
     logger.debug("MQTT connected to %s:%s", *broker)
-    mqtt.subscribe("wireguard-metrics/#")
-    mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
-    mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+    subscriptions.subscribe(mqtt, "wireguard-metrics/#")
+    subscriptions.subscribe(mqtt, TOPIC_WORKER_STATUS.format(worker="+"))
+    subscriptions.subscribe(mqtt, TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
     if config.get_config().load_balancing.share_pending_assignments:
-        mqtt.subscribe(TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
+        subscriptions.subscribe(mqtt, TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
     if config.get_config().parker.enabled:
         logger.debug("Parker mode is enabled, subscribing to parker topics")
-        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"))
-        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
-        mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"))
+        subscriptions.subscribe(
+            mqtt, MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+")
+        )
+        subscriptions.subscribe(
+            mqtt, MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+")
+        )
+        subscriptions.subscribe(
+            mqtt, MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+")
+        )
         if config.get_config().parker.sites:
-            mqtt.subscribe(
-                MQTTTopics.TOPIC_PARKER_WORKER_HANDSHAKE.format(worker="+"), qos=1
+            subscriptions.subscribe(
+                mqtt, MQTTTopics.TOPIC_PARKER_WORKER_HANDSHAKE.format(worker="+"), qos=1
             )
         if ipam_caches:
-            mqtt.subscribe(TOPIC_BROKER_IPAM.format(broker="+"), qos=1)
+            subscriptions.subscribe(mqtt, TOPIC_BROKER_IPAM.format(broker="+"), qos=1)
+
+
+@mqtt.on_subscribe()
+def handle_mqtt_subscribe(
+    client: mqtt_client.Client, userdata: bytes, mid: int, granted_qos: Any
+) -> None:
+    """Retries subscriptions rejected by the MQTT broker."""
+    subscriptions.on_subscribe(client, userdata, mid, granted_qos)
 
 
 @mqtt.on_topic("wireguard-metrics/#")
