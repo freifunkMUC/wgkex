@@ -30,13 +30,27 @@ class SubscriptionGuard:
             if result == 0:
                 self._pending[mid] = (client, topic, qos)
 
+    def on_subscribe_v2(
+        self,
+        client: Any,
+        userdata: Any,
+        mid: int,
+        reason_code_list: Any,
+        properties: Any = None,
+    ) -> None:
+        """Handler for the paho CallbackAPIVersion.VERSION2 on_subscribe callback."""
+        self.on_subscribe(client, userdata, mid, reason_code_list)
+
     def on_subscribe(
         self, client: Any, userdata: Any, mid: int, granted_qos: Any
     ) -> None:
         """Handler for the on_subscribe callback."""
         with self._lock:
             entry = self._pending.pop(mid, None)
-        if entry is None or not any(q >= SUBACK_FAILURE for q in granted_qos):
+        # Flask-MQTT passes ints, paho VERSION2 passes ReasonCode objects (int value in .value).
+        if entry is None or not any(
+            getattr(q, "value", q) >= SUBACK_FAILURE for q in granted_qos
+        ):
             return
         _, topic, qos = entry
         logger.error(
