@@ -1,4 +1,4 @@
-flask-mqtt
+flask-mqtt~=1.3.0
 pyroute2~=0.9.7
 PyYAML~=6.0.3
 Flask~=3.1.3
@@ -7,5 +7,5 @@ pynetbox~=7.6
 
 # Common
 prometheus-client~=0.26.0
-paho-mqtt~=2.1.0
+paho-mqtt~=2.2.0
 ecdsa~=0.19.1
