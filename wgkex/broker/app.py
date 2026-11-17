@@ -1,6 +1,7 @@
 """wgkex broker"""
 
 import dataclasses
+import ipaddress
 import json
 import random
 import re
@@ -110,16 +111,13 @@ def _fetch_app_config() -> Flask_app:
     return app
 
 
-def _load_parker_ipam() -> ParkerIPAM | None:
-    if not config.get_config().parker.enabled:
-        return None
-
-    ipam: ParkerIPAM
+def _new_ipam(
+    netbox_filter: dict[str, Any] | None = None, json_file: str | None = None
+) -> ParkerIPAM:
     ipam_type = config.get_config().parker.ipam
-
     match ipam_type:
         case config.Parker.IPAM.JSON:
-            ipam = JSONFileIPAM()
+            return JSONFileIPAM(json_file) if json_file else JSONFileIPAM()
         case config.Parker.IPAM.NETBOX:
             netbox_cfg = config.get_config().netbox
             if netbox_cfg is None:
@@ -127,15 +125,32 @@ def _load_parker_ipam() -> ParkerIPAM | None:
                     "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
                 )
 
-            ipam = NetboxIPAM(
+            return NetboxIPAM(
                 api_url=netbox_cfg.url,
                 token=netbox_cfg.api_key,
                 xlat=config.get_config().parker.xlat,
+                v6_filter=netbox_filter,
             )
         case _:
             raise NotImplementedError(f"Invalid IPAM type {ipam_type}")
 
-    return ipam
+
+def _load_parker_ipam() -> ParkerIPAM | None:
+    parker_cfg = config.get_config().parker
+    if not parker_cfg.enabled or parker_cfg.sites:
+        return None
+    return _new_ipam()
+
+
+def _load_site_ipams() -> dict[str, ParkerIPAM]:
+    """Load one IPAM per site. Each site has its own parent prefix."""
+    parker_cfg = config.get_config().parker
+    if not parker_cfg.enabled:
+        return {}
+    return {
+        name: _new_ipam(site.netbox_filter, site.json_file)
+        for name, site in parker_cfg.sites.items()
+    }
 
 
 app = _fetch_app_config()
@@ -202,6 +217,13 @@ def _create_blocklist() -> KeyList:
 rate_limiter = _create_rate_limiter()
 blocklist = _create_blocklist()
 ipam: ParkerIPAM | None = _load_parker_ipam()
+site_ipams: dict[str, ParkerIPAM] = _load_site_ipams()
+# Public key -> (worker, receive time) of the last fresh handshake that a
+# worker reported. Used to accept switch reports from nodes.
+handshakes: dict[str, tuple[str, float]] = {}
+# Site -> [number of nodes with this primary site, time of the IPAM read].
+primary_counts: dict[str, list[float]] = {}
+_PRIMARY_COUNT_MAX_AGE = 60
 
 
 def _blocked_response(api: str, key: str) -> tuple[dict, int]:
@@ -445,7 +467,7 @@ def _previous_workers(previous: Assignment, domain: str, worker: str) -> list[st
 @app.route("/api/v3/config", methods=["GET"])
 @app.route("/config", methods=["GET"])
 def wg_api_v3_key_exchange() -> tuple[Response | dict, int]:
-    if not config.get_config().parker.enabled or ipam is None:
+    if not config.get_config().parker.enabled or (ipam is None and not site_ipams):
         KEY_EXCHANGE_REQUESTS.labels("v3", "disabled").inc()
         return {
             "error": {"message": "Parker support is not enabled on this broker"}
@@ -478,63 +500,189 @@ def wg_api_v3_key_exchange() -> tuple[Response | dict, int]:
         return {"error": {"message": "too many requests"}}, 429
 
     try:
-        _, full_range6, old_selected_concentrators = ipam.get_or_allocate_prefix(
-            req_data.pubkey,
+        if config.get_config().parker.sites:
+            data = _multisite_response(req_data)
+        else:
+            data = _single_site_response(req_data)
+        return _signed_response(data)
+    except _ApiError as error:
+        KEY_EXCHANGE_REQUESTS.labels("v3", error.reason).inc()
+        return {"error": {"message": error.message}}, error.status
+
+
+class _ApiError(Exception):
+    def __init__(self, message: str, status: int, reason: str) -> None:
+        super().__init__(message)
+        self.message = message
+        self.status = status
+        # Label of the KEY_EXCHANGE_REQUESTS metric
+        self.reason = reason
+
+
+def _allocate_range6(
+    site_ipam: ParkerIPAM, pubkey: str
+) -> tuple[ipaddress.IPv6Network, list[str]]:
+    """Fetch or allocate the IPv6 range of a node.
+
+    Returns:
+        The range and the concentrators that were last selected for the node.
+    """
+    try:
+        _, full_range6, old_selected_concentrators = site_ipam.get_or_allocate_prefix(
+            pubkey,
             not config.get_config().parker.xlat,
             True,
             config.get_config().parker.prefixes.ipv4.length or 0,
             config.get_config().parker.prefixes.ipv6.length,
         )
-    except Exception as ex:  # noqa: BLE001
+    except Exception as ex:
         logger.error(
             "Exception occurred while fetching/allocating IPv6 prefix for public key %s: %s",
-            req_data.pubkey,
+            pubkey,
             ex,
             exc_info=True,
         )
-        KEY_EXCHANGE_REQUESTS.labels("v3", "ipam_error").inc()
-        return {
-            "error": {
-                "message": "Internal error while allocating IP range. Please try again later."
-            }
-        }, 500
+        raise _ApiError(
+            "Internal error while allocating IP range. Please try again later.",
+            500,
+            "ipam_error",
+        ) from ex
 
     if full_range6 is None:
-        KEY_EXCHANGE_REQUESTS.labels("v3", "ipam_error").inc()
-        return {
-            "error": {
-                "message": "No IPv6 range available for this public key. Please try again later."
-            }
-        }, 500
+        raise _ApiError(
+            "No IPv6 range available for this public key. Please try again later.",
+            500,
+            "ipam_error",
+        )
     if full_range6.prefixlen > 63:
         logger.error(
             "Allocated IPv6 range %s is too small for Parker's two /64 networks",
             full_range6,
         )
-        KEY_EXCHANGE_REQUESTS.labels("v3", "ipam_error").inc()
-        return {
-            "error": {
-                "message": "Allocated IPv6 range is invalid. Please try again later."
-            }
-        }, 500
+        raise _ApiError(
+            "Allocated IPv6 range is invalid. Please try again later.",
+            500,
+            "ipam_error",
+        )
     expected_length = config.get_config().parker.prefixes.ipv6.length
     if full_range6.prefixlen != expected_length:
         logger.warning(
             "IPv6 prefix %s for public key %s has length /%s, but /%s is configured. "
             "Fix or delete the prefix in the IPAM.",
             full_range6,
-            req_data.pubkey,
+            pubkey,
             full_range6.prefixlen,
             expected_length,
         )
+    return full_range6, old_selected_concentrators
+
+
+def _node_addresses(full_range6: ipaddress.IPv6Network) -> dict[str, str]:
     ranges = full_range6.subnets(new_prefix=64)
     range6 = next(ranges)
     xlat_range6 = next(ranges)
+    return {
+        "range6": str(range6),
+        "xlat_range6": str(xlat_range6),
+        "address6": str(range6.network_address + 1),
+    }
 
-    domain = "parker"
+
+def _concentrator(worker_name: str, concentrator_id: int) -> dict[str, Any]:
+    w_data = parker_worker_data.get(worker_name, None)
+    if w_data is None:
+        logger.error(f"Couldn't get worker endpoint data for {worker_name}")
+        raise _ApiError("could not get gateway data", 500, "no_worker_data")
+
+    # An endpoint_name in the config replaces the address the worker announced,
+    # leaving it to the nodes to resolve the concentrator's name.
+    worker_cfg = config.get_config().workers.get(worker_name)
+    endpoint_host = str(w_data.get("ExternalAddress"))
+    if worker_cfg is not None and worker_cfg.endpoint_name:
+        endpoint_host = worker_cfg.endpoint_name
+
+    return {
+        "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
+        "address6": w_data.get("LinkAddress"),
+        "endpoint": join_host_port(endpoint_host, str(w_data.get("Port"))),
+        "pubkey": w_data.get("PublicKey"),  # type: ignore
+        "id": concentrator_id,
+    }
+
+
+def _count_new_peer(
+    worker_name: str, pubkey: str, old_selected_concentrators: list[str]
+) -> None:
+    """Count a newly selected concentrator as pending until the worker metrics reflect it,
+    like v2 assignments. Not for re-confirmed ones, so periodic polls don't inflate the load.
+    The pending key includes the PoP, because a node has one concentrator per PoP.
+    """
+    if worker_name in old_selected_concentrators:
+        return
+    worker_cfg = config.get_config().workers.get(worker_name)
+    pop = worker_cfg.pop if worker_cfg is not None else ""
+    parker_worker_metrics.record_assignment(worker_name, "parker", f"{pop}/{pubkey}")
+    ASSIGNMENTS.labels(worker_name, "parker").inc()
+
+
+def _provision(
+    pubkey: str,
+    full_range6: ipaddress.IPv6Network,
+    worker_names: list[str],
+    old_selected_concentrators: list[str],
+) -> None:
+    # Provision the peer only on the given workers. A broadcast here would
+    # (re-)install the peer and its prefix routes on every worker, and any
+    # worker that then announces the prefix without holding a live session
+    # blackholes part of the ECMP flows.
+    mqtt_data = {
+        "PublicKey": pubkey,
+        "Range6": str(full_range6),
+        "Keepalive": None,  # TODO make configurable
+    }
+    for worker_name in worker_names:
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=worker_name),
+            json.dumps(mqtt_data).encode("utf-8"),
+            qos=1,
+        )
+
+    # A de-selected worker would keep the node's peer and prefix route until
+    # its stale-peer sweep runs, up to a full cleanup interval. Tell it to
+    # drop the peer right away instead. A worker that predates the Remove
+    # flag reads this as the re-provisioning it always received - no worse
+    # than before.
+    for previous_name in old_selected_concentrators:
+        if previous_name in worker_names:
+            continue
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=previous_name),
+            json.dumps({**mqtt_data, "Remove": True}).encode("utf-8"),
+            qos=1,
+        )
+
+
+def _base_response(req_data: ParkerQuery, addresses: dict[str, str], concentrators):
+    return dataclasses.asdict(
+        ParkerResponse(
+            nonce=req_data.nonce,
+            time=int(datetime.now(tz=timezone.utc).timestamp()),
+            id=req_data.pubkey,
+            mtu=min(req_data.v6mtu, 1375),
+            concentrators=concentrators,
+            **addresses,
+        )
+    )
+
+
+def _single_site_response(req_data: ParkerQuery) -> dict[str, Any]:
+    assert ipam is not None
+    full_range6, old_selected_concentrators = _allocate_range6(ipam, req_data.pubkey)
+
+    logger.info(f"wg_api_v3_key_exchange: Key:{req_data.pubkey}")
 
     selected_workers = parker_worker_metrics.get_best_workers(
-        domain, old_selected_concentrators, require_configured=True
+        "parker", old_selected_concentrators, require_configured=True
     )
 
     if len(selected_workers) == 0:
@@ -545,135 +693,310 @@ def wg_api_v3_key_exchange() -> tuple[Response | dict, int]:
             if config.get_config().workers.get(name) is not None
             and parker_worker_metrics.get(name).online
         ]
-        if fallback_candidates:
-            fallback_name = random.choice(fallback_candidates)
-            fallback_cfg = config.get_config().workers.get(fallback_name)
-            selected_workers.append(
-                WorkerResult(
-                    name=fallback_name,
-                    id=fallback_cfg.id,
-                    diff=0,
-                    peers=0,
-                    target=0,
-                )
+        if not fallback_candidates:
+            raise _ApiError(
+                "no gateway online, please try again later", 400, "no_worker"
             )
-        else:
-            KEY_EXCHANGE_REQUESTS.labels("v3", "no_worker").inc()
-            return {
-                "error": {"message": "no gateway online, please try again later"}
-            }, 400
+        fallback_name = random.choice(fallback_candidates)
+        fallback_cfg = config.get_config().workers.get(fallback_name)
+        selected_workers.append(
+            WorkerResult(
+                name=fallback_name,
+                id=fallback_cfg.id,
+                diff=0,
+                peers=0,
+                target=0,
+            )
+        )
 
     concentrators = []
-
     for worker in selected_workers:
-        # Count newly selected concentrators as pending until the worker metrics reflect them,
-        # like v2 assignments. Not for re-confirmed ones, so periodic polls don't inflate the load.
-        # The pending key includes the PoP, because a node has one concentrator per PoP.
-        if worker.name not in old_selected_concentrators:
-            worker_cfg = config.get_config().workers.get(worker.name)
-            pop = worker_cfg.pop if worker_cfg is not None else ""
-            parker_worker_metrics.record_assignment(
-                worker.name, domain, f"{pop}/{req_data.pubkey}"
-            )
-            ASSIGNMENTS.labels(worker.name, domain).inc()
+        _count_new_peer(worker.name, req_data.pubkey, old_selected_concentrators)
         logger.debug(
             f"Chose worker {worker.name} with {worker.peers} connected clients ({worker.diff})"
         )
+        concentrators.append(_concentrator(worker.name, worker.id))
 
-        w_data = parker_worker_data.get(worker.name, None)
-        if w_data is None:
-            logger.error(f"Couldn't get worker endpoint data for {worker.name}")
-            KEY_EXCHANGE_REQUESTS.labels("v3", "no_worker_data").inc()
-            return {"error": {"message": "could not get gateway data"}}, 500
-
-        # An endpoint_name in the config replaces the address the worker announced,
-        # leaving it to the nodes to resolve the concentrator's name.
-        worker_cfg = config.get_config().workers.get(worker.name)
-        endpoint_host = str(w_data.get("ExternalAddress"))
-        if worker_cfg is not None and worker_cfg.endpoint_name:
-            endpoint_host = worker_cfg.endpoint_name
-
-        concentrators.append(
-            {
-                "address4": "10.0.0.1",  # TODO fetch real concentrator address4 from worker status
-                "address6": w_data.get("LinkAddress"),
-                "endpoint": join_host_port(endpoint_host, str(w_data.get("Port"))),
-                "pubkey": w_data.get("PublicKey"),  # type: ignore
-                "id": worker.id,
-            }
-        )
-
-    # Provision the peer only on the workers this node was assigned to. A
-    # broadcast here would (re-)install the peer and its prefix routes on
-    # every worker, and any worker that then announces the prefix without
-    # holding a live session blackholes part of the ECMP flows.
-    mqtt_data = {
-        "PublicKey": req_data.pubkey,
-        "Range6": str(full_range6),
-        "Keepalive": None,  # TODO make configurable
-    }
-    for worker in selected_workers:
-        mqtt.publish(
-            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=worker.name),
-            json.dumps(mqtt_data).encode("utf-8"),
-            qos=1,
-        )
-
-    # A de-selected worker would keep the node's peer and prefix route until
-    # its stale-peer sweep runs, up to a full cleanup interval. Tell it to
-    # drop the peer right away instead. A worker that predates the Remove
-    # flag reads this as the re-provisioning it always received - no worse
-    # than before.
-    selected_names = {worker.name for worker in selected_workers}
-    for previous_name in old_selected_concentrators:
-        if previous_name in selected_names:
-            continue
-        mqtt.publish(
-            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=previous_name),
-            json.dumps({**mqtt_data, "Remove": True}).encode("utf-8"),
-            qos=1,
-        )
-
+    selected_names = [worker.name for worker in selected_workers]
+    _provision(req_data.pubkey, full_range6, selected_names, old_selected_concentrators)
     ipam.update_prefix(
+        req_data.pubkey, not config.get_config().parker.xlat, True, selected_names
+    )
+    return _base_response(req_data, _node_addresses(full_range6), concentrators)
+
+
+def _online_pgws(site: str) -> list[str]:
+    return [
+        worker
+        for worker in config.get_config().workers.names_in_pop(site)
+        if worker in parker_worker_data and parker_worker_metrics.get(worker).online
+    ]
+
+
+def _primary_count(site: str) -> int:
+    """Return the number of nodes with this primary site.
+
+    The broker reads the count from the IPAM at most every
+    _PRIMARY_COUNT_MAX_AGE seconds. Between the reads, it adds its own changes,
+    like the interpolation of the worker peer counts.
+    """
+    now = time.monotonic()
+    entry = primary_counts.get(site)
+    if entry is None or now - entry[1] > _PRIMARY_COUNT_MAX_AGE:
+        try:
+            entry = [site_ipams[site].count_primary(), now]
+        except Exception as error:  # noqa: BLE001
+            logger.error(
+                "Could not count primary nodes of site %s", site, exc_info=error
+            )
+            entry = [entry[0] if entry else 0, now]
+        primary_counts[site] = entry
+    return int(entry[0])
+
+
+def _move_primary_count(old: str | None, new: str) -> None:
+    for site, delta in ((old, -1), (new, 1)):
+        if site in primary_counts:
+            primary_counts[site][0] += delta
+
+
+def _select_primary_site(
+    pubkey: str, preferred: str | None
+) -> tuple[str | None, str, str]:
+    """Select the primary site of a node.
+
+    The broker stores a new primary site only in these cases:
+    1. The node prefers another site that is online and has capacity.
+    2. The node has no stored site, or the stored site is full or removed.
+       Then the broker stores the online site with the lowest load
+       (nodes / weight) that has capacity.
+
+    When the stored site has no online pgw, the node gets another site for this
+    response only. When the stored site is online again, the node gets it again.
+
+    Returns:
+        The stored primary site (None if there is none), the primary site to
+        store and the site for this response.
+    """
+    sites = config.get_config().parker.sites
+    try:
+        stored = next(
+            (name for name in sites if site_ipams[name].is_primary(pubkey)), None
+        )
+    except Exception as error:
+        logger.error("Could not read the primary site of %s", pubkey, exc_info=error)
+        raise _ApiError(
+            "Internal error while reading the primary site. Please try again later.",
+            500,
+            "ipam_error",
+        ) from error
+
+    def has_capacity(name: str, new_node: bool) -> bool:
+        capacity = sites[name].capacity
+        # A node that already has this site is in the count.
+        return capacity is None or _primary_count(name) + int(new_node) <= capacity
+
+    def lowest_load(exclude: str | None) -> str:
+        others = [name for name in sites if name != exclude]
+        online = [name for name in others if _online_pgws(name)]
+        candidates = (
+            [name for name in online if has_capacity(name, True)]
+            or online
+            or others
+            or list(sites)
+        )
+        return min(
+            candidates, key=lambda name: _primary_count(name) / sites[name].weight
+        )
+
+    if (
+        preferred in sites
+        and preferred != stored
+        and _online_pgws(preferred)
+        and has_capacity(preferred, True)
+    ):
+        return stored, preferred, preferred
+    if stored is not None and has_capacity(stored, False):
+        if _online_pgws(stored):
+            return stored, stored, stored
+        return stored, stored, lowest_load(stored)
+    target = lowest_load(stored)
+    return stored, target, target
+
+
+def _multisite_response(req_data: ParkerQuery) -> dict[str, Any]:
+    """Build the response for a multi-site (active/standby) network.
+
+    The node gets one range and one tunnel per site. Its peer goes to all pgws
+    of each site: the preferred pgw is active, the others are standby.
+    """
+    parker_cfg = config.get_config().parker
+    workers_cfg = config.get_config().workers
+    stored_primary, target, primary = _select_primary_site(
+        req_data.pubkey, req_data.preferred_site
+    )
+    if target != primary:
+        logger.warning(
+            "Primary site %s of %s is offline, use %s for this response",
+            target,
+            req_data.pubkey,
+            primary,
+        )
+    if stored_primary != target:
+        logger.info(
+            "Primary site of %s changes from %s to %s",
+            req_data.pubkey,
+            stored_primary,
+            target,
+        )
+        _move_primary_count(stored_primary, target)
+    site_names = list(parker_cfg.sites)
+
+    logger.info(
+        "wg_api_v3_key_exchange: Key:%s primary_site:%s",
         req_data.pubkey,
-        not config.get_config().parker.xlat,
-        True,
-        [w.name for w in selected_workers],
+        primary,
     )
 
-    response = ParkerResponse(
-        nonce=req_data.nonce,
-        time=int(datetime.now(tz=timezone.utc).timestamp()),
-        id=req_data.pubkey,
-        mtu=min(req_data.v6mtu, 1375),
-        range6=str(range6),
-        xlat_range6=str(xlat_range6),
-        address6=str(range6.network_address + 1),
-        concentrators=concentrators,
-    )
+    allocations = {
+        name: _allocate_range6(site_ipams[name], req_data.pubkey) for name in site_names
+    }
+    best: dict[str, str] = {}
+    for result in parker_worker_metrics.get_best_workers(
+        "parker",
+        [name for _, old in allocations.values() for name in old],
+        require_configured=True,
+    ):
+        best[workers_cfg.get(result.name).pop] = result.name
 
-    data = json.dumps(dataclasses.asdict(response)).encode("utf-8") + b"\n"
+    sites: dict[str, dict[str, Any]] = {}
+    concentrators = []
+    for name in site_names:
+        site = parker_cfg.sites[name]
+        full_range6, old_selected_concentrators = allocations[name]
+        pgws = _online_pgws(name)
+        if not pgws:
+            logger.warning("No pgw online in site %s", name)
+            continue
+        preferred = best.get(name, pgws[0])
+        _count_new_peer(preferred, req_data.pubkey, old_selected_concentrators)
+        _provision(
+            req_data.pubkey,
+            full_range6,
+            pgws,
+            old_selected_concentrators,
+        )
+        site_ipams[name].update_prefix(
+            req_data.pubkey,
+            not parker_cfg.xlat,
+            True,
+            [preferred],
+            primary=name == target,
+        )
+
+        concentrator = _concentrator(preferred, workers_cfg.get(preferred).id)
+        concentrator["id"] = site.tunnel_id
+        concentrators.append(concentrator)
+        sites[name] = {
+            **_node_addresses(full_range6),
+            "dns64": site.dns64,
+            "concentrator": site.tunnel_id,
+            "pgws": [
+                {
+                    **_concentrator(worker, workers_cfg.get(worker).id),
+                    "name": worker,
+                    "preferred": worker == preferred,
+                }
+                for worker in pgws
+            ],
+        }
+
+    if not sites:
+        logger.error("No worker online for Parker network")
+        raise _ApiError("no gateway online, please try again later", 400, "no_worker")
+    if primary not in sites:
+        primary = next(iter(sites))
+
+    addresses = {
+        key: sites[primary][key] for key in ("range6", "xlat_range6", "address6")
+    }
+    data = _base_response(req_data, addresses, concentrators)
+    data["primary_site"] = primary
+    data["sites"] = sites
+    return data
+
+
+def _signed_response(data: dict[str, Any]) -> tuple[Response | dict, int]:
+    encoded = json.dumps(data).encode("utf-8") + b"\n"
     if config.get_config().broker_signing_key is None:
         logger.error(
             "Parker is enabled, but no broker_signing_key is set in the config file. Can't respond to key exchange."
         )
-        KEY_EXCHANGE_REQUESTS.labels("v3", "signing_error").inc()
-        return {
-            "error": {"message": "Internal signature error. Please try again later."}
-        }, 500
+        raise _ApiError(
+            "Internal signature error. Please try again later.", 500, "signing_error"
+        )
 
-    signature: bytes = sign_response(data)
-
-    full_response: bytes = data + signature
+    signature: bytes = sign_response(encoded)
 
     KEY_EXCHANGE_REQUESTS.labels("v3", "ok").inc()
     return (
         Response(
-            response=full_response,
+            response=encoded + signature,
             mimetype="text/plain",
         ),
         200,
     )
+
+
+def _handshake_max_age() -> float:
+    gate = config.get_config().parker.route_gate or config.Parker.RouteGate()
+    return gate.handshake_max_age
+
+
+@app.route("/api/v3/switch", methods=["GET"])
+def wg_api_v3_switch() -> tuple[Response | dict, int]:
+    """A node reports that it moved its tunnel of a site to another pgw.
+
+    The broker accepts the report only when that pgw has reported a fresh
+    handshake of the node. Then it stores that pgw as the preferred pgw of the
+    site and tells the other pgws of the site to remove the route to the node
+    and keep the peer (standby).
+    """
+    parker_cfg = config.get_config().parker
+    if not parker_cfg.enabled or not parker_cfg.sites:
+        return {"error": {"message": "Multi-site Parker is not enabled"}}, 400
+
+    site = request.args.get("site", "")
+    pgw = request.args.get("pgw", "")
+    try:
+        pubkey = is_valid_wg_pubkey(request.args.get("pubkey", ""))
+    except ValueError:
+        return {"error": {"message": "Invalid public key"}}, 400
+    site_pgws = config.get_config().workers.names_in_pop(site)
+    if site not in parker_cfg.sites or pgw not in site_pgws:
+        return {"error": {"message": "Unknown site or pgw"}}, 400
+
+    reported = handshakes.get(pubkey)
+    if (
+        reported is None
+        or reported[0] != pgw
+        or time.monotonic() - reported[1] > _handshake_max_age()
+    ):
+        return {"error": {"message": "No fresh handshake on this pgw yet"}}, 409
+
+    logger.info("Switch of %s to %s in site %s", pubkey, pgw, site)
+    try:
+        site_ipams[site].update_prefix(pubkey, not parker_cfg.xlat, True, [pgw])
+    except Exception as error:  # noqa: BLE001
+        logger.error("Could not store the switch of %s", pubkey, exc_info=error)
+        return {"error": {"message": "Internal error, please try again later"}}, 500
+    payload = json.dumps({"PublicKey": pubkey, "Unroute": True}).encode("utf-8")
+    for other in site_pgws:
+        if other != pgw:
+            mqtt.publish(
+                MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=other), payload, qos=1
+            )
+    return {"Message": "OK"}, 200
 
 
 @mqtt.on_connect()
@@ -704,6 +1027,10 @@ def handle_mqtt_connect(
         mqtt.subscribe(MQTTTopics.TOPIC_PARKER_CONNECTED_PEERS.format(worker="+"))
         mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_STATUS.format(worker="+"))
         mqtt.subscribe(MQTTTopics.TOPIC_PARKER_WORKER_WG_DATA.format(worker="+"))
+        if config.get_config().parker.sites:
+            mqtt.subscribe(
+                MQTTTopics.TOPIC_PARKER_WORKER_HANDSHAKE.format(worker="+"), qos=1
+            )
 
 
 @mqtt.on_topic("wireguard-metrics/#")
@@ -765,6 +1092,26 @@ def handle_mqtt_message_parker_metrics(
 
     logger.info(f"Update Parker worker metrics: {metric} on {worker} = {data}")
     parker_worker_metrics.update(worker, "parker", metric, data)
+
+
+@mqtt.on_topic(MQTTTopics.TOPIC_PARKER_WORKER_HANDSHAKE.format(worker="+"))
+def handle_mqtt_message_parker_handshake(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Stores which worker saw the last fresh handshake of a node."""
+    _, _, worker, _ = message.topic.split("/", 3)
+    try:
+        public_key = is_valid_wg_pubkey(json.loads(message.payload)["PublicKey"])
+    except (ValueError, TypeError, KeyError) as error:
+        logger.error("Invalid handshake event from %s: %s", worker, error)
+        return
+    # Use the receive time of this broker, not the time of the worker, so
+    # that clock differences between hosts do not matter.
+    now = time.monotonic()
+    handshakes[public_key] = (worker, now)
+    max_age = _handshake_max_age()
+    for key in [k for k, (_, seen) in handshakes.items() if now - seen > max_age]:
+        del handshakes[key]
 
 
 @mqtt.on_topic(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))

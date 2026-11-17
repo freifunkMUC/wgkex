@@ -496,6 +496,26 @@ class TestNetboxIPAM(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unsupported address family"):
             ipam._parent_prefix(5)
 
+    def test_primary_flag(self):
+        prefix = mock.MagicMock(
+            prefix="2001:db8::/63", description='{"pubkey": "pubkey"}'
+        )
+        with mock.patch.object(self.ipam, "_deduplicate_prefixes", return_value=prefix):
+            self.ipam.update_prefix("pubkey", False, True, ["gw"], primary=True)
+        self.assertIn('"primary": true', prefix.description)
+        with mock.patch.object(self.ipam, "_get_prefixes", return_value=[prefix]):
+            self.assertTrue(self.ipam.is_primary("pubkey"))
+
+        with mock.patch(
+            "pynetbox.core.endpoint.Endpoint.count", return_value=7
+        ) as count:
+            self.assertEqual(self.ipam.count_primary(), 7)
+        count.assert_called_once_with(
+            family=6,
+            within=self.ipam.parent_prefix_v6.prefix,
+            description__ic='"primary": true',
+        )
+
     def test_update_prefix_handles_save_failure_and_both_families(self):
         prefix = mock.MagicMock(
             prefix="2001:db8::/63",
@@ -513,7 +533,7 @@ class TestNetboxIPAM(unittest.TestCase):
         update.assert_has_calls(
             [
                 mock.call("pubkey", 4, ["worker"]),
-                mock.call("pubkey", 6, ["worker"]),
+                mock.call("pubkey", 6, ["worker"], None),
             ]
         )
 

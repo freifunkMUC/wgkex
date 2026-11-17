@@ -32,6 +32,9 @@ TOPIC_PARKER_WORKER_STATUS = "parker/" + TOPIC_WORKER_STATUS
 TOPIC_PARKER_CONNECTED_PEERS = (
     "parker/wireguard-metrics/{worker}/" + CONNECTED_PEERS_METRIC
 )
+# Worker -> broker: the public key of a node that got a route on this worker because of a fresh
+# handshake (route gate).
+TOPIC_PARKER_WORKER_HANDSHAKE = "parker/wireguard-worker/{worker}/handshake"
 # Broker -> worker: Parker peer updates (JSON), addressed to a worker hostname or "all".
 TOPIC_PARKER_WG_PEER = "parker/wireguard/{worker}"
 
@@ -43,6 +46,7 @@ class MQTTTopics:
     TOPIC_WORKER_STATUS = TOPIC_WORKER_STATUS
     CONNECTED_PEERS_METRIC = CONNECTED_PEERS_METRIC
     TOPIC_CONNECTED_PEERS = TOPIC_CONNECTED_PEERS
+    TOPIC_PARKER_WORKER_HANDSHAKE = TOPIC_PARKER_WORKER_HANDSHAKE
 
     TOPIC_PARKER_WORKER_WG_DATA = TOPIC_PARKER_WORKER_WG_DATA
     TOPIC_PARKER_WORKER_STATUS = TOPIC_PARKER_WORKER_STATUS

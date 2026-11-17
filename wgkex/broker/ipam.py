@@ -37,7 +37,28 @@ class ParkerIPAM(ABC):
 
     @abstractmethod
     def update_prefix(
-        self, pubkey: str, ipv4: bool, ipv6: bool, selected_concentrators: list[str]
+        self,
+        pubkey: str,
+        ipv4: bool,
+        ipv6: bool,
+        selected_concentrators: list[str],
+        primary: bool | None = None,
     ) -> None:
-        """Release any previously allocated IP prefix."""
+        """Store the selected concentrators of a node.
+
+        Attributes:
+            primary: Multi-site only. Whether this site is the primary site of
+                the node. None keeps the stored value.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_primary(self, pubkey: str) -> bool:
+        """Return whether this site is the stored primary site of the node.
+        Does not allocate a prefix."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_primary(self) -> int:
+        """Return the number of nodes that have this site as primary site."""
         raise NotImplementedError

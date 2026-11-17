@@ -279,6 +279,21 @@ class TestJSONFileIPAM(unittest.TestCase):
             )
             self.assertEqual(concentrators, [])
 
+    def test_primary_flag_is_stored_per_public_key(self):
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            ipam = JSONFileIPAM(os.path.join(temporary_dir, "ipv6_ranges.json"))
+            for pubkey in ("a", "b"):
+                ipam.get_or_allocate_prefix(pubkey, ipv4=False, ipv6=True)
+                ipam.update_prefix(pubkey, False, True, ["gw"], primary=True)
+            ipam.update_prefix("b", False, True, ["gw"], primary=False)
+            # None keeps the stored value.
+            ipam.update_prefix("a", False, True, ["gw2"])
+
+            self.assertTrue(ipam.is_primary("a"))
+            self.assertFalse(ipam.is_primary("b"))
+            self.assertFalse(ipam.is_primary("unknown"))
+            self.assertEqual(ipam.count_primary(), 1)
+
     def test_concurrent_processes_keep_each_others_concentrators(self):
         context = multiprocessing.get_context("fork")
         with tempfile.TemporaryDirectory() as temporary_dir:

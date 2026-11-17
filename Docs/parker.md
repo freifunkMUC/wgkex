@@ -9,6 +9,7 @@ This contains some information and explanations specific to running wgkex for [P
 - Supports a PoP concept, configures one concentrator tunnel per PoP
 - Concentrators selected dynamically, but existing concentrators reused unless over treshold (see [Design Considerations](#design-considerations))
 - NetBox as IPAM backend to allocate node prefixes (by pubkey) and store additional data
+- Optional multi-site active/standby (see [Multi-site active/standby](#multi-site-activestandby))
 
 
 ## Configuration
@@ -18,7 +19,7 @@ For Parker the following configuration items are relevant in addition to the def
 - `workers` map (including `pop` key)
 - `sticky_worker_tolerance`
 - `broker_signing_key`
-- `parker` section
+- `parker` section (optional: `sites`, `route_gate`)
 - `peer_cleanup` section (`parker_stale_timeout`, `initial_handshake_grace`; the older `cleanup` section is still
   accepted as an alias)
 - `netbox` section
@@ -97,3 +98,26 @@ This is only done when a concentrator has changed compared to the previous value
   - Quicker switchover to backup tunnels
   - Immediately fetch config when all tunnels are inactive. This would also allow increasing `retry_interval` a lot
 - Share Parker pending assignments between broker instances, like `load_balancing.share_pending_assignments` does for /api/v2
+
+
+### Multi-site active/standby
+
+Each site (for example MUC and VIE) has its own IPv6 parent prefix and its own concentrator tunnel. A node gets one prefix per site.
+
+Broker:
+- Each node gets all sites in the `sites` field and the `primary_site` field. The broker adds the peer to all online pgws of each site. One pgw per site is `preferred`. The broker selects it with the sticky selection above.
+- The broker selects the primary site of a node in this order:
+  1. The site in the optional `preferred_site` query parameter, if that site has capacity.
+  2. The stored primary site of the node (sticky), if it still has capacity.
+  3. The site with the lowest load (nodes with this primary site / `weight`) that has capacity. With equal weights, the nodes spread equally.
+- A site has capacity when it has fewer nodes than `capacity` (no limit when not set). A preferred site and a new site must also have an online pgw.
+- When the stored site has no online pgw, the node gets another site for this response only. The broker does not store this site. When the stored site is online again, the next `/config` call gives the stored site again.
+- The IPAM stores the primary site with the prefix of the node (`"primary": true`). The brokers count the nodes per site from the IPAM at most every 60 s and add their own changes between the counts.
+
+Worker:
+- With `parker.route_gate`, a pgw installs the route to the prefix of a node only when the node has a fresh handshake (`handshake_max_age`) on this pgw. Thus only the active pgw attracts the return traffic. When the gate adds a route, the worker sends `parker/wireguard-worker/<worker>/handshake`.
+
+Switch:
+- When a node moves to another pgw of a site, it calls `GET /api/v3/switch?pubkey=..&site=..&pgw=..`.
+- The broker accepts the call only after a fresh handshake event from the new pgw (else `409`, the node tries again). Then it stores the new pgw as the preferred pgw of the site and sends `Unroute` to the other pgws of the site. If the broker cannot store the pgw, it sends `500` and no `Unroute`. They remove the route at once and keep the peer.
+- If no switch report comes, the old route ages out after `handshake_max_age`.

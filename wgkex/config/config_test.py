@@ -440,6 +440,48 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             config.Parker.from_dict(parker)
 
+    def test_parker_sites_and_route_gate(self):
+        parker = _parker_dict()
+        parker["ipam"] = "netbox"
+        parker["sites"] = {
+            "muc": {"tunnel_id": 1, "netbox_filter": {"role": "muc"}},
+            "vie": {
+                "tunnel_id": 2,
+                "netbox_filter": {"role": "vie"},
+                "capacity": 500,
+                "weight": 2,
+            },
+        }
+        parker["route_gate"] = {"handshake_max_age": 120}
+        # Sites replace the global IPv6 NetBox filter.
+        parsed = config.Parker.from_dict(parker)
+        self.assertEqual(parsed.sites["vie"].netbox_filter, {"role": "vie"})
+        self.assertEqual(
+            (parsed.sites["muc"].capacity, parsed.sites["muc"].weight), (None, 1)
+        )
+        self.assertEqual(
+            (parsed.sites["vie"].capacity, parsed.sites["vie"].weight), (500, 2)
+        )
+        self.assertEqual(parsed.route_gate, config.Parker.RouteGate(120, 1))
+        self.assertIsNone(config.Parker.from_dict(_parker_dict()).route_gate)
+
+        for site, error in (
+            ({"netbox_filter": {}}, "tunnel_id"),
+            ({"tunnel_id": 1}, "netbox_filter"),
+            ({"tunnel_id": 3, "netbox_filter": {}, "capacity": -1}, "capacity"),
+            ({"tunnel_id": 3, "netbox_filter": {}, "weight": 0}, "weight"),
+            ({"tunnel_id": 2, "netbox_filter": {}}, "unique"),
+        ):
+            with (
+                self.subTest(error=error),
+                self.assertRaisesRegex(ValueError, error),
+            ):
+                config.Parker.from_dict(
+                    {**parker, "sites": {**parker["sites"], "ber": site}}
+                )
+        with self.assertRaisesRegex(ValueError, "interval"):
+            config.Parker.from_dict({**parker, "route_gate": {"interval": 0}})
+
     def test_worker_parker_config_does_not_require_broker_credentials(self):
         cfg = _config_dict()
         cfg["parker"] = _parker_dict()

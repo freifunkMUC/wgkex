@@ -14,11 +14,14 @@ class ParkerQuery:
         v6mtu (int): The maximum transmission unit (MTU) size the client can handle.
         pubkey (str): The client's WireGuard public key, base64 encoded.
         nonce (str): A unique nonce value to prevent replay attacks.
+        preferred_site (str): Optional site that the node owner selected as
+            primary site. The broker uses it only when the site has capacity.
     """
 
     v6mtu: int
     pubkey: str
     nonce: str
+    preferred_site: str | None = None
 
     def __post_init__(self) -> None:
         self.pubkey = is_valid_wg_pubkey(self.pubkey)
@@ -29,7 +32,13 @@ class ParkerQuery:
         v6mtu: int = int(data.get("v6mtu", 1280))
         pubkey: str = is_valid_wg_pubkey(data.get("pubkey", ""))
         nonce: str = data.get("nonce", "")
-        return cls(v6mtu=v6mtu, pubkey=pubkey, nonce=nonce)
+        preferred_site = str(data.get("preferred_site") or "") or None
+        return cls(
+            v6mtu=v6mtu,
+            pubkey=pubkey,
+            nonce=nonce,
+            preferred_site=preferred_site,
+        )
 
 
 @dataclasses.dataclass
