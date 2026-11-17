@@ -1,6 +1,10 @@
 name: Lint
 
-on: [push, pull_request]
+on:
+  push:
+    branches:
+      - main
+  pull_request:
 
 permissions:
   contents: read
@@ -11,4 +15,4 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-      - uses: psf/black@87928e6d6761a4a6d22250e1fee5601b3998086e # v26.5.1
+      - uses: psf/black@258e7dbf348bc23cb70b8cdf693481c04634ebcc # v26.10.1
