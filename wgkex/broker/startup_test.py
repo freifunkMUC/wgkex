@@ -5,7 +5,20 @@ from unittest import mock
 
 import flask_mqtt
 
+import wgkex.broker
 from wgkex.config import config
+
+
+def _evict_broker_modules(*names: str) -> None:
+    """Drops imported broker modules from sys.modules and from the wgkex.broker package.
+
+    `from wgkex.broker import app` prefers the package attribute over sys.modules, so
+    popping sys.modules alone would hand a stale, stubbed module to later tests.
+    """
+    for name in names:
+        sys.modules.pop(f"wgkex.broker.{name}", None)
+        if hasattr(wgkex.broker, name):
+            delattr(wgkex.broker, name)
 
 
 class MqttStub:
@@ -31,8 +44,7 @@ class MqttStub:
 class TestBrokerStartup(unittest.TestCase):
     def tearDown(self) -> None:
         config._parsed_config = None
-        sys.modules.pop("wgkex.broker.app", None)
-        sys.modules.pop("wgkex.broker.signer", None)
+        _evict_broker_modules("app", "signer")
 
     def test_broker_imports_with_default_parker_disabled_config(self):
         config._parsed_config = config.Config.from_dict(
