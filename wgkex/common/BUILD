@@ -59,6 +59,7 @@ py_test(
     srcs = ["subscriptions_test.py"],
     deps = [
        "//wgkex/common:subscriptions",
+       requirement("paho-mqtt"),
     ],
     size="small",
 )
