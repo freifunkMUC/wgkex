@@ -74,6 +74,7 @@ class MQTTTest(unittest.TestCase):
 
         hostname = socket.gethostname()
 
+        mqtt_client_mock.return_value.subscribe.return_value = (0, 1)
         mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
 
         mqtt_client_mock.assert_has_calls(
@@ -164,6 +165,7 @@ class MQTTTest(unittest.TestCase):
         config_mock.return_value = config
         get_device_data_mock.side_effect = IndexError("no such interface")
         client = mock.MagicMock()
+        client.subscribe.return_value = (0, 1)
 
         mqtt.on_connect(client, None, None, 0)
 
@@ -216,13 +218,15 @@ class MQTTTest(unittest.TestCase):
         topic = f"wireguard-worker/{socket.gethostname()}/rebalance"
 
         client = mock.MagicMock()
+        client.subscribe.return_value = (0, 1)
         mqtt.on_connect(client, None, None, 0)
-        self.assertNotIn(mock.call(topic), client.subscribe.mock_calls)
+        self.assertNotIn(mock.call(topic, qos=0), client.subscribe.mock_calls)
 
         with mock.patch.object(mqtt, "_rebalancer", mock.MagicMock()) as rebalancer:
             client = mock.MagicMock()
+            client.subscribe.return_value = (0, 1)
             mqtt.on_connect(client, None, None, 0)
-            self.assertIn(mock.call(topic), client.subscribe.mock_calls)
+            self.assertIn(mock.call(topic, qos=0), client.subscribe.mock_calls)
 
             message = mock.MagicMock()
             message.payload = b'{"excess": 1, "domains": []}'
@@ -399,6 +403,7 @@ class MQTTTest(unittest.TestCase):
         """Workers subscribe to keys for all workers and for themselves, and to removals."""
         config_mock.return_value = _get_config_mock()
         client = mock.MagicMock()
+        client.subscribe.return_value = (0, 1)
         with mock.patch.object(mqtt, "publish_worker_data_and_status"):
             mqtt.on_connect(client, None, None, 0)
         topics = [c.args[0] for c in client.subscribe.call_args_list]

@@ -40,6 +40,7 @@ from wgkex.common.mqtt import (
     TOPIC_WORKER_WG_DATA,
     WG_KEY_ALL_WORKERS,
 )
+from wgkex.common.subscriptions import SubscriptionGuard
 from wgkex.common.utils import is_valid_domain
 from wgkex.config import config
 
@@ -101,6 +102,7 @@ def _fetch_app_config() -> Flask_app:
 app = _fetch_app_config()
 # Connected via init_app() at the end of this module, after all handlers are registered.
 mqtt = Mqtt()
+subscriptions = SubscriptionGuard()
 _load_balancing_cfg = config.get_config().load_balancing
 worker_metrics = WorkerMetricsCollection(
     pending_ttl=_load_balancing_cfg.pending_assignment_ttl,
@@ -407,11 +409,19 @@ def handle_mqtt_connect(
             app.config["MQTT_BROKER_URL"], app.config["MQTT_BROKER_PORT"]
         )
     )
-    mqtt.subscribe("wireguard-metrics/#")
-    mqtt.subscribe(TOPIC_WORKER_STATUS.format(worker="+"))
-    mqtt.subscribe(TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
+    subscriptions.subscribe(mqtt, "wireguard-metrics/#")
+    subscriptions.subscribe(mqtt, TOPIC_WORKER_STATUS.format(worker="+"))
+    subscriptions.subscribe(mqtt, TOPIC_WORKER_WG_DATA.format(worker="+", domain="+"))
     if config.get_config().load_balancing.share_pending_assignments:
-        mqtt.subscribe(TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
+        subscriptions.subscribe(mqtt, TOPIC_BROKER_ASSIGNMENT.format(broker="+"))
+
+
+@mqtt.on_subscribe()
+def handle_mqtt_subscribe(
+    client: mqtt_client.Client, userdata: bytes, mid: int, granted_qos: Any
+) -> None:
+    """Retries subscriptions rejected by the MQTT broker."""
+    subscriptions.on_subscribe(client, userdata, mid, granted_qos)
 
 
 @mqtt.on_topic("wireguard-metrics/#")

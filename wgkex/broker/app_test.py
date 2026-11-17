@@ -7,6 +7,7 @@ import importlib
 import ipaddress
 import json
 import sys
+import threading
 import unittest
 from unittest import mock
 
@@ -35,6 +36,7 @@ class BrokerTestCase(unittest.TestCase):
         )
         mqtt_mock = mock.MagicMock()
         mqtt_mock.on_connect.side_effect = _decorator_factory
+        mqtt_mock.on_subscribe.side_effect = _decorator_factory
         mqtt_mock.on_topic.side_effect = _decorator_factory
         mqtt_mock.on_message.side_effect = _decorator_factory
         cls.mqtt_patcher = mock.patch("flask_mqtt.Mqtt", return_value=mqtt_mock)
@@ -650,6 +652,8 @@ class MqttConnectTestCase(unittest.TestCase):
             }
         )
         mqtt_mock = mock.MagicMock()
+        mqtt_mock.subscribe.return_value = (0, 1)
+        mqtt_mock.on_subscribe.side_effect = _decorator_factory
         cls.mqtt_mock = mqtt_mock
         cls.connect_handler = None
         cls.subscribed_on_connect: list[str] = []
@@ -697,6 +701,20 @@ class MqttConnectTestCase(unittest.TestCase):
 
     def test_subscribes_on_immediate_connect(self):
         self.assertEqual(self.subscribed_on_connect, list(self._EXPECTED_TOPICS))
+
+    def test_rejected_subscription_is_retried(self):
+        self.mqtt_mock.subscribe.reset_mock()
+        self.mqtt_mock.subscribe.side_effect = [(0, i) for i in range(1, 10)]
+        self.app.subscriptions._retry_delay = 0
+        self.app.handle_mqtt_connect(None, None, {}, 0)
+        self.app.handle_mqtt_subscribe(None, None, 1, (0x80,))
+        for t in threading.enumerate():
+            if isinstance(t, threading.Timer):
+                t.join(timeout=2)
+        topics = [c.args[0] for c in self.mqtt_mock.subscribe.call_args_list]
+        self.assertEqual(topics, [*self._EXPECTED_TOPICS, self._EXPECTED_TOPICS[0]])
+        self.mqtt_mock.subscribe.side_effect = None
+        self.mqtt_mock.subscribe.return_value = (0, 1)
 
     def test_resubscribes_on_reconnect(self):
         self.mqtt_mock.subscribe.reset_mock()
