@@ -4,8 +4,10 @@ import copy
 import dataclasses
 import ipaddress
 import logging
+import math
 import os
 import sys
+from enum import Enum
 from typing import Any
 
 import yaml
@@ -17,6 +19,20 @@ class Error(Exception):
 
 class ConfigFileNotFoundError(Error):
     """File could not be found on disk."""
+
+
+def _positive_duration(value: Any, name: str) -> float:
+    """Parse a finite, positive duration in seconds."""
+    if isinstance(value, bool):
+        message = f"{name} must be a positive duration in seconds"
+        raise ValueError(message)  # noqa: TRY004
+    try:
+        duration = float(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a positive duration in seconds") from error
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError(f"{name} must be a positive duration in seconds")
+    return duration
 
 
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
@@ -100,19 +116,37 @@ class Worker:
     """A representation of the values of the 'workers' dict in the configuration file.
 
     Attributes:
+        id: A unique, static ID for this worker. In Parker mode this is the
+            concentrator ID sent to nodes, identifying the tunnel on the node, so it
+            must never change for a given worker. If not set explicitly in the config,
+            it defaults to the worker's position in the workers map.
         weight: The relative weight of a worker, defaults to 1.
         location: Optional location of the worker, preferred by clients requesting it.
+        pop: The PoP (Point of Presence) this worker is located in (Parker multi-tunnel support).
+        endpoint_name: An optional hostname to hand to Parker nodes instead of the
+            address the worker announces over MQTT. The port is unaffected. Set it
+            to have nodes resolve the concentrator endpoint via DNS.
     """
 
     weight: int
     location: str | None = None
+    pop: str = ""
+    id: int = 0
+    endpoint_name: str | None = None
 
     @classmethod
     def from_dict(cls, worker_cfg: dict[str, Any]) -> "Worker":
         location = worker_cfg.get("location")
+        worker_id = int(worker_cfg.get("id", 0))
+        if not 0 <= worker_id <= 2**32 - 1:
+            raise ValueError("Worker ID must be an unsigned 32-bit integer")
+        endpoint_name = worker_cfg.get("endpoint_name")
         return cls(
             weight=int(worker_cfg["weight"]) if worker_cfg.get("weight") else 1,
             location=str(location) if location else None,
+            pop=str(worker_cfg.get("pop") or ""),
+            id=worker_id,
+            endpoint_name=str(endpoint_name) if endpoint_name else None,
         )
 
 
@@ -122,24 +156,58 @@ class Workers:
 
     Attributes:
         total_weight: Calculated on init, the total weight of all configured workers.
+        all_pops
+        sticky_worker_tolerance: percentage between 0 and 1 as float
     """
 
     total_weight: int
+    all_pops: set[str]
+    sticky_worker_tolerance: float
     _workers: dict[str, Worker]
 
     @classmethod
-    def from_dict(cls, workers_cfg: dict[str, dict[str, Any]]) -> "Workers":
-        d = {key: Worker.from_dict(value) for (key, value) in workers_cfg.items()}
+    def from_dict(
+        cls, workers_cfg: dict[str, dict[str, Any]], sticky_worker_tolerance: int = 10
+    ) -> "Workers":
+        d = {
+            key: Worker.from_dict({"id": id, **value})
+            for (id, (key, value)) in enumerate(workers_cfg.items(), start=1)
+        }
+
+        ids = [worker.id for worker in d.values()]
+        if len(set(ids)) != len(ids):
+            raise ValueError(
+                "Worker IDs must be unique. Set explicit unique 'id' values in the workers config."
+            )
 
         total = 0
+        # add "empty" PoP to set to support dynamically added workers
+        pops = {
+            "",
+        }
         for worker in d.values():
             total += worker.weight
+            pops.add(worker.pop)
         total = max(total, 1)
 
-        return cls(total_weight=total, _workers=d)
+        if not 0 <= sticky_worker_tolerance <= 100:
+            raise ValueError(
+                "sticky_worker_tolerance must be a percentage between 0 and 100"
+            )
+
+        return cls(
+            total_weight=total,
+            all_pops=pops,
+            _workers=d,
+            sticky_worker_tolerance=sticky_worker_tolerance / 100,
+        )
 
     def get(self, worker: str) -> Worker | None:
         return self._workers.get(worker)
+
+    def names_in_pop(self, pop: str) -> list[str]:
+        """Return the names of all configured workers in a PoP, sorted."""
+        return sorted(name for name, w in self._workers.items() if w.pop == pop)
 
     def relative_worker_weight(self, worker_name: str) -> float:
         """Returns the share of all peers this worker should get according to the configured weights.
@@ -453,20 +521,57 @@ class KeyLists:
 class PeerCleanup:
     """A representation of the 'peer_cleanup' key in the configuration file (worker-only).
 
+    For compatibility with early Parker deployments, the keys of a 'cleanup' section are
+    accepted as well ('legacy_stale_timeout' maps to stale_timeout), 'peer_cleanup' wins.
+
     Attributes:
-        stale_timeout: Seconds without a handshake after which a peer is removed.
+        stale_timeout: Seconds without a handshake after which a (legacy) peer is removed.
         interval: Seconds between two cleanup runs.
+        parker_stale_timeout: Seconds without a handshake after which a Parker peer is removed.
+        initial_handshake_grace: Seconds a never-handshaked Parker peer is kept after it was
+            provisioned or after the worker started.
     """
 
     stale_timeout: int = 1800
     interval: int = 300
+    parker_stale_timeout: float = 300
+    initial_handshake_grace: float = 600
 
     @classmethod
-    def from_dict(cls, cfg: dict[str, Any]) -> "PeerCleanup":
+    def from_dict(
+        cls, cfg: dict[str, Any], parker_cleanup: dict[str, Any] | None = None
+    ) -> "PeerCleanup":
+        if parker_cleanup:
+            if not isinstance(parker_cleanup, dict):
+                raise ValueError("cleanup must be a mapping")
+            aliased = {
+                "interval": parker_cleanup.get("interval"),
+                "stale_timeout": parker_cleanup.get("legacy_stale_timeout"),
+                "parker_stale_timeout": parker_cleanup.get("parker_stale_timeout"),
+                "initial_handshake_grace": parker_cleanup.get(
+                    "initial_handshake_grace"
+                ),
+            }
+            cfg = {
+                **{k: v for k, v in aliased.items() if v is not None},
+                **cfg,
+            }
         return cls(
             stale_timeout=int(cfg.get("stale_timeout", cls.stale_timeout)),
             interval=int(cfg.get("interval", cls.interval)),
+            parker_stale_timeout=_positive_duration(
+                cfg.get("parker_stale_timeout", cls.parker_stale_timeout),
+                "peer_cleanup.parker_stale_timeout",
+            ),
+            initial_handshake_grace=_positive_duration(
+                cfg.get("initial_handshake_grace", cls.initial_handshake_grace),
+                "peer_cleanup.initial_handshake_grace",
+            ),
         )
+
+    def timeout_for(self, parker: bool) -> float:
+        """Returns the stale timeout for the given worker mode."""
+        return self.parker_stale_timeout if parker else self.stale_timeout
 
 
 @dataclasses.dataclass
@@ -513,7 +618,7 @@ class MQTT:
     def from_dict(cls, mqtt_cfg: dict[str, str]) -> "MQTT":
         """seems to generate a mqtt config object from dictionary
 
-        Args:
+        Arguments:
             mqtt_cfg ():
 
         Returns:
@@ -530,6 +635,347 @@ class MQTT:
 
 
 @dataclasses.dataclass
+class Parker:
+    """A representation of the 'parker' key in Configuration file.
+
+    Attributes:
+        enabled: Whether Parker is enabled or not.
+        xlat: Whether 464XLAT is used or not.
+        prefixes: The prefixes configuration for Parker.
+        ipam: The IPAM backend to use for the node prefixes (json or netbox).
+        retry_interval: The retry interval in seconds for nodes to recontact the broker to check for new configuration.
+        wg_keepalive: The keepalive interval in seconds the nodes should set for the WireGuard tunnel.
+    """
+
+    @dataclasses.dataclass
+    class Prefixes:
+        """A representation of the 'prefixes' key in the 'parker' configuration.
+
+        Attributes:
+            ipv4: The IPv4 prefix configuration.
+            ipv6: The IPv6 prefix configuration.
+        """
+
+        @dataclasses.dataclass
+        class IPv4:
+            """A representation of the 'ipv4' key in the 'prefixes' configuration.
+
+            Attributes:
+                clat_subnet: The CLAT subnet to use for 464XLAT, i.e. the client subnet behind the nodes.
+                length: The subnet size to use for the IPv4 subnet when not using 464XLAT.
+                netbox_filter: The filter to use when querying NetBox for an IPv4 prefix when not using 464XLAT.
+                netbox_additional_data: Additional data to send to NetBox when reserving an IPv4 prefix when not using 464XLAT.
+            """
+
+            clat_subnet: str | None = None
+            length: int | None = None
+            netbox_filter: dict[str, Any] | None = None
+            netbox_additional_data: dict[str, Any] | None = None
+
+        @dataclasses.dataclass
+        class IPv6:
+            """A representation of the 'ipv6' key in the 'prefixes' configuration.
+
+            Attributes:
+                length: The prefix size to use for the IPv6 prefix.
+                netbox_filter: The filter to use when querying NetBox for an IPv6 prefix.
+                netbox_additional_data: Additional data to send to NetBox when reserving an IPv6 prefix.
+            """
+
+            length: int
+            netbox_filter: dict[str, Any] | None = None
+            netbox_additional_data: dict[str, Any] | None = None
+
+        ipv4: IPv4
+        ipv6: IPv6
+
+    class IPAM(Enum):
+        JSON = "json"
+        NETBOX = "netbox"
+
+    @dataclasses.dataclass(frozen=True)
+    class Site:
+        """One site (PoP) of a multi-site Parker network.
+
+        Attributes:
+            name: The site name. It is the same as the 'pop' of its workers.
+            tunnel_id: The concentrator ID of the node tunnel to this site. It
+                stays the same when the node changes the pgw in the site.
+            dns64: The DNS64 server of the site, sent to the nodes.
+            netbox_filter: The NetBox filter for the parent prefix of the site.
+            json_file: The JSON IPAM file of the site.
+            capacity: The maximum number of nodes with this primary site.
+                None means no limit.
+            weight: The relative share of new nodes for this site.
+        """
+
+        name: str
+        tunnel_id: int
+        dns64: str | None = None
+        netbox_filter: dict[str, Any] | None = None
+        json_file: str | None = None
+        capacity: int | None = None
+        weight: float = 1
+
+    @dataclasses.dataclass(frozen=True)
+    class RouteGate:
+        """Worker: install the /63 route of a node only with a fresh handshake.
+
+        Attributes:
+            handshake_max_age: A handshake older than this (seconds) is not fresh.
+            interval: How often the worker checks the handshakes (seconds).
+        """
+
+        handshake_max_age: float = 180
+        interval: float = 1
+
+    @dataclasses.dataclass(frozen=True)
+    class IPAMCache:
+        """Broker: the in-memory copy of the NetBox IPAM.
+
+        Attributes:
+            snapshot_dir: The directory for the local snapshot files. None: no snapshot.
+            sync_interval: How often the broker reads all prefixes from NetBox (seconds).
+            reserve: The number of free prefixes per site that the broker reserves
+                in NetBox. It uses them only when NetBox is not available.
+        """
+
+        snapshot_dir: str | None = None
+        sync_interval: float = 60
+        reserve: int = 32
+
+    enabled: bool
+    xlat: bool
+    prefixes: Prefixes
+    ipam: IPAM
+    retry_interval: int = 120
+    wg_keepalive: int = 25
+    sites: dict[str, Site] = dataclasses.field(default_factory=dict)
+    route_gate: RouteGate | None = None
+    ipam_cache: IPAMCache = dataclasses.field(default_factory=IPAMCache)
+
+    @classmethod
+    def from_dict(cls, parker_cfg: dict[str, Any]) -> "Parker":
+        """Generates a parker config object from a dictionary.
+
+        Arguments:
+            parker_cfg: dictionary with parker config
+
+        Returns:
+            parker config object
+        """
+
+        enabled = bool(parker_cfg.get("enabled", False))
+
+        if not enabled:
+            return cls(
+                enabled=enabled,
+                xlat=False,
+                prefixes=cls.Prefixes(
+                    ipv4=cls.Prefixes.IPv4(),
+                    ipv6=cls.Prefixes.IPv6(length=0, netbox_filter={}),
+                ),
+                ipam=cls.IPAM.JSON,
+            )
+
+        xlat = bool(parker_cfg.get("464xlat", False))
+        ipam = cls.IPAM(parker_cfg.get("ipam"))
+
+        pfx = parker_cfg.get("prefixes", None)
+        if pfx is None or not isinstance(pfx, dict):
+            raise ValueError(
+                "Parker is enabled, but no prefixes config is set in the config file"
+            )
+        if "ipv6" not in pfx or "ipv4" not in pfx:
+            raise ValueError(
+                "Parker prefixes config must contain both 'ipv4' and 'ipv6' keys"
+            )
+
+        if xlat:
+            if "clat_subnet" not in pfx["ipv4"]:
+                raise ValueError(
+                    "Parker prefixes config must contain 'clat_subnet' key for 'ipv4' when using 464xlat"
+                )
+        else:
+            if "length" not in pfx["ipv4"]:
+                raise ValueError(
+                    "Parker prefixes config must contain 'length' key for 'ipv4' when not using 464xlat"
+                )
+            if ipam == cls.IPAM.NETBOX and (
+                "netbox_filter" not in pfx["ipv4"]
+                or not isinstance(pfx["ipv4"]["netbox_filter"], dict)
+            ):
+                raise ValueError(
+                    "Parker prefixes config must contain 'netbox_filter' key for 'ipv4' when using NetBox as IPAM and not using 464xlat"
+                )
+
+        if "length" not in pfx["ipv6"]:
+            raise ValueError(
+                "Parker prefixes config must contain 'length' key for 'ipv6' when not using 464xlat"
+            )
+        ipv6_prefix_length = int(pfx["ipv6"]["length"])
+        if not 0 <= ipv6_prefix_length <= 63:
+            raise ValueError(
+                "Parker IPv6 allocation prefix length must be between 0 and 63"
+            )
+        if (
+            ipam == cls.IPAM.NETBOX
+            and not parker_cfg.get("sites")
+            and (
+                "netbox_filter" not in pfx["ipv6"]
+                or not isinstance(pfx["ipv6"]["netbox_filter"], dict)
+            )
+        ):
+            raise ValueError(
+                "Parker prefixes config must contain 'netbox_filter' key for 'ipv6' when using NetBox as IPAM and no 'sites'"
+            )
+
+        # TODO remove this block when non-464XLAT mode is fully supported
+        if not xlat:
+            raise NotImplementedError("Non-464XLAT mode is not supported yet")
+
+        retry_interval = int(parker_cfg.get("retry_interval", cls.retry_interval))
+        wg_keepalive = int(parker_cfg.get("wg_keepalive", cls.wg_keepalive))
+        sites = cls._sites_from_dict(parker_cfg, ipam)
+
+        route_gate = None
+        gate_cfg = parker_cfg.get("route_gate")
+        if gate_cfg is not None:
+            if not isinstance(gate_cfg, dict):
+                raise ValueError("parker.route_gate must be a mapping")
+            route_gate = cls.RouteGate(
+                handshake_max_age=_positive_duration(
+                    gate_cfg.get("handshake_max_age", 180),
+                    "parker.route_gate.handshake_max_age",
+                ),
+                interval=_positive_duration(
+                    gate_cfg.get("interval", 1), "parker.route_gate.interval"
+                ),
+            )
+
+        cache_cfg = parker_cfg.get("ipam_cache")
+        if cache_cfg is None:
+            cache_cfg = {}
+        if not isinstance(cache_cfg, dict):
+            raise ValueError("parker.ipam_cache must be a mapping")  # noqa: TRY004
+        reserve = int(cache_cfg.get("reserve", cls.IPAMCache.reserve))
+        if reserve < 0:
+            raise ValueError("parker.ipam_cache.reserve must not be negative")
+        ipam_cache = cls.IPAMCache(
+            snapshot_dir=cache_cfg.get("snapshot_dir"),
+            sync_interval=_positive_duration(
+                cache_cfg.get("sync_interval", cls.IPAMCache.sync_interval),
+                "parker.ipam_cache.sync_interval",
+            ),
+            reserve=reserve,
+        )
+
+        return cls(
+            enabled=enabled,
+            xlat=xlat,
+            prefixes=cls.Prefixes(
+                ipv4=cls.Prefixes.IPv4(
+                    clat_subnet=pfx["ipv4"].get("clat_subnet", None),
+                    netbox_filter=pfx["ipv4"].get("netbox_filter", None),
+                    netbox_additional_data=pfx["ipv4"].get(
+                        "netbox_additional_data", None
+                    ),
+                    length=pfx["ipv4"].get("length", None),
+                ),
+                ipv6=cls.Prefixes.IPv6(
+                    netbox_filter=pfx["ipv6"].get("netbox_filter", None),
+                    netbox_additional_data=pfx["ipv6"].get(
+                        "netbox_additional_data", None
+                    ),
+                    length=ipv6_prefix_length,
+                ),
+            ),
+            ipam=ipam,
+            retry_interval=retry_interval,
+            wg_keepalive=wg_keepalive,
+            sites=sites,
+            route_gate=route_gate,
+            ipam_cache=ipam_cache,
+        )
+
+    @classmethod
+    def _sites_from_dict(
+        cls, parker_cfg: dict[str, Any], ipam: "Parker.IPAM"
+    ) -> dict[str, "Parker.Site"]:
+        sites_cfg = parker_cfg.get("sites") or {}
+        if not isinstance(sites_cfg, dict):
+            raise ValueError("parker.sites must be a mapping")  # noqa: TRY004
+        sites: dict[str, Parker.Site] = {}
+        for name, site_cfg in sites_cfg.items():
+            if not isinstance(site_cfg, dict) or "tunnel_id" not in site_cfg:
+                raise ValueError(f"parker.sites.{name} must set tunnel_id")
+            netbox_filter = site_cfg.get("netbox_filter")
+            json_file = site_cfg.get("json_file")
+            if ipam == cls.IPAM.NETBOX and not isinstance(netbox_filter, dict):
+                raise ValueError(f"parker.sites.{name} must set netbox_filter")
+            if ipam == cls.IPAM.JSON and not json_file:
+                raise ValueError(f"parker.sites.{name} must set json_file")
+            capacity = site_cfg.get("capacity")
+            if capacity is not None and (
+                isinstance(capacity, bool)
+                or not isinstance(capacity, int)
+                or capacity < 0
+            ):
+                raise ValueError(
+                    f"parker.sites.{name}.capacity must be an integer >= 0"
+                )
+            weight = site_cfg.get("weight", 1)
+            if (
+                isinstance(weight, bool)
+                or not isinstance(weight, (int, float))
+                or not math.isfinite(weight)
+                or weight <= 0
+            ):
+                raise ValueError(f"parker.sites.{name}.weight must be a number > 0")
+            sites[str(name)] = cls.Site(
+                name=str(name),
+                tunnel_id=int(site_cfg["tunnel_id"]),
+                dns64=site_cfg.get("dns64"),
+                netbox_filter=netbox_filter,
+                json_file=json_file,
+                capacity=capacity,
+                weight=float(weight),
+            )
+        tunnel_ids = [site.tunnel_id for site in sites.values()]
+        if len(set(tunnel_ids)) != len(tunnel_ids):
+            raise ValueError("parker.sites tunnel_id values must be unique")
+        return sites
+
+
+@dataclasses.dataclass
+class Netbox:
+    """A representation of the 'netbox' key in configuration file.
+
+    Attributes:
+        url: The NetBox URL to connect to.
+        api_key: The API key to use for authentication.
+    """
+
+    url: str
+    api_key: str
+
+    @classmethod
+    def from_dict(cls, netbox_cfg: dict[str, str]) -> "Netbox":
+        """Generates a netbox config object from a dictionary.
+
+        Arguments:
+            netbox_cfg: dictionary with netbox config
+
+        Returns:
+            netbox config object
+        """
+        return cls(
+            url=netbox_cfg["url"],
+            api_key=netbox_cfg["api_key"],
+        )
+
+
+@dataclasses.dataclass
 class Config:
     """A representation of the configuration file.
 
@@ -538,7 +984,7 @@ class Config:
         domain_prefixes: The list of prefixes to pre-pend to a given domain.
         mqtt: The MQTT configuration.
         workers: The worker weights configuration (broker-only).
-        externalName: The publicly resolvable domain name or public IP address of this worker (worker-only).
+        external_name: The publicly resolvable domain name or public IP address of this worker (worker-only).
         load_balancing: Load balancing and rebalancing configuration.
         peer_cleanup: Stale peer cleanup configuration (worker-only).
         drain: Drain mode configuration (worker-only).
@@ -555,6 +1001,7 @@ class Config:
     mqtt: MQTT
     workers: Workers
     external_name: str | None
+    parker: Parker
     load_balancing: LoadBalancing = dataclasses.field(default_factory=LoadBalancing)
     peer_cleanup: PeerCleanup = dataclasses.field(default_factory=PeerCleanup)
     drain: Drain = dataclasses.field(default_factory=Drain)
@@ -562,10 +1009,13 @@ class Config:
     rate_limit: RateLimit = dataclasses.field(default_factory=RateLimit)
     key_lists: KeyLists = dataclasses.field(default_factory=KeyLists)
     broker: Broker = dataclasses.field(default_factory=Broker)
+    netbox: Netbox | None = None
+    broker_signing_key: str | None = None
 
     @classmethod
     def from_dict(cls, cfg: dict[str, Any]) -> "Config":
         """Creates a Config object from a configuration file.
+
         Arguments:
             cfg: The configuration file as a dict.
         Returns:
@@ -573,7 +1023,19 @@ class Config:
         """
         broker_listen = BrokerListen.from_dict(cfg.get("broker_listen", {}))
         mqtt_cfg = MQTT.from_dict(cfg["mqtt"])
-        workers_cfg = Workers.from_dict(cfg.get("workers", {}))
+        workers_cfg = Workers.from_dict(
+            cfg.get("workers", {}), cfg.get("sticky_worker_tolerance", 10)
+        )
+        parker = Parker.from_dict(cfg.get("parker", {}))
+        broker_signing_key = cfg.get("broker_signing_key", None)
+
+        netbox_cfg = None
+        if isinstance(cfg.get("netbox"), dict) and {
+            "url",
+            "api_key",
+        }.issubset(cfg["netbox"]):
+            netbox_cfg = Netbox.from_dict(cfg["netbox"])
+
         return cls(
             raw=cfg,
             domains=cfg["domains"],
@@ -583,12 +1045,17 @@ class Config:
             workers=workers_cfg,
             external_name=cfg.get("externalName"),
             load_balancing=LoadBalancing.from_dict(cfg.get("load_balancing") or {}),
-            peer_cleanup=PeerCleanup.from_dict(cfg.get("peer_cleanup") or {}),
+            peer_cleanup=PeerCleanup.from_dict(
+                cfg.get("peer_cleanup") or {}, cfg.get("cleanup")
+            ),
             drain=Drain.from_dict(cfg.get("drain") or {}),
             metrics=Metrics.from_dict(cfg.get("metrics") or {}),
             rate_limit=RateLimit.from_dict(cfg.get("rate_limit") or {}),
             key_lists=KeyLists.from_dict(cfg.get("key_lists") or {}),
             broker=Broker.from_dict(cfg.get("broker") or {}),
+            parker=parker,
+            netbox=netbox_cfg,
+            broker_signing_key=broker_signing_key,
         )
 
     def get(self, key: str) -> Any:

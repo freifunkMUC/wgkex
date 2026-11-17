@@ -18,7 +18,7 @@ KEY_EXCHANGE_REQUESTS = Counter(
 )
 ASSIGNMENTS = Counter(
     "wgkex_broker_assignments",
-    "Peers assigned to a worker by the v2 key exchange",
+    "Peers assigned to a worker by the v2 and v3 (Parker) key exchange",
     ["worker", "domain"],
     registry=REGISTRY,
 )

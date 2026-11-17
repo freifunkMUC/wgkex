@@ -3,6 +3,20 @@ load("@pip//:requirements.bzl", "requirement")
 
 
 py_library(
+    name = "peer_state",
+    srcs = ["peer_state.py"],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "peer_state_test",
+    srcs = ["peer_state_test.py"],
+    deps = [":peer_state"],
+    size = "small",
+)
+
+
+py_library(
     name = "netlink",
     srcs = ["netlink.py"],
     visibility = ["//visibility:public"],
@@ -13,6 +27,7 @@ py_library(
        "//wgkex/common:logger",
        "//wgkex/config:config",
        ":observability",
+       ":peer_state",
     ],
 )
 
@@ -46,6 +61,38 @@ py_test(
     size="small",
 )
 
+py_test(
+    name = "parker_netlink_test",
+    srcs = ["parker_netlink_test.py"],
+    deps = [
+       "//wgkex/worker:netlink",
+       "//wgkex/worker:peer_state",
+       requirement("pyroute2"),
+    ],
+    size="small",
+)
+
+py_library(
+    name = "route_gate",
+    srcs = ["route_gate.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       requirement("pyroute2"),
+       "//wgkex/common:logger",
+       ":netlink",
+       ":peer_state",
+    ],
+)
+
+py_test(
+    name = "route_gate_test",
+    srcs = ["route_gate_test.py"],
+    deps = [
+       ":route_gate",
+    ],
+    size="small",
+)
+
 py_library(
     name = "mqtt",
     srcs = ["mqtt.py"],
@@ -63,6 +110,8 @@ py_library(
        ":msg_queue",
        ":netlink",
        ":rebalance",
+       ":peer_state",
+       ":route_gate",
     ],
 )
 
@@ -106,6 +155,7 @@ py_binary(
        ":msg_queue",
        ":observability",
        ":rebalance",
+       ":peer_state",
        "//wgkex/config:config",
        "//wgkex/common:logger",
     ],
@@ -131,6 +181,7 @@ py_library(
        ":netlink",
        ":observability",
        ":rebalance",
+       ":peer_state",
     ],
 )
 
@@ -139,6 +190,8 @@ py_test(
     srcs = ["msg_queue_test.py"],
     deps = [
        "//wgkex/worker:msg_queue",
+       "//wgkex/worker:netlink",
+       "//wgkex/worker:peer_state",
     ],
     size="small",
 )

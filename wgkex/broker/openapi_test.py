@@ -4,6 +4,8 @@ The real responses of the broker are validated against the schemas in the spec. 
 subset of OpenAPI schema keywords used in the spec, and fails on any other keyword, so it can't silently pass.
 """
 
+import ipaddress
+import json
 import os
 import re
 import unittest
@@ -12,6 +14,7 @@ from unittest import mock
 import yaml
 
 from wgkex.broker.app_test import _DOMAIN, _PUBKEY, BrokerTestCase
+from wgkex.common.mqtt import CONNECTED_PEERS_METRIC
 from wgkex.config import config
 
 _SPEC_PATH = os.path.join(
@@ -38,6 +41,27 @@ _TYPES = {
     "integer": int,
     "number": (int, float),
 }
+
+
+def _parker_config() -> config.Config:
+    return config.Config.from_dict(
+        {
+            "parker": {
+                "enabled": True,
+                "464xlat": True,
+                "ipam": "json",
+                "prefixes": {
+                    "ipv4": {"clat_subnet": "10.80.96.0/22"},
+                    "ipv6": {"length": 63},
+                },
+            },
+            "broker_signing_key": "signing-key",
+            "domains": [_DOMAIN],
+            "domain_prefixes": ["ffmuc_"],
+            "workers": {"gw1": {"id": 1}},
+            "mqtt": {"broker_url": "", "username": "", "password": ""},
+        }
+    )
 
 
 def load_spec() -> dict:
@@ -271,6 +295,75 @@ class OpenAPIResponseTest(BrokerTestCase):
         resp = self.client.get("/")
         self.assertEqual(resp.status_code, 200)
         self.assertMatchesSpec("/", "get", resp)
+
+    def parker(self, path: str, query: dict, cfg: config.Config | None = None):
+        cfg = cfg or _parker_config()
+        ipam = mock.MagicMock()
+        ipam.get_or_allocate_prefix.return_value = (
+            None,
+            ipaddress.IPv6Network("2001:db8:42::/63"),
+            [],
+        )
+        with (
+            mock.patch.object(self.app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.app, "ipam", ipam),
+            mock.patch.object(self.app, "sign_response", return_value=b"c2lnbg=="),
+        ):
+            resp = self.client.get(path, query_string=query)
+        self.assertMatchesSpec(path, "get", resp)
+        return resp
+
+    def test_v3(self):
+        self.app.parker_worker_metrics.data.clear()
+        self.app.parker_worker_metrics._pending.clear()
+        self.app.parker_worker_data.clear()
+        cfg = _parker_config()
+        query = {"pubkey": _PUBKEY, "nonce": "n", "v6mtu": "1400"}
+        try:
+            for path in ("/api/v3/wg/key/exchange", "/api/v3/config", "/config"):
+                resp = self.parker(path, query, cfg)
+                self.assertEqual(resp.status_code, 400)
+
+            self.app.parker_worker_metrics.update(
+                "gw1", "parker", CONNECTED_PEERS_METRIC, 0
+            )
+            self.app.parker_worker_metrics.set_online("gw1")
+            self.app.parker_worker_data["gw1"] = {
+                "ExternalAddress": "2001:db8::1",
+                "Port": 40000,
+                "PublicKey": "WORKERPUBKEY=",
+                "LinkAddress": "fe80::1",
+            }
+            for path in ("/api/v3/wg/key/exchange", "/api/v3/config", "/config"):
+                resp = self.parker(path, query, cfg)
+                self.assertEqual(resp.status_code, 200)
+                line, _ = resp.get_data(True).split("\n")
+                body = json.loads(line)
+                self.validator.validate(
+                    body, {"$ref": "#/components/schemas/ParkerConfig"}
+                )
+                self.assertEqual(
+                    body["concentrators"][0]["endpoint"], "[2001:db8::1]:40000"
+                )
+
+            self.assertEqual(
+                self.parker("/config", {"pubkey": "invalid"}, cfg).status_code, 400
+            )
+            self.app.blocklist = self.app.KeyList("blocklist", keys=[_PUBKEY])
+            self.assertEqual(self.parker("/config", query, cfg).status_code, 403)
+            self.app.blocklist = self.app.KeyList("blocklist")
+            self.app.rate_limiter = self.app.RateLimiter(1, 60, 0, 60)
+            self.app.rate_limiter.allow("127.0.0.1")
+            self.assertEqual(self.parker("/config", query, cfg).status_code, 429)
+        finally:
+            self.app.parker_worker_metrics.data.clear()
+            self.app.parker_worker_metrics._pending.clear()
+            self.app.parker_worker_data.clear()
+
+    def test_v3_disabled(self):
+        resp = self.client.get("/config", query_string={"pubkey": _PUBKEY})
+        self.assertEqual(resp.status_code, 400)
+        self.assertMatchesSpec("/config", "get", resp)
 
     def test_paths_match_flask_routes(self):
         """Every route of the broker is documented, with the same methods, and vice versa."""
