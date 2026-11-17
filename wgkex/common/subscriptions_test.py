@@ -3,6 +3,9 @@
 import unittest
 from unittest import mock
 
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.reasoncodes import ReasonCode
+
 from wgkex.common import subscriptions
 
 
@@ -41,6 +44,18 @@ class SubscriptionGuardTest(unittest.TestCase):
         self.guard.on_subscribe(self.client, None, 1, (1,))
         self._wait_for_timers()
         self.client.subscribe.assert_called_once_with("a/#", qos=1)
+
+    def test_reason_code_failure_resubscribes(self) -> None:
+        self.guard.subscribe(self.client, "a/#", qos=1)
+        self.guard.on_subscribe_v2(
+            self.client,
+            None,
+            1,
+            [ReasonCode(PacketTypes.SUBACK, "Not authorized")],
+            None,
+        )
+        self._wait_for_timers()
+        self.assertEqual(self.client.subscribe.call_count, 2)
 
     def test_untracked_mid_is_ignored(self) -> None:
         self.guard.on_subscribe(self.client, None, 42, (0x80,))

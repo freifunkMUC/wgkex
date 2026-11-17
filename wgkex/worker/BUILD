@@ -140,6 +140,7 @@ py_test(
     deps = [
        "//wgkex/worker:mqtt",
        "//wgkex/worker:msg_queue",
+       requirement("paho-mqtt"),
     ],
     size="small",
 )

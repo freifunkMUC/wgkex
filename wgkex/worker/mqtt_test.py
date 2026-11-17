@@ -8,6 +8,8 @@ from unittest import mock
 
 import paho.mqtt.client
 import pyroute2.netlink.exceptions
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.reasoncodes import ReasonCode
 
 from wgkex.common.mqtt import MQTTTopics
 from wgkex.config import config
@@ -28,6 +30,11 @@ def _get_config_mock(domains=None, mqtt=None, parker=None):
     if mqtt:
         config_mock.mqtt = mqtt
     return config_mock
+
+
+_CONNACK_SUCCESS = ReasonCode(PacketTypes.CONNACK, "Success")
+_DISCONNECT_SUCCESS = ReasonCode(PacketTypes.DISCONNECT, "Normal disconnection")
+_CONNACK_FAILURE = ReasonCode(PacketTypes.CONNACK, "Not authorized")
 
 
 class MQTTTest(unittest.TestCase):
@@ -51,6 +58,12 @@ class MQTTTest(unittest.TestCase):
         mqtt_mock.assert_has_calls(
             [mock.call().connect("some_url", port=1833, keepalive=False)],
             any_order=True,
+        )
+        mqtt_mock.assert_called_once_with(
+            paho.mqtt.client.CallbackAPIVersion.VERSION2, mqtt._HOSTNAME
+        )
+        self.assertEqual(
+            mqtt_mock.return_value.on_subscribe, mqtt._subscriptions.on_subscribe_v2
         )
 
     @mock.patch.object(mqtt.mqtt, "Client")
@@ -83,7 +96,7 @@ class MQTTTest(unittest.TestCase):
         hostname = socket.gethostname()
 
         mqtt_client_mock.return_value.subscribe.return_value = (0, 1)
-        mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+        mqtt.on_connect(mqtt.mqtt.Client(), None, None, _CONNACK_SUCCESS, None)
 
         mqtt_client_mock.assert_has_calls(
             [
@@ -133,7 +146,7 @@ class MQTTTest(unittest.TestCase):
 
         hostname = socket.gethostname()
 
-        mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+        mqtt.on_connect(mqtt.mqtt.Client(), None, None, _CONNACK_SUCCESS)
 
         mqtt_client_mock.assert_has_calls(
             [
@@ -155,7 +168,7 @@ class MQTTTest(unittest.TestCase):
         get_device_data_mock.side_effect = ValueError("no such device")
 
         with mock.patch.object(mqtt, "_start_announce_retry") as retry:
-            mqtt.on_connect(mqtt.mqtt.Client(), None, None, 0)
+            mqtt.on_connect(mqtt.mqtt.Client(), None, None, _CONNACK_SUCCESS)
         retry.assert_called_once()
 
         mqtt_client_mock.assert_has_calls(
@@ -215,7 +228,7 @@ class MQTTTest(unittest.TestCase):
         config_mock.return_value = _get_config_mock()
         client = mock.MagicMock()
         topic = f"wireguard-worker/{socket.gethostname()}/status"
-        mqtt.on_disconnect(client, None, 0)
+        mqtt.on_disconnect(client, None, None, _DISCONNECT_SUCCESS, None)
         self.assertFalse(mqtt.publish_status(client, 2))
         client.publish.assert_not_called()
 
@@ -266,7 +279,7 @@ class MQTTTest(unittest.TestCase):
         client = mock.MagicMock()
         client.subscribe.return_value = (0, 1)
 
-        mqtt.on_connect(client, None, None, 0)
+        mqtt.on_connect(client, None, None, _CONNACK_SUCCESS, None)
 
         hostname = socket.gethostname()
         self.assertNotIn(
@@ -318,13 +331,13 @@ class MQTTTest(unittest.TestCase):
 
         client = mock.MagicMock()
         client.subscribe.return_value = (0, 1)
-        mqtt.on_connect(client, None, None, 0)
+        mqtt.on_connect(client, None, None, _CONNACK_SUCCESS, None)
         self.assertNotIn(mock.call(topic, qos=0), client.subscribe.mock_calls)
 
         with mock.patch.object(mqtt, "_rebalancer", mock.MagicMock()) as rebalancer:
             client = mock.MagicMock()
             client.subscribe.return_value = (0, 1)
-            mqtt.on_connect(client, None, None, 0)
+            mqtt.on_connect(client, None, None, _CONNACK_SUCCESS, None)
             self.assertIn(mock.call(topic, qos=0), client.subscribe.mock_calls)
 
             message = mock.MagicMock()
@@ -541,7 +554,7 @@ class MQTTTest(unittest.TestCase):
         client = mock.MagicMock()
         client.subscribe.return_value = (0, 1)
         with mock.patch.object(mqtt, "publish_worker_data_and_status"):
-            mqtt.on_connect(client, None, None, 0)
+            mqtt.on_connect(client, None, None, _CONNACK_SUCCESS, None)
         topics = [c.args[0] for c in client.subscribe.call_args_list]
         self.assertIn("wireguard/_ffmuc_domain.one/all", topics)
         self.assertIn(f"wireguard/_ffmuc_domain.one/{mqtt._HOSTNAME}", topics)
@@ -591,7 +604,7 @@ class MQTTTest(unittest.TestCase):
         client = mock.MagicMock(host="mqtt", port=1883)
         client.subscribe.return_value = (0, 1)
 
-        mqtt.on_connect(client, None, None, 1)
+        mqtt.on_connect(client, None, None, _CONNACK_FAILURE)
         client.subscribe.assert_not_called()
 
         with (
@@ -602,7 +615,7 @@ class MQTTTest(unittest.TestCase):
                 client,
                 None,
                 None,
-                paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED,
+                _CONNACK_SUCCESS,
             )
         # A missing interface keeps the worker unannounced and retries in the background
         client.publish.assert_not_called()

@@ -9,7 +9,6 @@ import time
 from typing import Any
 
 import paho.mqtt.client as mqtt
-import paho.mqtt.enums
 import pyroute2.netlink.exceptions
 
 from wgkex.common import logger
@@ -83,7 +82,7 @@ def connect(exit_event: threading.Event) -> None:
     broker_username = base_config.username
     broker_password = base_config.password
     broker_keepalive = base_config.keepalive
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, _HOSTNAME)
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, _HOSTNAME)
 
     domains: list[str] = []
     if not parker_enabled:
@@ -95,7 +94,7 @@ def connect(exit_event: threading.Event) -> None:
     # Register handlers
     client.on_connect = on_connect
     client.on_disconnect = on_disconnect
-    client.on_subscribe = _subscriptions.on_subscribe
+    client.on_subscribe = _subscriptions.on_subscribe_v2
     client.on_message = on_message
 
     if parker_enabled:
@@ -205,25 +204,15 @@ def connect(exit_event: threading.Event) -> None:
     client.loop_forever()
 
 
-def on_disconnect(client: mqtt.Client, userdata: Any, rc):
-    """Handles MQTT disconnect and logs the event
-
-    Expected signature for MQTT v3.1.1 and v3.1 is:
-        disconnect_callback(client, userdata, rc)
-
-    and for MQTT v5.0:
-        disconnect_callback(client, userdata, reasonCode, properties)
-
-    Arguments:
-        client:     the client instance for this callback
-        userdata:   the private user data as set in Client() or userdata_set()
-        rc:         the disconnection result
-                    The rc parameter indicates the disconnection state. If
-                    MQTT_ERR_SUCCESS (0), the callback was called in response to
-                    a disconnect() call. If any other value the disconnection
-                    was unexpected, such as might be caused by a network error.
-    """
-    logger.debug("Disconnected with result code " + str(rc))
+def on_disconnect(
+    client: mqtt.Client,
+    userdata: Any,
+    disconnect_flags: mqtt.DisconnectFlags,
+    reason_code: mqtt.ReasonCode,
+    properties: mqtt.Properties | None = None,
+):
+    """Handles MQTT disconnect and logs the event (paho CallbackAPIVersion.VERSION2)."""
+    logger.debug("Disconnected with result code " + str(reason_code))
     global _published_status
     with _status_lock:
         # The broker reset the status via the LWT, it is published again after the next announce
@@ -254,31 +243,35 @@ def _publish_parker_worker_data(client: mqtt.Client, own_external_name: str) -> 
 
 
 # The callback for when the client receives a CONNACK response from the server.
-def on_connect(client: mqtt.Client, userdata: Any, flags, rc) -> None:
-    """Handles MQTT connect and subscribes to topics on connect
+def on_connect(
+    client: mqtt.Client,
+    userdata: Any,
+    flags: mqtt.ConnectFlags,
+    reason_code: mqtt.ReasonCode,
+    properties: mqtt.Properties | None = None,
+) -> None:
+    """Handles MQTT connect and subscribes to topics on connect (paho CallbackAPIVersion.VERSION2).
 
     Arguments:
         client: the client instance for this callback.
         userdata: the private user data.
-        flags: The MQTT flags.
-        rc: The MQTT rc.
+        flags: The MQTT connect flags.
+        reason_code: The MQTT CONNACK reason code.
+        properties: The MQTT v5 properties, None for MQTT v3.
     """
-    match rc:
-        case paho.mqtt.enums.ConnackCode.CONNACK_ACCEPTED:
-            logger.debug(
-                "MQTT successfully connected to %s:%s",
-                client.host,
-                client.port,
-            )
-        case _:
-            logger.error(
-                "MQTT connection to %s:%s failed with return code %s (%s)",
-                client.host,
-                client.port,
-                rc,
-                paho.mqtt.enums.ConnackCode(rc).name,
-            )
-            return
+    if reason_code.is_failure:
+        logger.error(
+            "MQTT connection to %s:%s failed with reason code %s",
+            client.host,
+            client.port,
+            reason_code,
+        )
+        return
+    logger.debug(
+        "MQTT successfully connected to %s:%s",
+        client.host,
+        client.port,
+    )
 
     parker_enabled = get_config().parker.enabled
 
