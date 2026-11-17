@@ -19,7 +19,7 @@ For Parker the following configuration items are relevant in addition to the def
 - `workers` map (including `pop` key)
 - `sticky_worker_tolerance`
 - `broker_signing_key`
-- `parker` section (optional: `sites`, `route_gate`)
+- `parker` section (optional: `sites`, `route_gate`, `ipam_cache`)
 - `peer_cleanup` section (`parker_stale_timeout`, `initial_handshake_grace`; the older `cleanup` section is still
   accepted as an alias)
 - `netbox` section
@@ -112,7 +112,7 @@ Broker:
   3. The site with the lowest load (nodes with this primary site / `weight`) that has capacity. With equal weights, the nodes spread equally.
 - A site has capacity when it has fewer nodes than `capacity` (no limit when not set). A preferred site and a new site must also have an online pgw.
 - When the stored site has no online pgw, the node gets another site for this response only. The broker does not store this site. When the stored site is online again, the next `/config` call gives the stored site again.
-- The IPAM stores the primary site with the prefix of the node (`"primary": true`). The brokers count the nodes per site from the IPAM at most every 60 s and add their own changes between the counts.
+- The IPAM stores the primary site with the prefix of the node (`"primary": true`). With NetBox, each broker counts the nodes per site in its IPAM cache (see [IPAM cache](#ipam-cache)).
 
 Worker:
 - With `parker.route_gate`, a pgw installs the route to the prefix of a node only when the node has a fresh handshake (`handshake_max_age`) on this pgw. Thus only the active pgw attracts the return traffic. When the gate adds a route, the worker sends `parker/wireguard-worker/<worker>/handshake`.
@@ -121,3 +121,36 @@ Switch:
 - When a node moves to another pgw of a site, it calls `GET /api/v3/switch?pubkey=..&site=..&pgw=..`.
 - The broker accepts the call only after a fresh handshake event from the new pgw (else `409`, the node tries again). Then it stores the new pgw as the preferred pgw of the site and sends `Unroute` to the other pgws of the site. If the broker cannot store the pgw, it sends `500` and no `Unroute`. They remove the route at once and keep the peer.
 - If no switch report comes, the old route ages out after `handshake_max_age`.
+
+### IPAM cache
+
+With `ipam: netbox`, NetBox is not on the request path of known nodes. NetBox can be slow or down, and the brokers of all sites still answer.
+
+```mermaid
+flowchart LR
+  node[Node] -->|/api/v3| broker[Broker: prefixes in memory]
+  broker -->|unknown node| netbox[(NetBox)]
+  broker -->|queued writes, sync every 60 s| netbox
+  broker -->|new or changed prefix, QoS 1| emqx[EMQX]
+  emqx --> other[Other brokers]
+  broker --> snapshot[(Local snapshot)]
+```
+
+- At start, each broker reads all node prefixes of each site from NetBox into memory. It reads them again every `sync_interval` (60 s).
+- A known node gets its answer from memory only.
+- For an unknown node, the broker reads NetBox. If NetBox has no prefix for the node, the broker allocates one in NetBox.
+- The broker sends each new or changed prefix to the other brokers (`wireguard-broker/<broker_id>/ipam`, QoS 1, not retained) and waits for the PUBACK before it answers. EMQX only forwards the message. NetBox stays the store.
+- The broker writes changes to NetBox from a queue. When NetBox is down, the queue keeps the changes and the broker tries again.
+- Each broker reserves `reserve` free prefixes per site in NetBox (description `{"reserved_by": "<broker_id>"}`). It uses them for new nodes only when NetBox is down. It reserves more when fewer than half are left. Set a stable `load_balancing.broker_id` for each broker.
+- With `snapshot_dir`, the broker writes the prefixes, the reserved prefixes and the queue to `ipam-<site>.json`. At start, when NetBox is down, it uses this file.
+- When two brokers give two prefixes to the same new node (for example, both while NetBox is down), the first write to NetBox keeps one prefix and removes the other. The broker with the removed prefix sends the kept prefix to the other brokers, and the node gets the kept prefix on its next `/config` call.
+
+Failure behavior:
+
+| Failure | Behavior |
+|---|---|
+| NetBox down | Known nodes: from memory. New nodes: from the reserved prefixes. Writes: queued. |
+| NetBox down at broker start | The broker uses the snapshot. Without a snapshot, it knows no nodes until NetBox is back. |
+| EMQX down | The broker answers without the message. The other brokers learn the change at their next sync. |
+| One broker down | The other brokers have all prefixes in memory. |
+

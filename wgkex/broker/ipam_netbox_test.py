@@ -1,4 +1,3 @@
-import ipaddress
 import json
 import sys
 import threading
@@ -6,7 +5,7 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
-from wgkex.broker.ipam_netbox import NetboxIPAM
+from wgkex.broker.ipam_netbox import NetboxIPAM, _TimeoutSession
 from wgkex.config import config
 
 _test_config = config.Config.from_dict(
@@ -118,34 +117,103 @@ class TestNetboxIPAM(unittest.TestCase):
     @mock.patch(
         "requests.sessions.Session.request", side_effect=_mocked_netbox_response
     )
-    def test_get_or_allocate_prefix(self, _):
-        # Test allocating new prefix for previously unknown pubkey
-        ipv4_network, ipv6_network, selected_concentrators = (
-            self.ipam.get_or_allocate_prefix(
-                "pubkey", ipv4=False, ipv6=True, ipv6_prefix_length=63
+    def test_lookup_and_allocate_return_entries(self, _):
+        entry = {
+            "prefix": "2001:db8:99::/63",
+            "concentrators": [],
+            "primary": False,
+            "written": 0.0,
+        }
+        self.assertEqual(self.ipam.lookup("pubkey"), entry)
+        self.assertEqual(self.ipam.allocate("pubkey", 63), entry)
+
+    def test_requests_have_a_default_timeout(self):
+        self.assertIsInstance(self.ipam.nb.http_session, _TimeoutSession)
+        with mock.patch("requests.Session.request") as request:
+            self.ipam.nb.http_session.request("GET", "http://x")
+            self.ipam.nb.http_session.request("GET", "http://x", timeout=1)
+        self.assertEqual([c.kwargs["timeout"] for c in request.call_args_list], [5, 1])
+
+    def _store_ipam(self, records):
+        ipam = object.__new__(NetboxIPAM)
+        ipam.parent_prefix_v6 = mock.MagicMock(prefix="2001:db8::/48")
+        ipam.nb = mock.MagicMock()
+        ipam.nb.ipam.prefixes.filter.return_value = records
+        return ipam
+
+    def test_store_writes_entry_and_returns_canonical_prefix(self):
+        record = mock.MagicMock(
+            prefix="2001:db8:0:2::/63",
+            description='{"reserved_by": "broker1", "created_by": "wgkex"}',
+        )
+        ipam = self._store_ipam([record])
+        canonical = mock.MagicMock(prefix="2001:db8::/63")
+        with mock.patch.object(
+            ipam, "_deduplicate_prefixes", return_value=canonical
+        ) as dedupe:
+            self.assertEqual(
+                ipam.store("pubkey", "2001:db8:0:2::/63", ["gw1"], True),
+                "2001:db8::/63",
             )
-        )
-        self.assertIsNone(ipv4_network)
-        self.assertEqual(ipv6_network, ipaddress.IPv6Network("2001:db8:99::/63"))
-        self.assertEqual(selected_concentrators, [])
+        dedupe.assert_called_once_with("pubkey", 6, allocated_prefix=record)
+        record.save.assert_called_once()
+        desc = json.loads(record.description)
+        self.assertEqual(desc["pubkey"], "pubkey")
+        self.assertEqual(desc["selected_concentrators"], ["gw1"])
+        self.assertTrue(desc["primary"])
+        self.assertNotIn("reserved_by", desc)
 
-    @mock.patch(
-        "requests.sessions.Session.request", side_effect=_mocked_netbox_response
-    )
-    def test_update_prefix(self, mock_response):
-        self.ipam.update_prefix(
-            "pubkey", False, True, ["concentrator1", "concentrator2"]
-        )
+    def test_store_rejects_missing_or_foreign_prefix(self):
+        with self.assertRaisesRegex(ValueError, "not in NetBox"):
+            self._store_ipam([]).store("pubkey", "2001:db8::/63", [], False)
+        other = mock.MagicMock(description='{"pubkey": "other"}')
+        with self.assertRaisesRegex(ValueError, "another node"):
+            self._store_ipam([other]).store("pubkey", "2001:db8::/63", [], False)
+        other.save.assert_not_called()
 
-        # mock_response.assert_called_once()
-        mock_response.assert_any_call(
-            "PATCH",
-            "http://localhost:54321/api/ipam/prefixes/2/",
-            data=mock.ANY,
-            headers=mock.ANY,
-            params=mock.ANY,
-            json=mock.ANY,
+    def test_dump_reads_entries_and_own_reserved_prefixes(self):
+        def prefix(net, desc, prefix_id=1):
+            return mock.MagicMock(id=prefix_id, prefix=net, description=desc)
+
+        dup_a = prefix("2001:db8:0:8::/63", '{"pubkey": "dup"}', 8)
+        records = [
+            prefix(
+                "2001:db8::/63",
+                '{"pubkey": "a", "primary": true, "selected_concentrators": ["gw"],'
+                ' "last_allocated_on": "2026-01-01T00:00:00+00:00"}',
+            ),
+            prefix("2001:db8:0:2::/63", '{"reserved_by": "broker1"}'),
+            prefix("2001:db8:0:4::/63", '{"reserved_by": "broker2"}'),
+            prefix("2001:db8:0:6::/63", "not json"),
+            dup_a,
+            prefix("2001:db8:0:a::/63", '{"pubkey": "dup"}', 9),
+        ]
+        ipam = self._store_ipam(records)
+        with mock.patch.object(
+            ipam, "_deduplicate_prefixes", return_value=dup_a
+        ) as dedupe:
+            entries, reserved = ipam.dump("broker1")
+        dedupe.assert_called_once_with("dup", 6)
+        self.assertEqual(reserved, ["2001:db8:0:2::/63"])
+        self.assertEqual(set(entries), {"a", "dup"})
+        self.assertEqual(entries["a"]["concentrators"], ["gw"])
+        self.assertTrue(entries["a"]["primary"])
+        self.assertEqual(entries["a"]["written"], 1767225600.0)
+        self.assertEqual(entries["dup"]["prefix"], "2001:db8:0:8::/63")
+
+    def test_reserve_creates_marked_prefixes(self):
+        ipam = self._store_ipam([])
+        ipam.parent_prefix_v6.available_prefixes.create.return_value = [
+            {"prefix": "2001:db8::/63"},
+            mock.MagicMock(prefix="2001:db8:0:2::/63"),
+        ]
+        self.assertEqual(
+            ipam.reserve("broker1", 2, 63), ["2001:db8::/63", "2001:db8:0:2::/63"]
         )
+        (data,), _ = ipam.parent_prefix_v6.available_prefixes.create.call_args
+        self.assertEqual(len(data), 2)
+        self.assertEqual(json.loads(data[0]["description"])["reserved_by"], "broker1")
+        self.assertTrue(data[0]["mark_utilized"])
 
     def test_concurrent_same_pubkey_allocations_converge_and_release_duplicate(self):
         class FakePrefix:
@@ -423,33 +491,6 @@ class TestNetboxIPAM(unittest.TestCase):
                 (None, []),
             )
 
-    def test_dual_stack_prefers_ipv6_concentrators(self):
-        ipam = object.__new__(NetboxIPAM)
-        ipam.xlat = False
-        ipam.parent_prefix_v4 = mock.MagicMock()
-        prefix6 = mock.MagicMock(prefix="2001:db8::/63")
-        prefix4 = mock.MagicMock(prefix="10.0.0.0/22")
-        ipam._get_or_allocate_prefix = mock.MagicMock(
-            side_effect=[
-                (prefix6, ["worker-v6"]),
-                (prefix4, ["worker-v4"]),
-            ]
-        )
-
-        prefix4_result, prefix6_result, workers = ipam.get_or_allocate_prefix(
-            "pubkey", ipv4=True, ipv6=True
-        )
-        self.assertEqual(prefix4_result, ipaddress.IPv4Network("10.0.0.0/22"))
-        self.assertEqual(prefix6_result, ipaddress.IPv6Network("2001:db8::/63"))
-        self.assertEqual(workers, ["worker-v6"])
-
-        ipam._get_or_allocate_prefix.side_effect = [
-            (None, []),
-            (prefix4, ["worker-v4"]),
-        ]
-        _, _, workers = ipam.get_or_allocate_prefix("pubkey", ipv4=True, ipv6=True)
-        self.assertEqual(workers, ["worker-v4"])
-
     def test_ipv4_lookups_and_allocations_use_ipv4_parent(self):
         ipam = object.__new__(NetboxIPAM)
         ipam.nb = mock.MagicMock()
@@ -495,50 +536,6 @@ class TestNetboxIPAM(unittest.TestCase):
             ipam._parent_prefix(4)
         with self.assertRaisesRegex(ValueError, "Unsupported address family"):
             ipam._parent_prefix(5)
-
-    def test_primary_flag(self):
-        prefix = mock.MagicMock(
-            prefix="2001:db8::/63", description='{"pubkey": "pubkey"}'
-        )
-        with mock.patch.object(self.ipam, "_deduplicate_prefixes", return_value=prefix):
-            self.ipam.update_prefix("pubkey", False, True, ["gw"], primary=True)
-        self.assertIn('"primary": true', prefix.description)
-        with mock.patch.object(self.ipam, "_get_prefixes", return_value=[prefix]):
-            self.assertTrue(self.ipam.is_primary("pubkey"))
-
-        with mock.patch(
-            "pynetbox.core.endpoint.Endpoint.count", return_value=7
-        ) as count:
-            self.assertEqual(self.ipam.count_primary(), 7)
-        count.assert_called_once_with(
-            family=6,
-            within=self.ipam.parent_prefix_v6.prefix,
-            description__ic='"primary": true',
-        )
-
-    def test_update_prefix_handles_save_failure_and_both_families(self):
-        prefix = mock.MagicMock(
-            prefix="2001:db8::/63",
-            description='{"pubkey":"pubkey"}',
-        )
-        prefix.save.side_effect = RuntimeError("save failed")
-        with mock.patch.object(self.ipam, "_deduplicate_prefixes", return_value=prefix):
-            self.ipam._update_prefix("pubkey", 6, ["worker"])
-        self.assertEqual(
-            json.loads(prefix.description)["selected_concentrators"], ["worker"]
-        )
-
-        with mock.patch.object(self.ipam, "_update_prefix") as update:
-            self.ipam.update_prefix("pubkey", True, True, ["worker"])
-        update.assert_has_calls(
-            [
-                mock.call("pubkey", 4, ["worker"]),
-                mock.call("pubkey", 6, ["worker"], None),
-            ]
-        )
-
-        with self.assertRaises(NotImplementedError):
-            self.ipam.release_prefix("pubkey")
 
 
 if __name__ == "__main__":

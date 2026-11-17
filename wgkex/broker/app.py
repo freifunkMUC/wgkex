@@ -3,6 +3,7 @@
 import dataclasses
 import ipaddress
 import json
+import os
 import random
 import re
 import socket
@@ -23,6 +24,7 @@ from waitress import serve
 from wgkex.broker import observability
 from wgkex.broker.assignments import Assignment, AssignmentHistory
 from wgkex.broker.ipam import ParkerIPAM
+from wgkex.broker.ipam_cache import IPAMCache
 from wgkex.broker.ipam_json import JSONFileIPAM
 from wgkex.broker.ipam_netbox import NetboxIPAM
 from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
@@ -42,6 +44,7 @@ from wgkex.common.keylist import KeyList
 from wgkex.common.mqtt import (
     STATUS_DRAINING,
     TOPIC_BROKER_ASSIGNMENT,
+    TOPIC_BROKER_IPAM,
     TOPIC_WG_KEY,
     TOPIC_WORKER_REBALANCE,
     TOPIC_WORKER_REMOVE_PEER,
@@ -112,9 +115,12 @@ def _fetch_app_config() -> Flask_app:
 
 
 def _new_ipam(
-    netbox_filter: dict[str, Any] | None = None, json_file: str | None = None
+    name: str = "default",
+    netbox_filter: dict[str, Any] | None = None,
+    json_file: str | None = None,
 ) -> ParkerIPAM:
-    ipam_type = config.get_config().parker.ipam
+    parker_cfg = config.get_config().parker
+    ipam_type = parker_cfg.ipam
     match ipam_type:
         case config.Parker.IPAM.JSON:
             return JSONFileIPAM(json_file) if json_file else JSONFileIPAM()
@@ -125,12 +131,30 @@ def _new_ipam(
                     "Parker is enabled with NetBox IPAM, but no netbox config is set in the config file"
                 )
 
-            return NetboxIPAM(
-                api_url=netbox_cfg.url,
-                token=netbox_cfg.api_key,
-                xlat=config.get_config().parker.xlat,
-                v6_filter=netbox_filter,
+            cache_cfg = parker_cfg.ipam_cache
+            snapshot = (
+                os.path.join(cache_cfg.snapshot_dir, f"ipam-{name}.json")
+                if cache_cfg.snapshot_dir
+                else None
             )
+            cache = IPAMCache(
+                name,
+                lambda: NetboxIPAM(
+                    api_url=netbox_cfg.url,
+                    token=netbox_cfg.api_key,
+                    xlat=parker_cfg.xlat,
+                    v6_filter=netbox_filter,
+                ),
+                # Must be stable over restarts: it marks the reserved prefixes.
+                _load_balancing_cfg.broker_id or socket.gethostname(),
+                notify=_publish_ipam,
+                snapshot_file=snapshot,
+                reserve=cache_cfg.reserve,
+                prefix_length=parker_cfg.prefixes.ipv6.length,
+                sync_interval=cache_cfg.sync_interval,
+            )
+            ipam_caches[name] = cache
+            return cache
         case _:
             raise NotImplementedError(f"Invalid IPAM type {ipam_type}")
 
@@ -148,7 +172,7 @@ def _load_site_ipams() -> dict[str, ParkerIPAM]:
     if not parker_cfg.enabled:
         return {}
     return {
-        name: _new_ipam(site.netbox_filter, site.json_file)
+        name: _new_ipam(name, site.netbox_filter, site.json_file)
         for name, site in parker_cfg.sites.items()
     }
 
@@ -214,16 +238,33 @@ def _create_blocklist() -> KeyList:
     )
 
 
+# Seconds to wait for the PUBACK of an IPAM message.
+_IPAM_PUBLISH_TIMEOUT = 2
+
+
+def _publish_ipam(site: str, pubkey: str, entry: dict[str, Any]) -> None:
+    """Send an IPAM change to the other brokers and wait for the PUBACK of EMQX."""
+    if not mqtt.connected:
+        logger.warning(
+            "MQTT is not connected, the other brokers learn %s later", pubkey
+        )
+        return
+    payload = json.dumps({"site": site, "pubkey": pubkey, "entry": entry})
+    info = mqtt.client.publish(
+        TOPIC_BROKER_IPAM.format(broker=broker_id), payload, qos=1
+    )
+    info.wait_for_publish(timeout=_IPAM_PUBLISH_TIMEOUT)
+
+
 rate_limiter = _create_rate_limiter()
 blocklist = _create_blocklist()
+# Site -> IPAM cache, only with the NetBox IPAM.
+ipam_caches: dict[str, IPAMCache] = {}
 ipam: ParkerIPAM | None = _load_parker_ipam()
 site_ipams: dict[str, ParkerIPAM] = _load_site_ipams()
 # Public key -> (worker, receive time) of the last fresh handshake that a
 # worker reported. Used to accept switch reports from nodes.
 handshakes: dict[str, tuple[str, float]] = {}
-# Site -> [number of nodes with this primary site, time of the IPAM read].
-primary_counts: dict[str, list[float]] = {}
-_PRIMARY_COUNT_MAX_AGE = 60
 
 
 def _blocked_response(api: str, key: str) -> tuple[dict, int]:
@@ -733,33 +774,6 @@ def _online_pgws(site: str) -> list[str]:
     ]
 
 
-def _primary_count(site: str) -> int:
-    """Return the number of nodes with this primary site.
-
-    The broker reads the count from the IPAM at most every
-    _PRIMARY_COUNT_MAX_AGE seconds. Between the reads, it adds its own changes,
-    like the interpolation of the worker peer counts.
-    """
-    now = time.monotonic()
-    entry = primary_counts.get(site)
-    if entry is None or now - entry[1] > _PRIMARY_COUNT_MAX_AGE:
-        try:
-            entry = [site_ipams[site].count_primary(), now]
-        except Exception as error:  # noqa: BLE001
-            logger.error(
-                "Could not count primary nodes of site %s", site, exc_info=error
-            )
-            entry = [entry[0] if entry else 0, now]
-        primary_counts[site] = entry
-    return int(entry[0])
-
-
-def _move_primary_count(old: str | None, new: str) -> None:
-    for site, delta in ((old, -1), (new, 1)):
-        if site in primary_counts:
-            primary_counts[site][0] += delta
-
-
 def _select_primary_site(
     pubkey: str, preferred: str | None
 ) -> tuple[str | None, str, str]:
@@ -794,7 +808,10 @@ def _select_primary_site(
     def has_capacity(name: str, new_node: bool) -> bool:
         capacity = sites[name].capacity
         # A node that already has this site is in the count.
-        return capacity is None or _primary_count(name) + int(new_node) <= capacity
+        return (
+            capacity is None
+            or site_ipams[name].count_primary() + int(new_node) <= capacity
+        )
 
     def lowest_load(exclude: str | None) -> str:
         others = [name for name in sites if name != exclude]
@@ -806,7 +823,8 @@ def _select_primary_site(
             or list(sites)
         )
         return min(
-            candidates, key=lambda name: _primary_count(name) / sites[name].weight
+            candidates,
+            key=lambda name: site_ipams[name].count_primary() / sites[name].weight,
         )
 
     if (
@@ -849,7 +867,6 @@ def _multisite_response(req_data: ParkerQuery) -> dict[str, Any]:
             stored_primary,
             target,
         )
-        _move_primary_count(stored_primary, target)
     site_names = list(parker_cfg.sites)
 
     logger.info(
@@ -1031,6 +1048,8 @@ def handle_mqtt_connect(
             mqtt.subscribe(
                 MQTTTopics.TOPIC_PARKER_WORKER_HANDSHAKE.format(worker="+"), qos=1
             )
+        if ipam_caches:
+            mqtt.subscribe(TOPIC_BROKER_IPAM.format(broker="+"), qos=1)
 
 
 @mqtt.on_topic("wireguard-metrics/#")
@@ -1112,6 +1131,23 @@ def handle_mqtt_message_parker_handshake(
     max_age = _handshake_max_age()
     for key in [k for k, (_, seen) in handshakes.items() if now - seen > max_age]:
         del handshakes[key]
+
+
+@mqtt.on_topic(TOPIC_BROKER_IPAM.format(broker="+"))
+def handle_mqtt_message_ipam(
+    client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
+) -> None:
+    """Adds an IPAM change of another broker to the cache."""
+    sender = message.topic.split("/")[1]
+    if sender == broker_id:
+        return
+    try:
+        data = json.loads(message.payload)
+        cache = ipam_caches[data["site"]]
+        cache.apply(is_valid_wg_pubkey(data["pubkey"]), data["entry"])
+    except Exception as error:  # noqa: BLE001
+        logger.error("Ignoring invalid IPAM message from broker %s: %s", sender, error)
+        MQTT_MESSAGE_ERRORS.labels("ipam").inc()
 
 
 @mqtt.on_topic(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))
@@ -1334,5 +1370,10 @@ if __name__ == "__main__":
     if config.get_config().load_balancing.rebalancing.enabled:
         logger.info("Active rebalancing is enabled")
         threading.Thread(target=rebalance_loop, daemon=True).start()
+
+    for cache in ipam_caches.values():
+        threading.Thread(
+            target=cache.run, args=(threading.Event(),), daemon=True
+        ).start()
 
     serve(app, host=listen_host, port=listen_port)

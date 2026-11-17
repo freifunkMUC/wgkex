@@ -156,8 +156,19 @@ class TestBrokerApp(unittest.TestCase):
             mock.patch.object(
                 self.broker_app, "NetboxIPAM", return_value="netbox-ipam"
             ) as netbox,
+            mock.patch.object(self.broker_app, "IPAMCache") as cache,
+            mock.patch.dict(self.broker_app.ipam_caches, clear=True),
         ):
-            self.assertEqual(self.broker_app._load_parker_ipam(), "netbox-ipam")
+            cfg.parker.ipam_cache = config.Parker.IPAMCache(snapshot_dir="/var/lib")
+            self.assertEqual(self.broker_app._load_parker_ipam(), cache.return_value)
+            self.assertEqual(
+                self.broker_app.ipam_caches, {"default": cache.return_value}
+            )
+            args, kwargs = cache.call_args
+            self.assertEqual(args[0], "default")
+            self.assertEqual(kwargs["snapshot_file"], "/var/lib/ipam-default.json")
+            self.assertEqual(kwargs["reserve"], 32)
+            self.assertEqual(args[1](), "netbox-ipam")
         netbox.assert_called_once_with(
             api_url="https://netbox", token="token", xlat=False, v6_filter=None
         )
@@ -796,7 +807,6 @@ class TestBrokerApp(unittest.TestCase):
             }
         for name in offline:
             self.broker_app.parker_worker_metrics.set_offline(name)
-        self.broker_app.primary_counts.clear()
         return site_ipams
 
     def _multisite_exchange(self, query, cfg=None, best=(), **ipam_args):
@@ -917,11 +927,6 @@ class TestBrokerApp(unittest.TestCase):
         site_ipams["vie"].update_prefix.assert_called_once_with(
             _PUBLIC_KEY, False, True, ["vie1"], primary=False
         )
-        # The counts do not change.
-        self.assertEqual(
-            {name: e[0] for name, e in self.broker_app.primary_counts.items()},
-            {"vie": 9},
-        )
 
         # When muc is online again, the node gets muc again.
         payload, _, _ = self._multisite_exchange(
@@ -972,6 +977,11 @@ class TestBrokerApp(unittest.TestCase):
             with self.subTest(vie_weight=vie_weight):
                 cfg = _multisite_config(vie_weight=vie_weight)
                 site_ipams = self._site_ipams()
+                counts = {"muc": 0, "vie": 0}
+                for name, site_ipam in site_ipams.items():
+                    site_ipam.count_primary.side_effect = (
+                        lambda name=name, counts=counts: counts[name]
+                    )
                 with (
                     mock.patch.object(
                         self.broker_app.config, "get_config", return_value=cfg
@@ -979,20 +989,46 @@ class TestBrokerApp(unittest.TestCase):
                     mock.patch.object(self.broker_app, "site_ipams", site_ipams),
                 ):
                     for _ in range(12):
-                        stored, site, _ = self.broker_app._select_primary_site(
+                        _, site, _ = self.broker_app._select_primary_site(
                             _PUBLIC_KEY, None
                         )
-                        self.broker_app._move_primary_count(stored, site)
-                    self.assertEqual(
-                        {
-                            name: int(count)
-                            for name, (
-                                count,
-                                _,
-                            ) in self.broker_app.primary_counts.items()
-                        },
-                        expected,
-                    )
+                        counts[site] += 1
+                    self.assertEqual(counts, expected)
+
+    def test_ipam_messages_between_brokers(self):
+        cache = mock.MagicMock()
+        payload = {"site": "muc", "pubkey": _PUBLIC_KEY, "entry": {"prefix": "x"}}
+        with (
+            mock.patch.dict(self.broker_app.ipam_caches, {"muc": cache}, clear=True),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+        ):
+            mqtt.connected = True
+            self.broker_app._publish_ipam("muc", _PUBLIC_KEY, {"prefix": "x"})
+            topic, data = mqtt.client.publish.call_args.args
+            self.assertEqual(
+                topic, f"wireguard-broker/{self.broker_app.broker_id}/ipam"
+            )
+            self.assertEqual(json.loads(data), payload)
+            self.assertEqual(mqtt.client.publish.call_args.kwargs, {"qos": 1})
+            mqtt.client.publish.return_value.wait_for_publish.assert_called_once()
+
+            # Without EMQX, the broker does not wait.
+            mqtt.connected = False
+            mqtt.client.publish.reset_mock()
+            self.broker_app._publish_ipam("muc", _PUBLIC_KEY, {"prefix": "x"})
+            mqtt.client.publish.assert_not_called()
+
+            handle = self.broker_app.handle_mqtt_message_ipam
+            raw = json.dumps(payload).encode()
+            handle(None, None, _message("wireguard-broker/other/ipam", raw))
+            cache.apply.assert_called_once_with(_PUBLIC_KEY, {"prefix": "x"})
+            # Own messages and invalid messages are ignored.
+            own = f"wireguard-broker/{self.broker_app.broker_id}/ipam"
+            handle(None, None, _message(own, raw))
+            bad = json.dumps({**payload, "site": "ber"}).encode()
+            handle(None, None, _message("wireguard-broker/other/ipam", bad))
+            handle(None, None, _message("wireguard-broker/other/ipam", b"{"))
+            cache.apply.assert_called_once()
 
     def test_switch_needs_fresh_handshake_on_new_pgw(self):
         cfg = _multisite_config()

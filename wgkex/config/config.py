@@ -656,6 +656,21 @@ class Parker:
         handshake_max_age: float = 180
         interval: float = 1
 
+    @dataclasses.dataclass(frozen=True)
+    class IPAMCache:
+        """Broker: the in-memory copy of the NetBox IPAM.
+
+        Attributes:
+            snapshot_dir: The directory for the local snapshot files. None: no snapshot.
+            sync_interval: How often the broker reads all prefixes from NetBox (seconds).
+            reserve: The number of free prefixes per site that the broker reserves
+                in NetBox. It uses them only when NetBox is not available.
+        """
+
+        snapshot_dir: str | None = None
+        sync_interval: float = 60
+        reserve: int = 32
+
     enabled: bool
     xlat: bool
     prefixes: Prefixes
@@ -664,6 +679,7 @@ class Parker:
     wg_keepalive: int = 25
     sites: dict[str, Site] = dataclasses.field(default_factory=dict)
     route_gate: RouteGate | None = None
+    ipam_cache: IPAMCache = dataclasses.field(default_factory=IPAMCache)
 
     @classmethod
     def from_dict(cls, parker_cfg: dict[str, Any]) -> "Parker":
@@ -764,6 +780,23 @@ class Parker:
                 ),
             )
 
+        cache_cfg = parker_cfg.get("ipam_cache")
+        if cache_cfg is None:
+            cache_cfg = {}
+        if not isinstance(cache_cfg, dict):
+            raise ValueError("parker.ipam_cache must be a mapping")  # noqa: TRY004
+        reserve = int(cache_cfg.get("reserve", cls.IPAMCache.reserve))
+        if reserve < 0:
+            raise ValueError("parker.ipam_cache.reserve must not be negative")
+        ipam_cache = cls.IPAMCache(
+            snapshot_dir=cache_cfg.get("snapshot_dir"),
+            sync_interval=_positive_duration(
+                cache_cfg.get("sync_interval", cls.IPAMCache.sync_interval),
+                "parker.ipam_cache.sync_interval",
+            ),
+            reserve=reserve,
+        )
+
         return cls(
             enabled=enabled,
             xlat=xlat,
@@ -789,6 +822,7 @@ class Parker:
             wg_keepalive=wg_keepalive,
             sites=sites,
             route_gate=route_gate,
+            ipam_cache=ipam_cache,
         )
 
     @classmethod

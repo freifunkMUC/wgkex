@@ -76,7 +76,8 @@ load_balancing:
   # [broker] For multiple broker instances: share assignments via MQTT
   # (wireguard-broker/{broker_id}/assignment) so each broker counts the others' pending assignments.
   share_pending_assignments: false
-  # [broker] Unique id of this broker instance, defaults to the hostname plus a random suffix
+  # [broker] Unique id of this broker instance, defaults to the hostname plus a random suffix.
+  # With parker.ipam: netbox, set a stable id: it marks the prefixes that this broker reserves.
   # broker_id: broker1
   # Active rebalancing: overloaded workers slowly evict peers so they reconnect to underloaded workers,
   # e.g. after a gateway reboot. Must be enabled on the broker and on the workers to have any effect.
@@ -225,6 +226,12 @@ parker:
   #route_gate:
   #  handshake_max_age: 180
   #  interval: 1
+  # [broker] Optional. With ipam: netbox, the broker keeps all node prefixes in memory and
+  # answers known nodes without NetBox. See Docs/parker.md.
+  #ipam_cache:
+  #  snapshot_dir: /var/lib/wgkex  # local copy, used at start when NetBox is down. Default: none
+  #  sync_interval: 60             # seconds between full reads of NetBox
+  #  reserve: 32                   # free prefixes per site reserved for the time when NetBox is down
 
 # [broker]
 broker_signing_key: ''

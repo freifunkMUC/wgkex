@@ -3,13 +3,23 @@ load("@pip//:requirements.bzl", "requirement")
 
 py_library(
     name = "ipam",
-    srcs = ["ipam.py", "ipam_json.py", "ipam_netbox.py"],
+    srcs = ["ipam.py", "ipam_cache.py", "ipam_json.py", "ipam_netbox.py"],
     visibility = ["//visibility:public"],
     deps = [
        "//wgkex/common:logger",
        "//wgkex/config:config",
        requirement("pynetbox"),
+       requirement("requests"),
     ],
+)
+
+py_test(
+    name="ipam_cache_test",
+    srcs=["ipam_cache_test.py"],
+    deps = [
+       "//wgkex/broker:ipam",
+    ],
+    size="small",
 )
 
 py_test(

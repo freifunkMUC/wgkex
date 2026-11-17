@@ -26,6 +26,10 @@ TOPIC_WORKER_REMOVE_PEER = "wireguard-worker/{worker}/{domain}/remove"
 # that multiple broker instances count each other's pending assignments. Ignored by older brokers.
 TOPIC_BROKER_ASSIGNMENT = "wireguard-broker/{broker}/assignment"
 
+# Broker -> broker: a new or changed Parker IPAM entry (JSON: {"site": str, "pubkey": str,
+# "entry": {...}}), QoS 1, not retained. Only a notification: NetBox stays the store.
+TOPIC_BROKER_IPAM = "wireguard-broker/{broker}/ipam"
+
 # Parker (/api/v3) topics. Parker workers serve a single wg-nodes interface without domains.
 TOPIC_PARKER_WORKER_WG_DATA = "parker/wireguard-worker/{worker}/data"
 TOPIC_PARKER_WORKER_STATUS = "parker/" + TOPIC_WORKER_STATUS
