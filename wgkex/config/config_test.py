@@ -238,7 +238,7 @@ class TestConfig(unittest.TestCase):
     def test_invalid_parker_configs_throw(self):
         """Test invalid parker configs throw errors."""
         mock_open = mock.mock_open(read_data=_VALID_CFG + "\nparker:\n  enabled: true")
-        with mock.patch("builtins.open", mock_open), self.assertRaises(ValueError):
+        with mock.patch("builtins.open", mock_open), self.assertRaises(SystemExit):
             config.get_config()
 
     def test_parker_ipv6_prefix_length_must_contain_two_64s(self):
@@ -259,7 +259,7 @@ class TestConfig(unittest.TestCase):
                 )
                 with (
                     mock.patch("builtins.open", mock_open),
-                    self.assertRaises(ValueError),
+                    self.assertRaises(SystemExit),
                 ):
                     config.get_config()
                 config._parsed_config = None
@@ -538,6 +538,123 @@ class TestConfig(unittest.TestCase):
         ):
             config.get_config()
         exit.assert_called_once_with(1)
+
+    def test_apply_env_overrides(self):
+        """Test WGKEX__ variables override and extend the configuration."""
+        base = yaml.safe_load(_VALID_CFG)
+        base["externalName"] = "gw.example.org"
+        env = {
+            "WGKEX__MQTT__PASSWORD": "0123",
+            "WGKEX__MQTT__TLS": "False",
+            "WGKEX__MQTT__KEEPALIVE": "20",
+            "WGKEX__DOMAINS": "[c, d]",
+            "WGKEX__WORKERS": "{gw1.example.org: {weight: 25}}",
+            "WGKEX__LOAD_BALANCING__REBALANCING__ENABLED": "true",
+            "WGKEX__EXTERNALNAME": "gw2.example.org",
+            "OTHER": "ignored",
+        }
+        result = config.apply_env_overrides(base, env)
+        self.assertEqual(result["mqtt"]["password"], "0123")
+        self.assertIs(result["mqtt"]["tls"], False)
+        self.assertEqual(result["mqtt"]["username"], "user")
+        self.assertEqual(result["domains"], ["c", "d"])
+        self.assertEqual(result["externalName"], "gw2.example.org")
+        self.assertNotIn("externalname", result)
+        self.assertEqual(base["mqtt"]["password"], "pass")
+        cfg = config.Config.from_dict(result)
+        self.assertEqual(cfg.mqtt.keepalive, 20)
+        self.assertFalse(cfg.mqtt.tls)
+        self.assertEqual(cfg.workers.get("gw1.example.org").weight, 25)
+        self.assertTrue(cfg.load_balancing.rebalancing.enabled)
+
+    def test_apply_env_overrides_credentials_stay_strings(self):
+        env = {
+            "WGKEX__MQTT__USERNAME": "{x}",
+            "WGKEX__MQTT__PASSWORD": "true",
+            "WGKEX__MQTT__TLS": "no",
+        }
+        result = config.apply_env_overrides(yaml.safe_load(_VALID_CFG), env)
+        self.assertEqual(result["mqtt"]["username"], "{x}")
+        self.assertEqual(result["mqtt"]["password"], "true")
+        self.assertIs(result["mqtt"]["tls"], False)
+
+    def test_apply_env_overrides_error_hides_value(self):
+        with self.assertRaises(ValueError) as ctx:
+            config.apply_env_overrides({}, {"WGKEX__WORKERS": "{secret-part"})
+        self.assertNotIn("secret-part", str(ctx.exception))
+        self.assertIn("WGKEX__WORKERS", str(ctx.exception))
+
+    @mock.patch.dict(
+        config.os.environ,
+        {
+            "WGKEX__DOMAINS": "[a]",
+            "WGKEX__DOMAIN_PREFIXES": "[ffmuc_]",
+            "WGKEX__MQTT__BROKER_URL": "mqtt",
+            "WGKEX__MQTT__USERNAME": "u",
+            "WGKEX__MQTT__PASSWORD": "p",
+        },
+    )
+    def test_load_config_empty_file_with_env(self):
+        mock_open = mock.mock_open(read_data="")
+        with mock.patch("builtins.open", mock_open):
+            self.assertEqual(config.get_config().domains, ["a"])
+
+    def test_apply_env_overrides_nested_wins_over_parent(self):
+        env = {
+            "WGKEX__BROKER": "{log_client_ip: true, trusted_proxies: 1}",
+            "WGKEX__BROKER__TRUSTED_PROXIES": "[10.0.0.0/8]",
+        }
+        result = config.apply_env_overrides({}, env)
+        self.assertEqual(
+            result["broker"], {"log_client_ip": True, "trusted_proxies": ["10.0.0.0/8"]}
+        )
+
+    def test_apply_env_overrides_errors(self):
+        for env in (
+            {"WGKEX__MQTT____PASSWORD": "x"},
+            {"WGKEX__DOMAINS__X": "x"},
+            {"WGKEX__WORKERS": "{broken"},
+        ):
+            with self.assertRaises(ValueError):
+                config.apply_env_overrides(yaml.safe_load(_VALID_CFG), env)
+
+    @mock.patch.dict(
+        config.os.environ,
+        {
+            "WGKEX__DOMAINS": "[a]",
+            "WGKEX__DOMAIN_PREFIXES": "[ffmuc_]",
+            "WGKEX__MQTT__BROKER_URL": "mqtt",
+            "WGKEX__MQTT__USERNAME": "u",
+            "WGKEX__MQTT__PASSWORD": "p",
+            "WGKEX__BROKER_LISTEN__PORT": "5000",
+        },
+    )
+    def test_load_config_from_env_without_file(self):
+        """Test the configuration can come from the environment alone."""
+        mock_open = mock.mock_open()
+        mock_open.side_effect = FileNotFoundError
+        with mock.patch("builtins.open", mock_open):
+            cfg = config.get_config()
+        self.assertEqual(cfg.mqtt.password, "p")
+        self.assertEqual(cfg.broker_listen.port, 5000)
+
+    def test_load_config_without_file_or_env_fails(self):
+        mock_open = mock.mock_open()
+        mock_open.side_effect = FileNotFoundError
+        with (
+            mock.patch.dict(config.os.environ, clear=True),
+            mock.patch("builtins.open", mock_open),
+            self.assertRaises(config.ConfigFileNotFoundError),
+        ):
+            config.get_config()
+
+    @mock.patch.object(config.sys, "exit", autospec=True)
+    @mock.patch.dict(config.os.environ, {"WGKEX__DOMAINS__X": "y"})
+    def test_load_config_bad_env_override_exits(self, exit_mock):
+        mock_open = mock.mock_open(read_data=_VALID_CFG)
+        with mock.patch("builtins.open", mock_open):
+            config.get_config()
+        exit_mock.assert_any_call(1)
 
 
 if __name__ == "__main__":

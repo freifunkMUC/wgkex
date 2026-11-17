@@ -150,6 +150,12 @@ class TestParker(unittest.TestCase):
 
                 return _decorator
 
+            def on_subscribe(self):
+                def _decorator(func):
+                    return func
+
+                return _decorator
+
             def message_callback_add(self, *args, **kwargs):
                 return None
 
@@ -286,6 +292,7 @@ class TestParker(unittest.TestCase):
         from wgkex.common.mqtt import MQTTTopics
 
         mqtt = mock.MagicMock()
+        mqtt.subscribe.return_value = (0, 1)
         client = mock.MagicMock(host="mqtt", port=1883)
         with mock.patch.object(broker_app, "mqtt", mqtt):
             broker_app.handle_mqtt_connect(
