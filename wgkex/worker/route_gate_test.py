@@ -59,7 +59,7 @@ class RouteGateTest(unittest.TestCase):
         self.gate = route_gate.RouteGate(
             180,
             63,
-            self.routed.append,
+            lambda key, handshake: self.routed.append((key, handshake)),
             coordinator=_Coordinator(),
             clock=lambda: self.now,
         )
@@ -72,7 +72,7 @@ class RouteGateTest(unittest.TestCase):
 
         self.assertEqual(self.gate.sync(), ["fresh"])
         self.assertEqual(self.routes, {"2001:db8:1::/63"})
-        self.assertEqual(self.routed, ["fresh"])
+        self.assertEqual(self.routed, [("fresh", 990)])
         # A second run does not add the route again.
         self.assertEqual(self.gate.sync(), [])
 
@@ -89,6 +89,26 @@ class RouteGateTest(unittest.TestCase):
         self.peers = [_peer("node", "2001:db8:1::/63", 1020)]
         self.assertEqual(self.gate.sync(), ["node"])
         self.assertEqual(self.routes, {"2001:db8:1::/63"})
+
+    def test_unroute_with_handshake_of_new_pgw(self):
+        # The node moved to another pgw at 995: remove the old route at once.
+        self.peers = [_peer("node", "2001:db8:1::/63", 990)]
+        self.gate.sync()
+        self.gate.unroute("node", 995)
+        self.assertEqual(self.routes, set())
+
+        # The node moved back before the late message arrived: keep the route.
+        self.peers = [_peer("node", "2001:db8:1::/63", 998)]
+        self.gate.sync()
+        self.gate.unroute("node", 995)
+        self.assertEqual(self.routes, {"2001:db8:1::/63"})
+
+        # A handshake time in the future (clock skew) holds until now only.
+        self.gate.unroute("node", 5000)
+        self.assertEqual(self.routes, set())
+        self.now = 1010
+        self.peers = [_peer("node", "2001:db8:1::/63", 1005)]
+        self.assertEqual(self.gate.sync(), ["node"])
 
     def test_run_continues_after_errors(self):
         exit_event = threading.Event()

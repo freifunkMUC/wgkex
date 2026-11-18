@@ -1046,6 +1046,38 @@ class TestBrokerApp(unittest.TestCase):
             handle(None, None, _message("wireguard-broker/other/ipam", b"{"))
             cache.apply.assert_called_once()
 
+    def test_handshake_unroutes_other_pgws_of_the_site(self):
+        cfg = _multisite_config()
+        handle = self.broker_app.handle_mqtt_message_parker_handshake
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+        ):
+            # Same-site move to muc2: only muc1 removes its route, vie1 keeps it.
+            payload = {"PublicKey": _PUBLIC_KEY, "Handshake": 1020}
+            handle(
+                None,
+                None,
+                _message(
+                    "parker/wireguard-worker/muc2/handshake",
+                    json.dumps(payload).encode(),
+                ),
+            )
+            mqtt.publish.assert_called_once_with(
+                "parker/wireguard/muc1",
+                json.dumps(
+                    {"PublicKey": _PUBLIC_KEY, "Unroute": True, "Handshake": 1020}
+                ).encode(),
+                qos=1,
+            )
+
+            # A site with one pgw and an old worker without the time.
+            mqtt.publish.reset_mock()
+            raw = json.dumps({"PublicKey": _PUBLIC_KEY}).encode()
+            handle(None, None, _message("parker/wireguard-worker/vie1/handshake", raw))
+            handle(None, None, _message("parker/wireguard-worker/gw9/handshake", raw))
+            mqtt.publish.assert_not_called()
+
     def test_switch_needs_fresh_handshake_on_new_pgw(self):
         cfg = _multisite_config()
         self.broker_app.handshakes.clear()
@@ -1085,6 +1117,7 @@ class TestBrokerApp(unittest.TestCase):
                     json.dumps({"PublicKey": _PUBLIC_KEY}).encode(),
                 ),
             )
+            mqtt.publish.reset_mock()
             self.assertEqual(
                 client.get("/api/v3/switch", query_string=query).status_code, 200
             )

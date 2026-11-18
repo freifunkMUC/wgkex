@@ -1009,13 +1009,20 @@ def wg_api_v3_switch() -> tuple[Response | dict, int]:
     except Exception as error:  # noqa: BLE001
         logger.error("Could not store the switch of %s", pubkey, exc_info=error)
         return {"error": {"message": "Internal error, please try again later"}}, 500
-    payload = json.dumps({"PublicKey": pubkey, "Unroute": True}).encode("utf-8")
-    for other in site_pgws:
-        if other != pgw:
-            mqtt.publish(
-                MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=other), payload, qos=1
-            )
+    _unroute(pubkey, [other for other in site_pgws if other != pgw])
     return {"Message": "OK"}, 200
+
+
+def _unroute(pubkey: str, workers: list[str], handshake: float | None = None) -> None:
+    """Tells the workers to remove the route to a node and keep its peer."""
+    data: dict[str, Any] = {"PublicKey": pubkey, "Unroute": True}
+    if handshake is not None:
+        data["Handshake"] = handshake
+    payload = json.dumps(data).encode("utf-8")
+    for worker in workers:
+        mqtt.publish(
+            MQTTTopics.TOPIC_PARKER_WG_PEER.format(worker=worker), payload, qos=1
+        )
 
 
 @mqtt.on_connect()
@@ -1133,13 +1140,23 @@ def handle_mqtt_message_parker_metrics(
 def handle_mqtt_message_parker_handshake(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
-    """Stores which worker saw the last fresh handshake of a node."""
+    """Stores which worker saw the last fresh handshake of a node.
+
+    The node now sends its traffic through this worker. So the broker tells
+    the other pgws of the same site to remove their route to the node at once.
+    Without this, they keep the route until the old handshake is too old, and
+    the upstream routers send a part of the return traffic to the old pgw.
+    """
     _, _, worker, _ = message.topic.split("/", 3)
     try:
-        public_key = is_valid_wg_pubkey(json.loads(message.payload)["PublicKey"])
+        data = json.loads(message.payload)
+        public_key = is_valid_wg_pubkey(data["PublicKey"])
     except (ValueError, TypeError, KeyError) as error:
         logger.error("Invalid handshake event from %s: %s", worker, error)
         return
+    handshake = data.get("Handshake")
+    if not isinstance(handshake, (int, float)) or isinstance(handshake, bool):
+        handshake = None
     # Use the receive time of this broker, not the time of the worker, so
     # that clock differences between hosts do not matter.
     now = time.monotonic()
@@ -1147,6 +1164,14 @@ def handle_mqtt_message_parker_handshake(
     max_age = _handshake_max_age()
     for key in [k for k, (_, seen) in handshakes.items() if now - seen > max_age]:
         del handshakes[key]
+
+    cfg = config.get_config()
+    worker_cfg = cfg.workers.get(worker)
+    if worker_cfg is None or worker_cfg.pop not in (cfg.parker.sites or {}):
+        return
+    others = [w for w in cfg.workers.names_in_pop(worker_cfg.pop) if w != worker]
+    logger.info("Unroute %s on %s, it moved to %s", public_key, others, worker)
+    _unroute(public_key, others, handshake)
 
 
 @mqtt.on_topic(TOPIC_BROKER_IPAM.format(broker="+"))

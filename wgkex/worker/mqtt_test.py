@@ -661,8 +661,14 @@ class MQTTTest(unittest.TestCase):
         gate = mock.MagicMock()
         with mock.patch.object(mqtt.route_gate, "gate", gate):
             mqtt.on_message_parker(None, None, message)
-        gate.unroute.assert_called_once_with("key")
+        gate.unroute.assert_called_once_with("key", None)
         self.assertTrue(mqtt.q.empty())
+
+        gate.reset_mock()
+        message.payload = b'{"PublicKey":"key","Unroute":true,"Handshake":1020}'
+        with mock.patch.object(mqtt.route_gate, "gate", gate):
+            mqtt.on_message_parker(None, None, message)
+        gate.unroute.assert_called_once_with("key", 1020)
 
         with mock.patch.object(mqtt.route_gate, "gate", None):
             mqtt.on_message_parker(None, None, message)
