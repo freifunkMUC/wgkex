@@ -117,6 +117,7 @@ Broker:
 Worker:
 - With `parker.route_gate`, a pgw installs the route to the prefix of a node only when the node has a fresh handshake (`handshake_max_age`) on this pgw. Thus only the active pgw attracts the return traffic. When the gate adds a route, the worker sends `parker/wireguard-worker/<worker>/handshake` with the public key and the handshake time.
 - When the broker gets this event, it sends `Unroute` (with the handshake time) to the other pgws of the same site at once. They remove the route and keep the peer. A pgw keeps the route if it has a handshake that is newer than this time (the node moved back before the message arrived). The other sites are not changed.
+- The gate installs the routes with the kernel metric `route_metric` (default 16). It must be lower than the metric of the routing daemon (BIRD default: 32). Then the local route wins at once over the iBGP route of the old pgw. With a higher metric, the new pgw sends the replies to the old pgw until the old pgw removes its route. The node then misses its probes, moves back, and the route flaps between the two pgws. The gate also replaces routes with another metric (for example 1024 from an older version) without a gap.
 
 Switch:
 - When a node moves to another pgw of a site, it calls `GET /api/v3/switch?pubkey=..&site=..&pgw=..`.

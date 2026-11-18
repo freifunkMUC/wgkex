@@ -31,19 +31,21 @@ class RouteGateTest(unittest.TestCase):
     def setUp(self):
         self.now = 1000
         self.peers = []
-        self.routes = {"2001:db8:9::/63"}
+        # The kernel routes on wg-nodes: (prefix, metric).
+        self.kernel = {("2001:db8:9::/63", 16)}
         self.routed = []
         ip = mock.MagicMock()
         ip.get_routes.side_effect = lambda **_: [
-            _Nla({"dst_len": 63}, RTA_DST=route.split("/")[0]) for route in self.routes
+            _Nla({"dst_len": 63}, RTA_DST=dst.split("/")[0], RTA_PRIORITY=metric)
+            for dst, metric in self.kernel
         ]
 
-        def route(action, dst, oif):
+        def route(action, dst, oif, priority):
             self.assertEqual(oif, 7)
             if action == "del":
-                self.routes.discard(dst)
+                self.kernel.discard((dst, priority))
             else:
-                self.routes.add(dst)
+                self.kernel.add((dst, priority))
 
         ip.route.side_effect = route
         handles = mock.MagicMock()
@@ -64,6 +66,9 @@ class RouteGateTest(unittest.TestCase):
             clock=lambda: self.now,
         )
 
+    def _routes(self):
+        return {dst for dst, _ in self.kernel}
+
     def test_routes_follow_fresh_handshakes(self):
         self.peers = [
             _peer("fresh", "2001:db8:1::/63", 990),
@@ -71,7 +76,7 @@ class RouteGateTest(unittest.TestCase):
         ]
 
         self.assertEqual(self.gate.sync(), ["fresh"])
-        self.assertEqual(self.routes, {"2001:db8:1::/63"})
+        self.assertEqual(self._routes(), {"2001:db8:1::/63"})
         self.assertEqual(self.routed, [("fresh", 990)])
         # A second run does not add the route again.
         self.assertEqual(self.gate.sync(), [])
@@ -81,34 +86,63 @@ class RouteGateTest(unittest.TestCase):
         self.gate.sync()
 
         self.gate.unroute("node")
-        self.assertEqual(self.routes, set())
+        self.assertEqual(self._routes(), set())
         self.gate.sync()
-        self.assertEqual(self.routes, set())
+        self.assertEqual(self._routes(), set())
 
         self.now = 1030
         self.peers = [_peer("node", "2001:db8:1::/63", 1020)]
         self.assertEqual(self.gate.sync(), ["node"])
-        self.assertEqual(self.routes, {"2001:db8:1::/63"})
+        self.assertEqual(self._routes(), {"2001:db8:1::/63"})
 
     def test_unroute_with_handshake_of_new_pgw(self):
         # The node moved to another pgw at 995: remove the old route at once.
         self.peers = [_peer("node", "2001:db8:1::/63", 990)]
         self.gate.sync()
         self.gate.unroute("node", 995)
-        self.assertEqual(self.routes, set())
+        self.assertEqual(self._routes(), set())
 
         # The node moved back before the late message arrived: keep the route.
         self.peers = [_peer("node", "2001:db8:1::/63", 998)]
         self.gate.sync()
         self.gate.unroute("node", 995)
-        self.assertEqual(self.routes, {"2001:db8:1::/63"})
+        self.assertEqual(self._routes(), {"2001:db8:1::/63"})
 
         # A handshake time in the future (clock skew) holds until now only.
         self.gate.unroute("node", 5000)
-        self.assertEqual(self.routes, set())
+        self.assertEqual(self._routes(), set())
         self.now = 1010
         self.peers = [_peer("node", "2001:db8:1::/63", 1005)]
         self.assertEqual(self.gate.sync(), ["node"])
+
+    def test_routes_use_gate_metric(self):
+        self.peers = [_peer("node", "2001:db8:1::/63", 990)]
+        self.gate.sync()
+        self.assertEqual(self.kernel, {("2001:db8:1::/63", 16)})
+
+    def test_route_with_other_metric_is_replaced_without_gap(self):
+        # A route from an older version has the kernel default metric 1024.
+        self.kernel = {("2001:db8:1::/63", 1024), ("2001:db8:2::/63", 1024)}
+        self.peers = [_peer("node", "2001:db8:1::/63", 990)]
+        actions = []
+        route = self.gate._route
+
+        def record(action, prefix, oif, metric):
+            actions.append((action, prefix, metric))
+            return route(action, prefix, oif, metric)
+
+        self.gate._route = record
+        self.assertEqual(self.gate.sync(), ["node"])
+        self.assertEqual(self.kernel, {("2001:db8:1::/63", 16)})
+        # The new route is added before the old route is removed.
+        self.assertEqual(
+            actions,
+            [
+                ("replace", "2001:db8:1::/63", 16),
+                ("del", "2001:db8:1::/63", 1024),
+                ("del", "2001:db8:2::/63", 1024),
+            ],
+        )
 
     def test_run_continues_after_errors(self):
         exit_event = threading.Event()

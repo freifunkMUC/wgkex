@@ -172,6 +172,7 @@ def connect(exit_event: threading.Event) -> None:
                 json.dumps({"PublicKey": public_key, "Handshake": handshake}),
                 qos=1,
             ),
+            metric=gate_cfg.route_metric,
         )
         netlink.parker_routes_gated = True
         threading.Thread(

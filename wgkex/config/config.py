@@ -35,6 +35,13 @@ def _positive_duration(value: Any, name: str) -> float:
     return duration
 
 
+def _route_metric(value: Any) -> int:
+    """Parse a kernel route metric (1 to 2**32 - 1)."""
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 < value < 2**32:
+        raise ValueError("parker.route_gate.route_metric must be an integer >= 1")
+    return value
+
+
 WG_CONFIG_OS_ENV = "WGKEX_CONFIG_FILE"
 WG_CONFIG_DEFAULT_LOCATION = "/etc/wgkex.yaml"
 WG_CONFIG_ENV_PREFIX = "WGKEX__"
@@ -724,10 +731,14 @@ class Parker:
         Attributes:
             handshake_max_age: A handshake older than this (seconds) is not fresh.
             interval: How often the worker checks the handshakes (seconds).
+            route_metric: The kernel metric of the node routes. It must be lower
+                than the metric of the routing daemon (BIRD default: 32), so that
+                the local route wins over the iBGP route of the other pgw.
         """
 
         handshake_max_age: float = 180
         interval: float = 1
+        route_metric: int = 16
 
     @dataclasses.dataclass(frozen=True)
     class IPAMCache:
@@ -856,6 +867,7 @@ class Parker:
                 interval=_positive_duration(
                     gate_cfg.get("interval", 1), "parker.route_gate.interval"
                 ),
+                route_metric=_route_metric(gate_cfg.get("route_metric", 16)),
             )
 
         cache_cfg = parker_cfg.get("ipam_cache")
