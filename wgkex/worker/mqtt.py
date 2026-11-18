@@ -167,9 +167,9 @@ def connect(exit_event: threading.Event) -> None:
         route_gate.gate = route_gate.RouteGate(
             gate_cfg.handshake_max_age,
             get_config().parker.prefixes.ipv6.length,
-            on_route=lambda public_key: client.publish(
+            on_route=lambda public_key, handshake: client.publish(
                 TOPIC_PARKER_WORKER_HANDSHAKE.format(worker=_HOSTNAME),
-                json.dumps({"PublicKey": public_key}),
+                json.dumps({"PublicKey": public_key, "Handshake": handshake}),
                 qos=1,
             ),
         )
@@ -543,10 +543,13 @@ def on_message_parker(
         data = None
     if isinstance(data, dict) and data.get("Unroute"):
         public_key = data.get("PublicKey")
+        handshake = data.get("Handshake")
+        if not isinstance(handshake, (int, float)) or isinstance(handshake, bool):
+            handshake = None
         if route_gate.gate is None or not isinstance(public_key, str):
             logger.warning("Ignoring Unroute message without route gate or key")
             return
-        route_gate.gate.unroute(public_key)
+        route_gate.gate.unroute(public_key, handshake)
         return
     # TODO: ensure payload is a dict mathing a TBD shared data class
     q.put(payload)

@@ -31,14 +31,15 @@ class RouteGate:
     Attributes:
         max_age: A handshake older than this (seconds) is not fresh.
         prefix_length: The length of the Parker prefix of a node.
-        on_route: Called with the public key when the gate adds a route.
+        on_route: Called with the public key and the handshake time when the
+            gate adds a route.
     """
 
     def __init__(
         self,
         max_age: float,
         prefix_length: int,
-        on_route: Callable[[str], None],
+        on_route: Callable[[str, float], None],
         *,
         wg_interface: str = "wg-nodes",
         coordinator: PeerMutationCoordinator = peer_mutations,
@@ -55,18 +56,27 @@ class RouteGate:
         self._held: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def unroute(self, public_key: str) -> None:
-        """Remove the route of a node and keep its peer."""
+    def unroute(self, public_key: str, handshake: float | None = None) -> None:
+        """Remove the route of a node and keep its peer.
+
+        Arguments:
+            public_key: The public key of the node.
+            handshake: The handshake time of the node on its new pgw. A local
+                handshake that is newer than this time keeps the route, so a
+                late message does not remove the route after a quick move back.
+                None: hold the route until the next handshake.
+        """
         with self._lock:
-            self._held[public_key] = self.clock()
+            now = self.clock()
+            self._held[public_key] = now if handshake is None else min(handshake, now)
         logger.info("Unroute requested public_key=%s", public_key)
         self.sync()
 
-    def _fresh_prefixes(self) -> dict[str, str]:
-        """Return prefix -> public key for all peers with a fresh handshake."""
+    def _fresh_prefixes(self) -> dict[str, tuple[str, float]]:
+        """Return prefix -> (public key, handshake) for all peers with a fresh handshake."""
         now = self.clock()
         messages = _wireguard_info(self.wg_interface)
-        fresh: dict[str, str] = {}
+        fresh: dict[str, tuple[str, float]] = {}
         for message in messages:
             peers = message.get_attr("WGDEVICE_A_PEERS")
             if not isinstance(peers, (list, tuple)):
@@ -79,7 +89,10 @@ class RouteGate:
                         continue
                     if handshake <= self._held.get(public_key, -1):
                         continue
-                    fresh[_parker_prefix(peer, self.prefix_length)] = public_key
+                    fresh[_parker_prefix(peer, self.prefix_length)] = (
+                        public_key,
+                        handshake,
+                    )
                 except (UnicodeDecodeError, ValueError, AttributeError):
                     continue
         return fresh
@@ -112,9 +125,9 @@ class RouteGate:
             for prefix in sorted(fresh.keys() - routed):
                 if self._route("replace", prefix, oif):
                     routed_keys.append(fresh[prefix])
-        for public_key in routed_keys:
-            self.on_route(public_key)
-        return routed_keys
+        for public_key, handshake in routed_keys:
+            self.on_route(public_key, handshake)
+        return [public_key for public_key, _ in routed_keys]
 
     def _route(self, action: str, prefix: str, oif: int) -> bool:
         with self.coordinator.peer_lock("", prefix):

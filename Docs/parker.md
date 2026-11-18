@@ -115,12 +115,13 @@ Broker:
 - The IPAM stores the primary site with the prefix of the node (`"primary": true`). With NetBox, each broker counts the nodes per site in its IPAM cache (see [IPAM cache](#ipam-cache)).
 
 Worker:
-- With `parker.route_gate`, a pgw installs the route to the prefix of a node only when the node has a fresh handshake (`handshake_max_age`) on this pgw. Thus only the active pgw attracts the return traffic. When the gate adds a route, the worker sends `parker/wireguard-worker/<worker>/handshake`.
+- With `parker.route_gate`, a pgw installs the route to the prefix of a node only when the node has a fresh handshake (`handshake_max_age`) on this pgw. Thus only the active pgw attracts the return traffic. When the gate adds a route, the worker sends `parker/wireguard-worker/<worker>/handshake` with the public key and the handshake time.
+- When the broker gets this event, it sends `Unroute` (with the handshake time) to the other pgws of the same site at once. They remove the route and keep the peer. A pgw keeps the route if it has a handshake that is newer than this time (the node moved back before the message arrived). The other sites are not changed.
 
 Switch:
 - When a node moves to another pgw of a site, it calls `GET /api/v3/switch?pubkey=..&site=..&pgw=..`.
 - The broker accepts the call only after a fresh handshake event from the new pgw (else `409`, the node tries again). Then it stores the new pgw as the preferred pgw of the site and sends `Unroute` to the other pgws of the site. If the broker cannot store the pgw, it sends `500` and no `Unroute`. They remove the route at once and keep the peer.
-- If no switch report comes, the old route ages out after `handshake_max_age`.
+- If the old pgw does not get the `Unroute` (for example, it is offline), the old route ages out after `handshake_max_age`.
 
 ### IPAM cache
 
