@@ -149,7 +149,7 @@ flowchart LR
 Prefix reclaim (`reclaim_days`, off by default):
 
 - When the broker writes a node prefix to NetBox, it also writes `last_seen` in the JSON description. A node that calls `/config` refreshes it at most once per day.
-- NetBox accepts at most 200 characters in a description. The broker writes compact JSON with one timestamp (`last_seen`). If NetBox refuses a write (HTTP 4xx), the broker drops this write and does not mark NetBox as not available.
+- NetBox accepts at most 200 characters in a description. The broker writes compact JSON with one timestamp (`last_seen`). If NetBox refuses a write (HTTP 4xx), the broker keeps the write in the queue, tries it again at the next sync and does not mark NetBox as not available. So a node keeps a prefix from the reserved block, also after a broker restart (snapshot). The broker removes a queued entry only when its prefix is not in NetBox or belongs to another node. When NetBox has two prefixes for one node, it keeps the oldest one, and the brokers take it at the next sync.
 - With `reclaim_days` > 0, the broker checks all node prefixes once per day (first 5 min after the start). It deletes the prefixes of a node in all sites when no site saw the node for `reclaim_days` days.
 - A node that one site still sees keeps its prefixes in all sites.
 - A prefix without `last_seen` gets `last_seen` = now and is not deleted.

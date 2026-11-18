@@ -26,6 +26,10 @@ def _describe(data: dict[str, Any]) -> str:
     return description
 
 
+class PrefixConflict(ValueError):
+    """The prefix of a write is not in NetBox or belongs to another node."""
+
+
 class _TimeoutSession(requests.Session):
     """A session with a default timeout, so that a dead NetBox does not block a request."""
 
@@ -282,7 +286,7 @@ class NetboxIPAM:
             The prefix of the node after the removal of duplicates.
 
         Raises:
-            ValueError: The prefix does not exist or belongs to another node.
+            PrefixConflict: The prefix does not exist or belongs to another node.
         """
         found = list(
             self.nb.ipam.prefixes.filter(
@@ -290,14 +294,16 @@ class NetboxIPAM:
             )
         )
         if len(found) != 1:
-            raise ValueError(f"Prefix {prefix} of {pubkey} is not in NetBox")
+            raise PrefixConflict(f"Prefix {prefix} of {pubkey} is not in NetBox")
         record = found[0]
         try:
             desc = json.loads(record.description or "{}")
         except json.JSONDecodeError:
             desc = {}
         if desc.get("pubkey", pubkey) != pubkey:
-            raise ValueError(f"Prefix {prefix} belongs to another node, not {pubkey}")
+            raise PrefixConflict(
+                f"Prefix {prefix} belongs to another node, not {pubkey}"
+            )
         now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
         # last_seen is also the time of this write; one timestamp keeps the description short.
         record.description = _describe(

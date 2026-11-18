@@ -428,3 +428,28 @@ class ParkerNetlinkTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ParkerPeerUpdateTest(unittest.TestCase):
+    def setUp(self):
+        netlink.reset_handles()
+        WireGuard.reset_mock(return_value=True, side_effect=True)
+        self.wg = WireGuard()
+
+    def test_new_prefix_replaces_the_allowed_ips(self):
+        netlink.update_wireguard_peer(
+            netlink.ParkerWireGuardClient(
+                public_key="key", range6="2001:db8:2::/63", remove=False
+            )
+        )
+        peer = self.wg.set.call_args.kwargs["peer"]
+        self.assertEqual(peer["allowed_ips"], ["2001:db8:2::/63"])
+        self.assertTrue(peer["replace_allowed_ips"])
+
+    def test_remove_does_not_replace_the_allowed_ips(self):
+        netlink.update_wireguard_peer(
+            netlink.ParkerWireGuardClient(
+                public_key="key", range6="2001:db8:2::/63", remove=True
+            )
+        )
+        self.assertNotIn("replace_allowed_ips", self.wg.set.call_args.kwargs["peer"])

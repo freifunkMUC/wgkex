@@ -565,6 +565,9 @@ def update_wireguard_peer(
             "allowed_ips": [client.range6],
             "remove": client.remove,
         }
+        if not client.remove:
+            # A new prefix replaces the old one. Two prefixes stop the route gate.
+            wg_peer["replace_allowed_ips"] = True
         if client.keepalive is not None:
             wg_peer["persistent_keepalive"] = client.keepalive
         wg_interface = "wg-nodes"  # TODO make interface name configurable
