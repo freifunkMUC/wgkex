@@ -221,7 +221,7 @@ assignment_history = AssignmentHistory(
     ttl=_load_balancing_cfg.previous_assignment_ttl,
     max_entries=_load_balancing_cfg.previous_assignment_max_entries,
 )
-observability.register_worker_metrics(worker_metrics)
+observability.register_worker_metrics(worker_metrics, parker_worker_metrics)
 broker_id = (
     _load_balancing_cfg.broker_id or f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
 )
