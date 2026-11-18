@@ -15,6 +15,8 @@ from collections.abc import Callable
 from ipaddress import IPv4Network, IPv6Network
 from typing import Any
 
+import pynetbox.core.query
+
 from wgkex.broker.ipam import ParkerIPAM
 from wgkex.broker.ipam_netbox import NetboxIPAM
 from wgkex.common import logger
@@ -128,6 +130,15 @@ class IPAMCache(ParkerIPAM):
             if self._backend is None:
                 self._backend = self._backend_factory()
             return op(self._backend)
+        except ValueError:
+            raise
+        except pynetbox.core.query.RequestError as error:
+            status = getattr(getattr(error, "req", None), "status_code", 0) or 0
+            if 400 <= status < 500:
+                # NetBox refused this request, but NetBox itself works.
+                raise ValueError(str(error)) from error
+            self._down_until = self.clock() + _DOWN_TIME
+            raise
         except Exception:
             self._down_until = self.clock() + _DOWN_TIME
             raise

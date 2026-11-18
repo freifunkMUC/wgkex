@@ -18,6 +18,7 @@ py_test(
     srcs=["ipam_cache_test.py"],
     deps = [
        "//wgkex/broker:ipam",
+       requirement("pynetbox"),
     ],
     size="small",
 )

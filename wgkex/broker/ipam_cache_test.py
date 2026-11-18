@@ -4,6 +4,9 @@ import os
 import tempfile
 import threading
 import unittest
+from unittest import mock
+
+import pynetbox.core.query
 
 from wgkex.broker import ipam_cache
 from wgkex.broker.ipam_cache import Entry, IPAMCache
@@ -352,6 +355,22 @@ class IPAMCacheTest(unittest.TestCase):
         cache._dirty.add("node")
         cache.flush()
         self.assertEqual(cache._dirty, set())
+
+    def test_netbox_client_error_drops_write_and_keeps_netbox_up(self):
+        """A 4xx answer (for example a too long description) is not a NetBox outage."""
+        cache = self.cache()
+        error = pynetbox.core.query.RequestError(
+            mock.MagicMock(status_code=400, text="description too long")
+        )
+        cache.apply("node", Entry("2001:db8::/63").to_dict())
+        cache._dirty.add("node")
+        with mock.patch.object(self.netbox, "store", side_effect=error, create=True):
+            cache.flush()
+        self.assertEqual(cache._dirty, set())
+        # NetBox is not marked as down: a new node still gets a prefix from NetBox.
+        calls = len(self.netbox.calls)
+        self.assertIsNotNone(self.get(cache, "new"))
+        self.assertGreater(len(self.netbox.calls), calls)
 
     def test_ipv4_is_not_supported(self):
         cache = self.cache(snapshot=False)
