@@ -220,7 +220,32 @@ class IPAMCache(ParkerIPAM):
         return None, IPv6Network(entry.prefix), list(entry.concentrators)
 
     def release_prefix(self, pubkey: str) -> None:
-        raise NotImplementedError
+        """Delete the prefix of a node in NetBox and in memory."""
+        released = self._call(lambda nb: nb.release(pubkey))
+        with self._lock:
+            entry = self._entries.pop(pubkey, None)
+            self._primary.discard(pubkey)
+            self._dirty.discard(pubkey)
+            self._changed.pop(pubkey, None)
+            self._unsaved = True
+        logger.info(
+            "Released %s of %s in site %s",
+            released or (entry.prefix if entry else None),
+            pubkey,
+            self.name,
+        )
+
+    def seen(self) -> dict[str, float | None]:
+        """Return public key -> last_seen of all nodes. Queued changes count as seen now."""
+        seen = self._call(lambda nb: nb.seen())
+        now = self.wall_clock()
+        with self._lock:
+            for pubkey in self._dirty | self._changed.keys():
+                seen[pubkey] = now
+        return seen
+
+    def mark_seen(self, pubkeys: set[str]) -> int:
+        return self._call(lambda nb: nb.mark_seen(pubkeys))
 
     def update_prefix(
         self,
@@ -389,3 +414,44 @@ class IPAMCache(ParkerIPAM):
                 self.save()
             except OSError as error:
                 logger.error("Could not write the IPAM snapshot: %s", error)
+
+
+def reclaim(
+    caches: dict[str, IPAMCache], max_age: float, dry_run: bool, now: float
+) -> tuple[set[str], set[str]]:
+    """Delete the prefixes of nodes that no site saw for max_age seconds.
+
+    A node counts as seen when any site saw it. Nodes without last_seen get
+    last_seen = now and are not deleted. When NetBox fails for one site, the
+    sweep stops before it deletes anything.
+
+    Returns:
+        The public keys without last_seen, and the public keys to delete.
+    """
+    seen_by_site = {name: cache.seen() for name, cache in caches.items()}
+    unmarked: set[str] = set()
+    stale: set[str] = set()
+    for pubkey in set().union(*seen_by_site.values()):
+        values = [seen[pubkey] for seen in seen_by_site.values() if pubkey in seen]
+        if any(value is None for value in values):
+            unmarked.add(pubkey)
+        elif now - max(v for v in values if v is not None) > max_age:
+            stale.add(pubkey)
+    logger.info(
+        "Prefix reclaim%s: %d nodes without last_seen, %d nodes not seen for %d days",
+        " (dry run, no change)" if dry_run else "",
+        len(unmarked),
+        len(stale),
+        max_age // 86400,
+    )
+    if dry_run:
+        return unmarked, stale
+    for name, cache in caches.items():
+        keys = {key for key in unmarked if seen_by_site[name].get(key, 0) is None}
+        if keys:
+            cache.mark_seen(keys)
+    for pubkey in sorted(stale):
+        for name, cache in caches.items():
+            if pubkey in seen_by_site[name]:
+                cache.release_prefix(pubkey)
+    return unmarked, stale

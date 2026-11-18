@@ -492,14 +492,19 @@ class TestConfig(unittest.TestCase):
                     "snapshot_dir": "/data",
                     "sync_interval": 30,
                     "reserve": 8,
+                    "reclaim_days": 90,
+                    "reclaim_dry_run": False,
                 },
             }
         )
-        self.assertEqual(parsed.ipam_cache, config.Parker.IPAMCache("/data", 30, 8))
+        self.assertEqual(
+            parsed.ipam_cache, config.Parker.IPAMCache("/data", 30, 8, 90, False)
+        )
         for cache, error in (
             ([], "mapping"),
             ({"reserve": -1}, "reserve"),
             ({"sync_interval": 0}, "sync_interval"),
+            ({"reclaim_days": -1}, "reclaim_days"),
         ):
             with self.subTest(error=error), self.assertRaisesRegex(ValueError, error):
                 config.Parker.from_dict({**_parker_dict(), "ipam_cache": cache})

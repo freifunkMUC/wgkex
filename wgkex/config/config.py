@@ -738,11 +738,16 @@ class Parker:
             sync_interval: How often the broker reads all prefixes from NetBox (seconds).
             reserve: The number of free prefixes per site that the broker reserves
                 in NetBox. It uses them only when NetBox is not available.
+            reclaim_days: Once per day, delete the prefixes of nodes that no site
+                saw for this number of days. 0: off. Enable it on one broker only.
+            reclaim_dry_run: Only log what the reclaim would delete.
         """
 
         snapshot_dir: str | None = None
         sync_interval: float = 60
         reserve: int = 32
+        reclaim_days: float = 0
+        reclaim_dry_run: bool = True
 
     enabled: bool
     xlat: bool
@@ -868,7 +873,11 @@ class Parker:
                 "parker.ipam_cache.sync_interval",
             ),
             reserve=reserve,
+            reclaim_days=float(cache_cfg.get("reclaim_days", 0)),
+            reclaim_dry_run=cache_cfg.get("reclaim_dry_run", True) is not False,
         )
+        if ipam_cache.reclaim_days < 0:
+            raise ValueError("parker.ipam_cache.reclaim_days must not be negative")
 
         return cls(
             enabled=enabled,

@@ -232,6 +232,8 @@ parker:
   #  snapshot_dir: /var/lib/wgkex  # local copy, used at start when NetBox is down. Default: none
   #  sync_interval: 60             # seconds between full reads of NetBox
   #  reserve: 32                   # free prefixes per site reserved for the time when NetBox is down
+  #  reclaim_days: 0               # delete prefixes of nodes not seen for this many days. 0: off. One broker only
+  #  reclaim_dry_run: true         # only log what the reclaim would delete
 
 # [broker]
 broker_signing_key: ''

@@ -92,6 +92,28 @@ class FakeNetbox:
         self._check("reserve")
         return [self._take({"reserved_by": broker_id}) for _ in range(count)]
 
+    def seen(self):
+        self._check("seen")
+        return {
+            d["pubkey"]: d.get("last_seen")
+            for d in self.owner.values()
+            if "pubkey" in d
+        }
+
+    def mark_seen(self, pubkeys):
+        self._check("mark_seen")
+        for desc in self.owner.values():
+            if desc.get("pubkey") in pubkeys:
+                desc.setdefault("last_seen", 1000 * 86400)
+        return len(pubkeys)
+
+    def release(self, pubkey):
+        self._check("release")
+        found = self._of(pubkey)
+        for prefix in found:
+            del self.owner[prefix]
+        return found
+
 
 class Clock:
     def __init__(self):
@@ -343,6 +365,69 @@ class IPAMCacheTest(unittest.TestCase):
         cache.sync = lambda: (calls.append("sync"), stop.set())
         cache.run(stop, tick=0)
         self.assertEqual(calls, ["sync"])
+
+
+class ReclaimTest(unittest.TestCase):
+    DAY = 86400
+
+    def setUp(self):
+        self.now = 1000 * self.DAY
+        self.netboxes = {"muc": FakeNetbox(), "vie": FakeNetbox()}
+        self.clock = Clock()
+        self.caches = {
+            name: IPAMCache(name, lambda nb=nb: nb, "b1", reserve=0, clock=self.clock)
+            for name, nb in self.netboxes.items()
+        }
+        old, recent = self.now - 100 * self.DAY, self.now - self.DAY
+        for name, cache in self.caches.items():
+            for pubkey, seen in (
+                ("gone", old),
+                ("vie-only", recent if name == "vie" else old),
+                ("unmarked", None),
+            ):
+                cache.get_or_allocate_prefix(pubkey, False, True)
+                desc = self.netboxes[name].owner[self.netboxes[name]._of(pubkey)[0]]
+                if seen is not None:
+                    desc["last_seen"] = seen
+        # The new allocations are no longer recent changes.
+        self.clock.now += 1000
+        for cache in self.caches.values():
+            cache.sync()
+
+    def reclaim(self, dry_run=False):
+        return ipam_cache.reclaim(self.caches, 90 * self.DAY, dry_run, self.now)
+
+    def keys(self, name):
+        return {d["pubkey"] for d in self.netboxes[name].owner.values()}
+
+    def test_dry_run_changes_nothing(self):
+        self.assertEqual(self.reclaim(dry_run=True), ({"unmarked"}, {"gone"}))
+        for name in self.caches:
+            self.assertEqual(self.keys(name), {"gone", "vie-only", "unmarked"})
+            self.assertNotIn("mark_seen", self.netboxes[name].calls)
+
+    def test_deletes_nodes_that_no_site_saw(self):
+        self.assertEqual(self.reclaim(), ({"unmarked"}, {"gone"}))
+        for name, cache in self.caches.items():
+            # A node that one site still sees keeps its prefix in all sites.
+            self.assertEqual(self.keys(name), {"vie-only", "unmarked"})
+            self.assertEqual(
+                cache.get_or_allocate_prefix("gone", False, True)[1] is not None, True
+            )
+            self.assertEqual(self.netboxes[name].calls.count("allocate"), 4)
+        # Nodes without last_seen get it now and stay.
+        self.assertEqual(self.reclaim(), (set(), set()))
+
+    def test_queued_change_counts_as_seen(self):
+        self.caches["muc"].update_prefix("gone", False, True, ["muc1"])
+        self.assertEqual(self.reclaim(dry_run=True)[1], set())
+
+    def test_netbox_error_in_one_site_deletes_nothing(self):
+        self.netboxes["vie"].up = False
+        with self.assertRaises(ConnectionError):
+            self.reclaim()
+        self.assertIn("gone", self.keys("muc"))
+        self.assertNotIn("release", self.netboxes["muc"].calls)
 
 
 if __name__ == "__main__":
