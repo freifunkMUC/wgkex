@@ -11,6 +11,20 @@ import requests
 from wgkex.common import logger
 from wgkex.config import config
 
+# NetBox limits the description of a prefix to 200 characters.
+_MAX_DESCRIPTION = 200
+
+
+def _describe(data: dict[str, Any]) -> str:
+    """Return the compact JSON description. Raise ValueError if NetBox would refuse it."""
+    description = json.dumps(data, separators=(",", ":"))
+    if len(description) > _MAX_DESCRIPTION:
+        raise ValueError(
+            f"The description has {len(description)} characters, "
+            f"NetBox accepts {_MAX_DESCRIPTION}"
+        )
+    return description
+
 
 class _TimeoutSession(requests.Session):
     """A session with a default timeout, so that a dead NetBox does not block a request."""
@@ -181,7 +195,7 @@ class NetboxIPAM:
         # TODO support "no-create" mode to only allow known nodes
         if prefix is None:
             # https://demo.netbox.dev/api/schema/swagger-ui/#/ipam/ipam_prefixes_available_prefixes_create
-            description = json.dumps(
+            description = _describe(
                 {
                     "pubkey": pubkey,
                     "last_allocated_on": datetime.now(tz=timezone.utc).isoformat(
@@ -232,7 +246,9 @@ class NetboxIPAM:
         desc = json.loads(prefix.description)
         concentrators = desc.get("selected_concentrators", [])
         try:
-            written = datetime.fromisoformat(desc["last_allocated_on"]).timestamp()
+            written = datetime.fromisoformat(
+                desc.get("last_seen") or desc["last_allocated_on"]
+            ).timestamp()
         except (KeyError, TypeError, ValueError):
             written = 0.0
         return {
@@ -283,10 +299,10 @@ class NetboxIPAM:
         if desc.get("pubkey", pubkey) != pubkey:
             raise ValueError(f"Prefix {prefix} belongs to another node, not {pubkey}")
         now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
-        record.description = json.dumps(
+        # last_seen is also the time of this write; one timestamp keeps the description short.
+        record.description = _describe(
             {
                 "pubkey": pubkey,
-                "last_allocated_on": now,
                 "last_seen": now,
                 "created_by": "wgkex",
                 "selected_concentrators": concentrators,
@@ -332,7 +348,7 @@ class NetboxIPAM:
 
     def reserve(self, broker_id: str, count: int, prefix_length: int) -> list[str]:
         """Reserve free prefixes for this broker. It uses them when NetBox is down."""
-        description = json.dumps({"reserved_by": broker_id, "created_by": "wgkex"})
+        description = _describe({"reserved_by": broker_id, "created_by": "wgkex"})
         data = {
             "prefix_length": prefix_length,
             "description": description,
@@ -388,7 +404,7 @@ class NetboxIPAM:
         count = 0
         for pubkey, desc, record in self._node_prefixes():
             if pubkey in pubkeys and "last_seen" not in desc:
-                record.description = json.dumps({**desc, "last_seen": now})
+                record.description = _describe({**desc, "last_seen": now})
                 record.save()
                 count += 1
         return count

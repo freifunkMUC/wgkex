@@ -161,8 +161,24 @@ class TestNetboxIPAM(unittest.TestCase):
         self.assertEqual(desc["pubkey"], "pubkey")
         self.assertEqual(desc["selected_concentrators"], ["gw1"])
         self.assertTrue(desc["primary"])
-        self.assertEqual(desc["last_seen"], desc["last_allocated_on"])
+        self.assertIn("last_seen", desc)
+        self.assertNotIn("last_allocated_on", desc)
         self.assertNotIn("reserved_by", desc)
+
+    def test_store_description_fits_netbox_limit(self):
+        record = mock.MagicMock(description="{}")
+        ipam = self._store_ipam([record])
+        key = "A" * 43 + "="
+        with mock.patch.object(ipam, "_deduplicate_prefixes", return_value=record):
+            ipam.store(key, "2001:db8::/63", ["pgw01", "pgw02"], True)
+        self.assertLessEqual(len(record.description), 200)
+        self.assertEqual(json.loads(record.description)["pubkey"], key)
+
+        long_record = mock.MagicMock(description="{}")
+        ipam = self._store_ipam([long_record])
+        with self.assertRaisesRegex(ValueError, "200"):
+            ipam.store(key, "2001:db8::/63", ["a-long-concentrator-name"] * 5, True)
+        long_record.save.assert_not_called()
 
     def test_store_rejects_missing_or_foreign_prefix(self):
         with self.assertRaisesRegex(ValueError, "not in NetBox"):
