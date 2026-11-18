@@ -10,6 +10,7 @@ import pynetbox.core.query
 
 from wgkex.broker import ipam_cache
 from wgkex.broker.ipam_cache import Entry, IPAMCache
+from wgkex.broker.ipam_netbox import PrefixConflict
 
 
 class FakeNetbox:
@@ -68,7 +69,7 @@ class FakeNetbox:
         self._check("store")
         desc = self.owner.get(prefix)
         if desc is None or desc.get("pubkey", pubkey) != pubkey:
-            raise ValueError("not this node")
+            raise PrefixConflict("not this node")
         self.owner[prefix] = {
             "pubkey": pubkey,
             "selected_concentrators": concentrators,
@@ -349,28 +350,71 @@ class IPAMCacheTest(unittest.TestCase):
             self.messages, [("muc", "node", b2._entries["node"].to_dict())]
         )
 
-    def test_write_for_foreign_prefix_is_dropped(self):
+    def test_write_for_foreign_prefix_removes_the_entry(self):
         cache = self.cache()
         cache.apply("node", Entry("2001:db8:ff::/63").to_dict())
         cache._dirty.add("node")
         cache.flush()
         self.assertEqual(cache._dirty, set())
+        self.assertNotIn("node", cache._entries)
 
-    def test_netbox_client_error_drops_write_and_keeps_netbox_up(self):
+    def test_netbox_client_error_keeps_write_and_keeps_netbox_up(self):
         """A 4xx answer (for example a too long description) is not a NetBox outage."""
         cache = self.cache()
         error = pynetbox.core.query.RequestError(
             mock.MagicMock(status_code=400, text="description too long")
         )
-        cache.apply("node", Entry("2001:db8::/63").to_dict())
-        cache._dirty.add("node")
-        with mock.patch.object(self.netbox, "store", side_effect=error, create=True):
+        _, prefix, _ = self.get(cache, "node")
+        cache.update_prefix("node", False, True, ["gw1"])
+        with mock.patch.object(self.netbox, "store", side_effect=error) as store:
             cache.flush()
-        self.assertEqual(cache._dirty, set())
+            cache.flush()
+        # One try per sync: the next flush does not write again.
+        self.assertEqual(store.call_count, 1)
+        self.assertEqual(cache._dirty, {"node"})
         # NetBox is not marked as down: a new node still gets a prefix from NetBox.
         calls = len(self.netbox.calls)
         self.assertIsNotNone(self.get(cache, "new"))
         self.assertGreater(len(self.netbox.calls), calls)
+        # NetBox accepts the write again at the next sync.
+        cache.sync()
+        self.assertEqual(cache._dirty, set())
+        self.assertEqual(
+            self.netbox.owner[str(prefix)]["selected_concentrators"], ["gw1"]
+        )
+
+    def test_refused_block_prefix_survives_restart_and_gets_no_duplicate(self):
+        """A prefix from the reserved block stays with its node until NetBox has it."""
+        b1 = self.cache("b1")
+        b2 = self.cache("b2")
+        b1.notify = lambda site, key, entry: b2.apply(key, entry)
+        self.netbox_down()
+        _, prefix, _ = self.get(b1, "node")
+        self.netbox_up()
+        error = pynetbox.core.query.RequestError(
+            mock.MagicMock(status_code=400, text="description too long")
+        )
+        with mock.patch.object(self.netbox, "store", side_effect=error):
+            for _ in range(6):
+                self.clock.now += b1.sync_interval
+                b1.sync()
+                b2.sync()
+        # The reserved prefix stays out of the block of b1.
+        self.assertEqual(b1._dirty, {"node"})
+        self.assertNotIn(str(prefix), b1._block)
+        self.assertEqual(self.get(b1, "node")[1], prefix)
+        b1.save()
+
+        # b2 forgot the node after the grace time and allocates in NetBox.
+        _, other, _ = self.get(b2, "node")
+        self.assertNotEqual(other, prefix)
+
+        # A broker with a fixed write restarts and writes the older prefix.
+        restarted = self.cache("b1")
+        self.assertEqual(self.netbox._of("node"), [str(prefix)])
+        self.assertEqual(self.get(restarted, "node")[1], prefix)
+        b2.sync()
+        self.assertEqual(self.get(b2, "node")[1], prefix)
 
     def test_ipv4_is_not_supported(self):
         cache = self.cache(snapshot=False)

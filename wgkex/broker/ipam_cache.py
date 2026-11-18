@@ -18,7 +18,7 @@ from typing import Any
 import pynetbox.core.query
 
 from wgkex.broker.ipam import ParkerIPAM
-from wgkex.broker.ipam_netbox import NetboxIPAM
+from wgkex.broker.ipam_netbox import NetboxIPAM, PrefixConflict
 from wgkex.common import logger
 
 # Rewrite last_allocated_on of a known node at most once per day.
@@ -109,6 +109,8 @@ class IPAMCache(ParkerIPAM):
         self._dirty: set[str] = set()
         # Public key -> time of the last change that did not come from NetBox.
         self._changed: dict[str, float] = {}
+        # Dirty public keys that NetBox refused. Try again at the next sync.
+        self._refused: set[str] = set()
         self._unsaved = False
         self._load_snapshot()
         try:
@@ -157,6 +159,16 @@ class IPAMCache(ParkerIPAM):
             if changed:
                 self._changed[pubkey] = self.clock()
             self._unsaved = True
+
+    def _remove(self, pubkey: str) -> Entry | None:
+        with self._lock:
+            entry = self._entries.pop(pubkey, None)
+            self._primary.discard(pubkey)
+            self._dirty.discard(pubkey)
+            self._refused.discard(pubkey)
+            self._changed.pop(pubkey, None)
+            self._unsaved = True
+            return entry
 
     def _notify(self, pubkey: str, entry: Entry) -> None:
         if self.notify is None:
@@ -234,11 +246,7 @@ class IPAMCache(ParkerIPAM):
         """Delete the prefix of a node in NetBox and in memory."""
         released = self._call(lambda nb: nb.release(pubkey))
         with self._lock:
-            entry = self._entries.pop(pubkey, None)
-            self._primary.discard(pubkey)
-            self._dirty.discard(pubkey)
-            self._changed.pop(pubkey, None)
-            self._unsaved = True
+            entry = self._remove(pubkey)
         logger.info(
             "Released %s of %s in site %s",
             released or (entry.prefix if entry else None),
@@ -297,9 +305,18 @@ class IPAMCache(ParkerIPAM):
         self._set(pubkey, Entry.from_dict(data))
 
     def flush(self) -> None:
-        """Write the queued entries to NetBox. Stop at the first NetBox error."""
+        """Write the queued entries to NetBox. Stop at the first NetBox error.
+
+        A refused write stays in the queue until the next sync, so that a node
+        keeps its prefix. This is important for a prefix from the reserved
+        block: NetBox does not know its node yet. Only a write for a prefix
+        that NetBox does not have, or that belongs to another node, removes
+        the entry. The next request then reads NetBox again.
+        """
         with self._lock:
-            pending = [(key, self._entries[key]) for key in sorted(self._dirty)]
+            pending = [
+                (key, self._entries[key]) for key in sorted(self._dirty - self._refused)
+            ]
         for pubkey, entry in pending:
             try:
                 prefix = self._call(
@@ -307,11 +324,20 @@ class IPAMCache(ParkerIPAM):
                         pubkey, entry.prefix, list(entry.concentrators), entry.primary
                     )
                 )
-            except ValueError as error:
-                logger.error("Drop the NetBox write of %s: %s", pubkey, error)
+            except PrefixConflict as error:
+                logger.error("Remove the entry of %s: %s", pubkey, error)
                 with self._lock:
                     if self._entries.get(pubkey) == entry:
-                        self._dirty.discard(pubkey)
+                        self._remove(pubkey)
+                continue
+            except ValueError as error:
+                logger.error(
+                    "NetBox refused the write of %s, try again at the next sync: %s",
+                    pubkey,
+                    error,
+                )
+                with self._lock:
+                    self._refused.add(pubkey)
                 continue
             except Exception as error:  # noqa: BLE001
                 logger.warning(
@@ -328,6 +354,7 @@ class IPAMCache(ParkerIPAM):
                     # Changed during the write, write again.
                     continue
                 self._dirty.discard(pubkey)
+                self._refused.discard(pubkey)
                 self._set(pubkey, stored, changed=prefix != entry.prefix)
             if prefix != entry.prefix:
                 # Another broker allocated for the same node at the same time.
@@ -338,6 +365,8 @@ class IPAMCache(ParkerIPAM):
 
     def sync(self) -> None:
         """Write the queue, then load all entries and the reserved block from NetBox."""
+        with self._lock:
+            self._refused.clear()
         self.flush()
         entries, reserved = self._call(lambda nb: nb.dump(self.broker_id))
         with self._lock:
@@ -347,8 +376,17 @@ class IPAMCache(ParkerIPAM):
             }
             fresh = {key: Entry.from_dict(data) for key, data in entries.items()}
             for key in self._dirty | self._changed.keys():
-                if key in self._entries:
-                    fresh[key] = self._entries[key]
+                local = self._entries.get(key)
+                if local is None:
+                    continue
+                # NetBox removed duplicates, so a different NetBox prefix wins
+                # over a change that this broker does not write itself.
+                if (
+                    key in self._dirty
+                    or key not in fresh
+                    or fresh[key].prefix == local.prefix
+                ):
+                    fresh[key] = local
             self._entries = fresh
             self._primary = {key for key, entry in fresh.items() if entry.primary}
             used = {entry.prefix for entry in fresh.values()}
