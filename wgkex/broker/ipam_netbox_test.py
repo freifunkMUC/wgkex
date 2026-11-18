@@ -161,6 +161,7 @@ class TestNetboxIPAM(unittest.TestCase):
         self.assertEqual(desc["pubkey"], "pubkey")
         self.assertEqual(desc["selected_concentrators"], ["gw1"])
         self.assertTrue(desc["primary"])
+        self.assertEqual(desc["last_seen"], desc["last_allocated_on"])
         self.assertNotIn("reserved_by", desc)
 
     def test_store_rejects_missing_or_foreign_prefix(self):
@@ -200,6 +201,40 @@ class TestNetboxIPAM(unittest.TestCase):
         self.assertTrue(entries["a"]["primary"])
         self.assertEqual(entries["a"]["written"], 1767225600.0)
         self.assertEqual(entries["dup"]["prefix"], "2001:db8:0:8::/63")
+
+    def test_seen_mark_seen_and_release_only_touch_wgkex_node_prefixes(self):
+        def prefix(net, desc):
+            return mock.MagicMock(prefix=net, description=json.dumps(desc))
+
+        seen = prefix(
+            "2001:db8::/63",
+            {
+                "pubkey": "a",
+                "created_by": "wgkex",
+                "last_seen": "2026-01-01T00:00:00+00:00",
+            },
+        )
+        unmarked = prefix("2001:db8:0:2::/63", {"pubkey": "b", "created_by": "wgkex"})
+        manual = prefix("2001:db8:0:4::/63", {"pubkey": "c"})
+        reserved = prefix(
+            "2001:db8:0:6::/63", {"reserved_by": "broker1", "created_by": "wgkex"}
+        )
+        ipam = self._store_ipam([seen, unmarked, manual, reserved])
+        self.assertEqual(ipam.seen(), {"a": 1767225600.0, "b": None})
+
+        self.assertEqual(ipam.mark_seen({"a", "b", "c"}), 1)
+        seen.save.assert_not_called()
+        manual.save.assert_not_called()
+        desc = json.loads(unmarked.description)
+        self.assertEqual(desc["pubkey"], "b")
+        self.assertIn("last_seen", desc)
+
+        with mock.patch.object(ipam, "_get_prefixes", return_value=[manual]):
+            self.assertEqual(ipam.release("c"), [])
+        manual.delete.assert_not_called()
+        with mock.patch.object(ipam, "_get_prefixes", return_value=[seen]):
+            self.assertEqual(ipam.release("a"), ["2001:db8::/63"])
+        seen.delete.assert_called_once()
 
     def test_reserve_creates_marked_prefixes(self):
         ipam = self._store_ipam([])

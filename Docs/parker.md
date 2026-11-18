@@ -145,6 +145,17 @@ flowchart LR
 - With `snapshot_dir`, the broker writes the prefixes, the reserved prefixes and the queue to `ipam-<site>.json`. At start, when NetBox is down, it uses this file.
 - When two brokers give two prefixes to the same new node (for example, both while NetBox is down), the first write to NetBox keeps one prefix and removes the other. The broker with the removed prefix sends the kept prefix to the other brokers, and the node gets the kept prefix on its next `/config` call.
 
+Prefix reclaim (`reclaim_days`, off by default):
+
+- When the broker writes a node prefix to NetBox, it also writes `last_seen` in the JSON description. A node that calls `/config` refreshes it at most once per day.
+- With `reclaim_days` > 0, the broker checks all node prefixes once per day (first 5 min after the start). It deletes the prefixes of a node in all sites when no site saw the node for `reclaim_days` days.
+- A node that one site still sees keeps its prefixes in all sites.
+- A prefix without `last_seen` gets `last_seen` = now and is not deleted.
+- The broker deletes only prefixes with `"created_by": "wgkex"` and a `pubkey`. It does not delete reserved prefixes or prefixes from other tools.
+- When NetBox fails for one site, the broker deletes nothing.
+- With `reclaim_dry_run: true` (default), the broker only logs the counts.
+- Enable it on one broker only.
+
 Failure behavior:
 
 | Failure | Behavior |

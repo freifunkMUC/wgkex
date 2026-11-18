@@ -24,7 +24,7 @@ from waitress import serve
 from wgkex.broker import observability
 from wgkex.broker.assignments import Assignment, AssignmentHistory
 from wgkex.broker.ipam import ParkerIPAM
-from wgkex.broker.ipam_cache import IPAMCache
+from wgkex.broker.ipam_cache import IPAMCache, reclaim
 from wgkex.broker.ipam_json import JSONFileIPAM
 from wgkex.broker.ipam_netbox import NetboxIPAM
 from wgkex.broker.metrics import WorkerMetricsCollection, WorkerResult
@@ -176,6 +176,28 @@ def _load_site_ipams() -> dict[str, ParkerIPAM]:
         name: _new_ipam(name, site.netbox_filter, site.json_file)
         for name, site in parker_cfg.sites.items()
     }
+
+
+# Seconds after the start until the first prefix reclaim, then once per day.
+_RECLAIM_DELAY = 300
+_RECLAIM_INTERVAL = 86400
+
+
+def reclaim_loop(exit_event: threading.Event) -> None:
+    """Deletes the prefixes of nodes that were not seen for parker.ipam_cache.reclaim_days."""
+    cache_cfg = config.get_config().parker.ipam_cache
+    delay = _RECLAIM_DELAY
+    while not exit_event.wait(delay):
+        delay = _RECLAIM_INTERVAL
+        try:
+            reclaim(
+                ipam_caches,
+                cache_cfg.reclaim_days * 86400,
+                cache_cfg.reclaim_dry_run,
+                time.time(),
+            )
+        except Exception as error:  # noqa: BLE001
+            logger.error("Prefix reclaim failed: %s", error, exc_info=error)
 
 
 app = _fetch_app_config()
@@ -1390,6 +1412,10 @@ if __name__ == "__main__":
     for cache in ipam_caches.values():
         threading.Thread(
             target=cache.run, args=(threading.Event(),), daemon=True
+        ).start()
+    if ipam_caches and config.get_config().parker.ipam_cache.reclaim_days:
+        threading.Thread(
+            target=reclaim_loop, args=(threading.Event(),), daemon=True
         ).start()
 
     serve(app, host=listen_host, port=listen_port)

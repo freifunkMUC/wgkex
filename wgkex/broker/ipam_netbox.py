@@ -282,12 +282,12 @@ class NetboxIPAM:
             desc = {}
         if desc.get("pubkey", pubkey) != pubkey:
             raise ValueError(f"Prefix {prefix} belongs to another node, not {pubkey}")
+        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
         record.description = json.dumps(
             {
                 "pubkey": pubkey,
-                "last_allocated_on": datetime.now(tz=timezone.utc).isoformat(
-                    timespec="seconds"
-                ),
+                "last_allocated_on": now,
+                "last_seen": now,
                 "created_by": "wgkex",
                 "selected_concentrators": concentrators,
                 "primary": primary,
@@ -346,3 +346,59 @@ class NetboxIPAM:
             str(item["prefix"] if isinstance(item, dict) else item.prefix)
             for item in created
         ]
+
+    def _node_prefixes(self) -> list[tuple[str, dict[str, Any], Any]]:
+        """Return (public key, description, record) of all node prefixes of wgkex."""
+        nodes = []
+        for prefix in self.nb.ipam.prefixes.filter(
+            family=6, within=self.parent_prefix_v6.prefix
+        ):
+            try:
+                desc = json.loads(prefix.description or "")
+            except json.JSONDecodeError:
+                continue
+            if (
+                isinstance(desc, dict)
+                and desc.get("created_by") == "wgkex"
+                and isinstance(desc.get("pubkey"), str)
+            ):
+                nodes.append((desc["pubkey"], desc, prefix))
+        return nodes
+
+    def seen(self) -> dict[str, float | None]:
+        """Return public key -> last_seen (UNIX seconds) of all node prefixes of wgkex.
+
+        None: the prefix has no last_seen yet.
+        """
+        values: dict[str, list[float | None]] = {}
+        for pubkey, desc, _ in self._node_prefixes():
+            try:
+                seen = datetime.fromisoformat(desc["last_seen"]).timestamp()
+            except (KeyError, TypeError, ValueError):
+                seen = None
+            values.setdefault(pubkey, []).append(seen)
+        return {
+            pubkey: None if None in seen else max(seen)  # type: ignore[type-var]
+            for pubkey, seen in values.items()
+        }
+
+    def mark_seen(self, pubkeys: set[str]) -> int:
+        """Set last_seen to now on the node prefixes of these keys that have no last_seen."""
+        now = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+        count = 0
+        for pubkey, desc, record in self._node_prefixes():
+            if pubkey in pubkeys and "last_seen" not in desc:
+                record.description = json.dumps({**desc, "last_seen": now})
+                record.save()
+                count += 1
+        return count
+
+    def release(self, pubkey: str) -> list[str]:
+        """Delete the node prefixes of a node. Only prefixes that wgkex created."""
+        released = []
+        for prefix in self._get_prefixes(pubkey, 6):
+            if json.loads(prefix.description).get("created_by") != "wgkex":
+                continue
+            prefix.delete()
+            released.append(str(prefix.prefix))
+        return released
