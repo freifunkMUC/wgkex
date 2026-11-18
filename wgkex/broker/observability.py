@@ -48,10 +48,13 @@ MQTT_MESSAGE_ERRORS = Counter(
 
 
 class WorkerCollector(Collector):
-    """Exports the current worker state of the broker at scrape time."""
+    """Exports the current worker state of the broker at scrape time.
 
-    def __init__(self, worker_metrics: WorkerMetricsCollection) -> None:
-        self._worker_metrics = worker_metrics
+    A worker that is in more than one collection is exported from the first one only.
+    """
+
+    def __init__(self, *collections: WorkerMetricsCollection) -> None:
+        self._collections = collections
 
     def collect(self) -> Iterator[GaugeMetricFamily]:
         online = GaugeMetricFamily(
@@ -94,7 +97,12 @@ class WorkerCollector(Collector):
             "Connected peers reported by the worker for the domain",
             labels=["worker", "domain"],
         )
-        for s in self._worker_metrics.snapshot():
+        seen: set[str] = set()
+        snapshots = (s for c in self._collections for s in c.snapshot())
+        for s in snapshots:
+            if s.worker in seen:
+                continue
+            seen.add(s.worker)
             online.add_metric([s.worker], int(s.online))
             draining.add_metric([s.worker], int(s.draining))
             connected.add_metric([s.worker], s.connected_peers)
@@ -123,10 +131,10 @@ class WorkerCollector(Collector):
 _collector: WorkerCollector | None = None
 
 
-def register_worker_metrics(worker_metrics: WorkerMetricsCollection) -> None:
-    """Exports the given worker metrics, replacing a previously registered collection."""
+def register_worker_metrics(*collections: WorkerMetricsCollection) -> None:
+    """Exports the given worker metrics, replacing previously registered collections."""
     global _collector
     if _collector is not None:
         REGISTRY.unregister(_collector)
-    _collector = WorkerCollector(worker_metrics)
+    _collector = WorkerCollector(*collections)
     REGISTRY.register(_collector)

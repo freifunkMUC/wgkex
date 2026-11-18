@@ -9,6 +9,10 @@ The broker serves metrics at `GET /metrics` on its normal HTTP listener (`broker
 `metrics.broker_endpoint: false`, or keep the path from being reachable through your reverse proxy if the worker loads
 should not be public.
 
+The `wgkex_broker_worker_*` gauges include the classic workers and the Parker workers (`domain="parker"`). A Parker
+worker reports its connected peers, so `wgkex_broker_worker_domain_connected_peers{domain="parker"}` shows the nodes on
+each pgw. A worker that is in both lists is exported once, with its classic values.
+
 | Metric | Labels | Description |
 |---|---|---|
 | `wgkex_broker_worker_online` | `worker` | 1 if the worker is online |

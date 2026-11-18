@@ -148,6 +148,36 @@ class TestBrokerApp(unittest.TestCase):
         self.broker_app.rate_limiter = self.broker_app._create_rate_limiter()
         self.broker_app.blocklist = self.broker_app._create_blocklist()
 
+    def test_metrics_export_parker_workers(self):
+        """/metrics exports the Parker workers next to the classic workers."""
+        self.broker_app.worker_metrics.update("gw1", "ffmuc_test", "connected_peers", 5)
+        self.broker_app.worker_metrics.set_online("gw1")
+        self.broker_app.parker_worker_metrics.update(
+            "pgw1", "parker", "connected_peers", 3
+        )
+        self.broker_app.parker_worker_metrics.set_online("pgw1")
+        # A worker in both collections is exported once, from the classic one
+        self.broker_app.parker_worker_metrics.update(
+            "gw1", "parker", "connected_peers", 7
+        )
+
+        text = self.broker_app.app.test_client().get("/metrics").get_data(as_text=True)
+
+        self.assertIn(
+            'wgkex_broker_worker_domain_connected_peers{domain="parker",worker="pgw1"} 3.0',
+            text,
+        )
+        self.assertIn('wgkex_broker_worker_online{worker="pgw1"} 1.0', text)
+        self.assertIn(
+            'wgkex_broker_worker_domain_connected_peers{domain="ffmuc_test",worker="gw1"} 5.0',
+            text,
+        )
+        self.assertEqual(text.count('wgkex_broker_worker_online{worker="gw1"}'), 1)
+        self.assertNotIn(
+            'wgkex_broker_worker_domain_connected_peers{domain="parker",worker="gw1"}',
+            text,
+        )
+
     def test_load_parker_ipam_modes(self):
         self.assertIsNone(self.broker_app._load_parker_ipam())
 
