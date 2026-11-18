@@ -462,7 +462,21 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(
             (parsed.sites["vie"].capacity, parsed.sites["vie"].weight), (500, 2)
         )
-        self.assertEqual(parsed.route_gate, config.Parker.RouteGate(120, 1))
+        self.assertEqual(parsed.route_gate, config.Parker.RouteGate(120, 1, 16))
+        self.assertEqual(
+            config.Parker.from_dict(
+                {**parker, "route_gate": {"route_metric": 8}}
+            ).route_gate.route_metric,
+            8,
+        )
+        for metric in (0, -1, "16", True, 2**32):
+            with (
+                self.subTest(metric=metric),
+                self.assertRaisesRegex(ValueError, "route_metric"),
+            ):
+                config.Parker.from_dict(
+                    {**parker, "route_gate": {"route_metric": metric}}
+                )
         self.assertIsNone(config.Parker.from_dict(_parker_dict()).route_gate)
 
         for site, error in (

@@ -4,6 +4,10 @@ A node has a peer on every pgw of a site, but sends traffic through one pgw
 only. The gate installs the route to the prefix of a node only on the pgw
 where the node has a fresh handshake. All other pgws keep the peer without
 a route, so they do not attract the return traffic of the node.
+
+The routes use a low kernel metric. Thus the local route wins at once over the
+iBGP route of the other pgw. Without this, the new pgw sends the replies to
+the old pgw until the old pgw removes its route, and the node switches back.
 """
 
 import ipaddress
@@ -33,6 +37,7 @@ class RouteGate:
         prefix_length: The length of the Parker prefix of a node.
         on_route: Called with the public key and the handshake time when the
             gate adds a route.
+        metric: The kernel metric of the routes.
     """
 
     def __init__(
@@ -44,6 +49,7 @@ class RouteGate:
         wg_interface: str = "wg-nodes",
         coordinator: PeerMutationCoordinator = peer_mutations,
         clock: Callable[[], float] = time,
+        metric: int = 16,
     ) -> None:
         self.max_age = max_age
         self.prefix_length = prefix_length
@@ -51,6 +57,7 @@ class RouteGate:
         self.wg_interface = wg_interface
         self.coordinator = coordinator
         self.clock = clock
+        self.metric = metric
         # Public key -> time of the unroute. The route comes back only after
         # a handshake that is newer than this time.
         self._held: dict[str, float] = {}
@@ -97,13 +104,21 @@ class RouteGate:
                     continue
         return fresh
 
-    def _routed_prefixes(self, ip: pyroute2.IPRoute, oif: int) -> set[str]:
-        routed = set()
+    def _routed_prefixes(
+        self, ip: pyroute2.IPRoute, oif: int
+    ) -> tuple[set[str], set[tuple[str, int]]]:
+        """Return the prefixes with the gate metric and (prefix, metric) of the others."""
+        routed, other = set(), set()
         for route in ip.get_routes(family=socket.AF_INET6, oif=oif):
             dst = route.get_attr("RTA_DST")
             if dst and route["dst_len"] == self.prefix_length:
-                routed.add(str(ipaddress.ip_network(f"{dst}/{route['dst_len']}")))
-        return routed
+                prefix = str(ipaddress.ip_network(f"{dst}/{route['dst_len']}"))
+                metric = route.get_attr("RTA_PRIORITY")
+                if metric == self.metric:
+                    routed.add(prefix)
+                else:
+                    other.add((prefix, metric))
+        return routed, other
 
     def sync(self) -> list[str]:
         """Add and remove routes once. Returns the public keys that got a route."""
@@ -117,23 +132,32 @@ class RouteGate:
             fresh = self._fresh_prefixes()
             routed_keys = []
             oif = _netlink_call(lambda h: h.link_index(self.wg_interface), "route_gate")
-            routed = _netlink_call(
+            routed, other = _netlink_call(
                 lambda h: self._routed_prefixes(h.iproute(), oif), "route_gate"
             )
             for prefix in sorted(routed - fresh.keys()):
-                self._route("del", prefix, oif)
+                self._route("del", prefix, oif, self.metric)
             for prefix in sorted(fresh.keys() - routed):
-                if self._route("replace", prefix, oif):
+                if self._route("replace", prefix, oif, self.metric):
                     routed_keys.append(fresh[prefix])
+            # Routes with another metric (for example from an older version).
+            # They go after the new route is in place, so there is no gap.
+            for prefix, metric in sorted(other, key=str):
+                self._route("del", prefix, oif, metric)
         for public_key, handshake in routed_keys:
             self.on_route(public_key, handshake)
         return [public_key for public_key, _ in routed_keys]
 
-    def _route(self, action: str, prefix: str, oif: int) -> bool:
+    def _route(self, action: str, prefix: str, oif: int, metric: int | None) -> bool:
         with self.coordinator.peer_lock("", prefix):
             try:
                 _netlink_call(
-                    lambda h: h.iproute().route(action, dst=prefix, oif=oif),
+                    lambda h: h.iproute().route(
+                        action,
+                        dst=prefix,
+                        oif=oif,
+                        **({} if metric is None else {"priority": metric}),
+                    ),
                     "route_gate",
                 )
             except pyroute2.netlink.exceptions.NetlinkError as error:
@@ -141,7 +165,7 @@ class RouteGate:
                     "Route gate %s failed prefix=%s error=%s", action, prefix, error
                 )
                 return False
-        logger.info("Route gate %s prefix=%s", action, prefix)
+        logger.info("Route gate %s prefix=%s metric=%s", action, prefix, metric)
         return True
 
     def run(self, exit_event: threading.Event, interval: float) -> None:

@@ -226,6 +226,7 @@ parker:
   #route_gate:
   #  handshake_max_age: 180
   #  interval: 1
+  #  route_metric: 16  # kernel metric of the node routes. Must be lower than the BIRD metric (default 32)
   # [broker] Optional. With ipam: netbox, the broker keeps all node prefixes in memory and
   # answers known nodes without NetBox. See Docs/parker.md.
   #ipam_cache:
