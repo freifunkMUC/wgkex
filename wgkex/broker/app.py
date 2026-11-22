@@ -32,11 +32,13 @@ from wgkex.broker.observability import (
     ASSIGNMENTS,
     KEY_EXCHANGE_REQUESTS,
     MQTT_MESSAGE_ERRORS,
+    PGW_SELECTIONS,
     REBALANCE_HINT_EXCESS,
     REBALANCE_HINTS,
     SHARED_ASSIGNMENTS,
 )
 from wgkex.broker.parker import ParkerQuery, ParkerResponse
+from wgkex.broker.pgw_select import PgwSelector
 from wgkex.broker.ratelimit import RateLimiter, client_address
 from wgkex.broker.signer import sign_response
 from wgkex.common import logger
@@ -289,6 +291,10 @@ site_ipams: dict[str, ParkerIPAM] = _load_site_ipams()
 # Public key -> (worker, receive time) of the last fresh handshake that a
 # worker reported. Used to accept switch reports from nodes.
 handshakes: dict[str, tuple[str, float]] = {}
+# (site, public key) -> (worker, receive time) of the last fresh handshake in
+# each site. A multi-site node has one tunnel per site.
+site_handshakes: dict[tuple[str, str], tuple[str, float]] = {}
+pgw_selector = PgwSelector()
 
 
 def _blocked_response(api: str, key: str) -> tuple[dict, int]:
@@ -866,6 +872,49 @@ def _select_primary_site(
     return stored, target, target
 
 
+def _select_site_pgw(
+    site: str, pubkey: str, pgws: list[str], stored: list[str], standby: bool
+) -> str:
+    """Select the preferred pgw of a node in a site, see PgwSelector."""
+    sel_cfg = config.get_config().parker.pgw_selection
+    pgw_selector.tolerance = sel_cfg.rebalance_tolerance
+    pgw_selector.min_excess = sel_cfg.rebalance_min_excess
+    pgw_selector.max_moves = sel_cfg.rebalance_max_moves
+    pgw_selector.window = sel_cfg.rebalance_window
+
+    healthy = [w for w in pgws if parker_worker_metrics.is_online(w, "parker")]
+    not_draining = [w for w in healthy if not parker_worker_metrics.is_draining(w)]
+    healthy = not_draining or healthy or pgws
+
+    reported = site_handshakes.get((site, pubkey))
+    handshake_pgw = None
+    if reported is not None and time.monotonic() - reported[1] <= _handshake_max_age():
+        handshake_pgw = reported[0]
+    stored_pgw = next(
+        (w for w in stored if w in config.get_config().workers.names_in_pop(site)), None
+    )
+
+    selection = pgw_selector.select(
+        site,
+        parker_worker_metrics.site_loads(healthy),
+        handshake_pgw,
+        stored_pgw,
+        standby,
+    )
+    assert selection is not None
+    if selection.pgw != stored_pgw:
+        logger.info(
+            "Preferred pgw of %s in site %s: %s -> %s (%s)",
+            pubkey,
+            site,
+            stored_pgw,
+            selection.pgw,
+            selection.reason,
+        )
+    PGW_SELECTIONS.labels(site, selection.reason).inc()
+    return selection.pgw
+
+
 def _multisite_response(req_data: ParkerQuery) -> dict[str, Any]:
     """Build the response for a multi-site (active/standby) network.
 
@@ -902,14 +951,6 @@ def _multisite_response(req_data: ParkerQuery) -> dict[str, Any]:
     allocations = {
         name: _allocate_range6(site_ipams[name], req_data.pubkey) for name in site_names
     }
-    best: dict[str, str] = {}
-    for result in parker_worker_metrics.get_best_workers(
-        "parker",
-        [name for _, old in allocations.values() for name in old],
-        require_configured=True,
-    ):
-        best[workers_cfg.get(result.name).pop] = result.name
-
     sites: dict[str, dict[str, Any]] = {}
     concentrators = []
     for name in site_names:
@@ -919,7 +960,13 @@ def _multisite_response(req_data: ParkerQuery) -> dict[str, Any]:
         if not pgws:
             logger.warning("No pgw online in site %s", name)
             continue
-        preferred = best.get(name, pgws[0])
+        preferred = _select_site_pgw(
+            name,
+            req_data.pubkey,
+            pgws,
+            old_selected_concentrators,
+            standby=name != primary,
+        )
         _count_new_peer(preferred, req_data.pubkey, old_selected_concentrators)
         _provision(
             req_data.pubkey,
@@ -1191,6 +1238,9 @@ def handle_mqtt_message_parker_handshake(
     worker_cfg = cfg.workers.get(worker)
     if worker_cfg is None or worker_cfg.pop not in (cfg.parker.sites or {}):
         return
+    site_handshakes[(worker_cfg.pop, public_key)] = (worker, now)
+    for key in [k for k, (_, seen) in site_handshakes.items() if now - seen > max_age]:
+        del site_handshakes[key]
     others = [w for w in cfg.workers.names_in_pop(worker_cfg.pop) if w != worker]
     logger.info("Unroute %s on %s, it moved to %s", public_key, others, worker)
     _unroute(public_key, others, handshake)

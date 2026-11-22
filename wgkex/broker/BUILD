@@ -75,6 +75,24 @@ py_test(
 )
 
 py_library(
+    name = "pgw_select",
+    srcs = ["pgw_select.py"],
+    visibility = ["//visibility:public"],
+    deps = [
+       "//wgkex/common:logger",
+    ],
+)
+
+py_test(
+    name="pgw_select_test",
+    srcs=["pgw_select_test.py"],
+    deps = [
+       "//wgkex/broker:pgw_select",
+    ],
+    size="small",
+)
+
+py_library(
     name = "assignments",
     srcs = ["assignments.py"],
     visibility = ["//visibility:public"],
@@ -166,6 +184,7 @@ py_binary(
         ":metrics",
         ":observability",
         ":parker",
+        ":pgw_select",
         ":ratelimit",
     ],
 )

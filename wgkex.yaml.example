@@ -227,6 +227,14 @@ parker:
   #  handshake_max_age: 180
   #  interval: 1
   #  route_metric: 16  # kernel metric of the node routes. Must be lower than the BIRD metric (default 32)
+  # [broker] Optional, multi-site only. A node keeps its pgw while it is healthy. The broker moves
+  # a node for load only when its pgw has more than max(min_excess, tolerance * target) peers
+  # above its target. See Docs/parker.md.
+  #pgw_selection:
+  #  rebalance_tolerance: 0.2   # relative excess above the weighted target of the site
+  #  rebalance_min_excess: 10   # minimum excess in peers
+  #  rebalance_max_moves: 2     # maximum moves per site and window. 0: no load moves
+  #  rebalance_window: 120      # seconds
   # [broker] Optional. With ipam: netbox, the broker keeps all node prefixes in memory and
   # answers known nodes without NetBox. See Docs/parker.md.
   #ipam_cache:
