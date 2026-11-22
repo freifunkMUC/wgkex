@@ -1088,6 +1088,9 @@ def wg_api_v3_switch() -> tuple[Response | dict, int]:
     site_pgws = config.get_config().workers.names_in_pop(site)
     if site not in parker_cfg.sites or pgw not in site_pgws:
         return {"error": {"message": "Unknown site or pgw"}}, 400
+    # Use the configured names from here on, not the query values.
+    site = next(name for name in parker_cfg.sites if name == site)
+    pgw = next(name for name in site_pgws if name == pgw)
 
     if parker_worker_metrics.is_draining(pgw):
         return {"error": {"message": "The pgw drains"}}, 409
