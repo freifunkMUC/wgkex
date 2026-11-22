@@ -145,6 +145,9 @@ class TestBrokerApp(unittest.TestCase):
         self.broker_app.worker_metrics.data.clear()
         self.broker_app.parker_worker_metrics.data.clear()
         self.broker_app.parker_worker_metrics._pending.clear()
+        self.broker_app.handshakes.clear()
+        self.broker_app.site_handshakes.clear()
+        self.broker_app.pgw_selector = self.broker_app.PgwSelector()
         self.broker_app.rate_limiter = self.broker_app._create_rate_limiter()
         self.broker_app.blocklist = self.broker_app._create_blocklist()
 
@@ -864,16 +867,14 @@ class TestBrokerApp(unittest.TestCase):
             mock.patch.object(self.broker_app, "site_ipams", site_ipams),
             mock.patch.object(self.broker_app, "mqtt") as mqtt,
             mock.patch.object(
-                self.broker_app.parker_worker_metrics,
-                "get_best_workers",
-                return_value=[
-                    self.broker_app.WorkerResult(name, 0, 0, 0, 0) for name in best
-                ],
-            ),
-            mock.patch.object(
                 self.broker_app, "sign_response", return_value=b"signature"
             ),
         ):
+            # The pgws in best have the lowest load of their site.
+            for name in ("muc1", "muc2", "vie1"):
+                self.broker_app.parker_worker_metrics.update(
+                    name, "parker", "connected_peers", 0 if name in best else 5
+                )
             response = self.broker_app.app.test_client().get(
                 "/config",
                 query_string={"pubkey": _PUBLIC_KEY, "nonce": "n", **query},
@@ -979,6 +980,55 @@ class TestBrokerApp(unittest.TestCase):
             {}, best=("muc1",), stored="muc", counts={"muc": 1, "vie": 9}
         )
         self.assertEqual(payload["range6"], "2001:db8:10::/64")
+
+    def test_multisite_keeps_pgw_of_node(self):
+        """A node keeps its pgw when another pgw of the site has a lower load."""
+        for _ in range(3):
+            _, _, site_ipams = self._multisite_exchange(
+                {}, best=("muc2", "vie1"), stored="muc"
+            )
+            site_ipams["muc"].update_prefix.assert_called_once_with(
+                _PUBLIC_KEY, False, True, ["muc1"], primary=True
+            )
+
+    def test_multisite_failover_when_pgw_is_down(self):
+        _, _, site_ipams = self._multisite_exchange(
+            {}, best=("muc1", "vie1"), stored="muc", offline=("muc1",)
+        )
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc2"], primary=True
+        )
+
+    def test_multisite_follows_fresh_handshake(self):
+        """The pgw with a fresh handshake wins over the stored pgw, a stale one does not."""
+        cfg = _multisite_config()
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "mqtt"),
+        ):
+            self.broker_app.handle_mqtt_message_parker_handshake(
+                None,
+                None,
+                _message(
+                    "parker/wireguard-worker/muc2/handshake",
+                    json.dumps({"PublicKey": _PUBLIC_KEY}).encode(),
+                ),
+            )
+        _, _, site_ipams = self._multisite_exchange(
+            {}, best=("muc1", "vie1"), stored="muc"
+        )
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc2"], primary=True
+        )
+
+        worker, seen = self.broker_app.site_handshakes[("muc", _PUBLIC_KEY)]
+        self.broker_app.site_handshakes[("muc", _PUBLIC_KEY)] = (worker, seen - 181)
+        _, _, site_ipams = self._multisite_exchange(
+            {}, best=("muc1", "vie1"), stored="muc"
+        )
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc1"], primary=True
+        )
 
     def test_select_primary_site_capacity_and_preference(self):
         select = self.broker_app._select_primary_site

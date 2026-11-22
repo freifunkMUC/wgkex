@@ -440,6 +440,20 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             config.Parker.from_dict(parker)
 
+    def test_parker_pgw_selection(self):
+        parker = _parker_dict()
+        parker["pgw_selection"] = {"rebalance_max_moves": 0, "rebalance_window": 60}
+        parsed = config.Parker.from_dict(parker).pgw_selection
+        self.assertEqual(parsed, config.Parker.PgwSelection(0.2, 10, 0, 60))
+        for bad in (
+            {"rebalance_tolerance": -1},
+            {"rebalance_max_moves": -1},
+            {"rebalance_window": 0},
+            [],
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                config.Parker.from_dict({**parker, "pgw_selection": bad})
+
     def test_parker_sites_and_route_gate(self):
         parker = _parker_dict()
         parker["ipam"] = "netbox"

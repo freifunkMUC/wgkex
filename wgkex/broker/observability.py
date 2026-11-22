@@ -22,6 +22,13 @@ ASSIGNMENTS = Counter(
     ["worker", "domain"],
     registry=REGISTRY,
 )
+PGW_SELECTIONS = Counter(
+    "wgkex_broker_pgw_selections",
+    "Multi-site Parker pgw selections by site and reason "
+    "(handshake, stored, new, failover, rebalance)",
+    ["site", "reason"],
+    registry=REGISTRY,
+)
 REBALANCE_HINTS = Counter(
     "wgkex_broker_rebalance_hints",
     "Rebalancing hints published to workers, kind is rebalance or drain",

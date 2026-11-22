@@ -741,6 +741,28 @@ class Parker:
         route_metric: int = 16
 
     @dataclasses.dataclass(frozen=True)
+    class PgwSelection:
+        """Broker: how a node gets its preferred pgw in a site (multi-site only).
+
+        A node keeps its pgw while the pgw is healthy. The broker moves a node
+        for load reasons only when its pgw has more than
+        max(rebalance_min_excess, rebalance_tolerance * target) peers above its
+        weighted target in the site.
+
+        Attributes:
+            rebalance_tolerance: The relative excess above the target (0.2 = 20 %).
+            rebalance_min_excess: The minimum excess in peers.
+            rebalance_max_moves: The maximum number of moves in each site and window.
+                0: no load moves.
+            rebalance_window: The rate limit window for moves (seconds).
+        """
+
+        rebalance_tolerance: float = 0.2
+        rebalance_min_excess: int = 10
+        rebalance_max_moves: int = 2
+        rebalance_window: float = 120
+
+    @dataclasses.dataclass(frozen=True)
     class IPAMCache:
         """Broker: the in-memory copy of the NetBox IPAM.
 
@@ -769,6 +791,7 @@ class Parker:
     sites: dict[str, Site] = dataclasses.field(default_factory=dict)
     route_gate: RouteGate | None = None
     ipam_cache: IPAMCache = dataclasses.field(default_factory=IPAMCache)
+    pgw_selection: PgwSelection = dataclasses.field(default_factory=PgwSelection)
 
     @classmethod
     def from_dict(cls, parker_cfg: dict[str, Any]) -> "Parker":
@@ -891,6 +914,8 @@ class Parker:
         if ipam_cache.reclaim_days < 0:
             raise ValueError("parker.ipam_cache.reclaim_days must not be negative")
 
+        pgw_selection = cls._pgw_selection_from_dict(parker_cfg.get("pgw_selection"))
+
         return cls(
             enabled=enabled,
             xlat=xlat,
@@ -917,6 +942,39 @@ class Parker:
             sites=sites,
             route_gate=route_gate,
             ipam_cache=ipam_cache,
+            pgw_selection=pgw_selection,
+        )
+
+    @classmethod
+    def _pgw_selection_from_dict(cls, sel_cfg: Any) -> "Parker.PgwSelection":
+        if sel_cfg is None:
+            sel_cfg = {}
+        if not isinstance(sel_cfg, dict):
+            raise ValueError("parker.pgw_selection must be a mapping")  # noqa: TRY004
+        defaults = cls.PgwSelection()
+        tolerance = float(
+            sel_cfg.get("rebalance_tolerance", defaults.rebalance_tolerance)
+        )
+        if not math.isfinite(tolerance) or tolerance < 0:
+            raise ValueError("parker.pgw_selection.rebalance_tolerance must be >= 0")
+        min_excess = int(
+            sel_cfg.get("rebalance_min_excess", defaults.rebalance_min_excess)
+        )
+        max_moves = int(
+            sel_cfg.get("rebalance_max_moves", defaults.rebalance_max_moves)
+        )
+        if min_excess < 0 or max_moves < 0:
+            raise ValueError(
+                "parker.pgw_selection.rebalance_min_excess and rebalance_max_moves must be >= 0"
+            )
+        return cls.PgwSelection(
+            rebalance_tolerance=tolerance,
+            rebalance_min_excess=min_excess,
+            rebalance_max_moves=max_moves,
+            rebalance_window=_positive_duration(
+                sel_cfg.get("rebalance_window", defaults.rebalance_window),
+                "parker.pgw_selection.rebalance_window",
+            ),
         )
 
     @classmethod

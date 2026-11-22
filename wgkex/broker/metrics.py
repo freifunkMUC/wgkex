@@ -303,6 +303,12 @@ class WorkerMetricsCollection:
         total_weight = sum(weights.values()) or 1
         return {w: (loads[w], weights[w] / total_weight * total_load) for w in workers}
 
+    def site_loads(self, workers: list[str]) -> dict[str, tuple[int, float]]:
+        """Returns worker -> (effective peers, weighted target) within the given workers."""
+        with self._lock:
+            self._prune_expired()
+            return self._targets(workers)
+
     def get_best_worker(
         self,
         domain: str,
