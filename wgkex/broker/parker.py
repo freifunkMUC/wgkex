@@ -16,12 +16,15 @@ class ParkerQuery:
         nonce (str): A unique nonce value to prevent replay attacks.
         preferred_site (str): Optional site that the node owner selected as
             primary site. The broker uses it only when the site has capacity.
+        domain (str): Optional Gluon domain of the node. The broker uses it for
+            per-domain values (parker.captive_portal_urls).
     """
 
     v6mtu: int
     pubkey: str
     nonce: str
     preferred_site: str | None = None
+    domain: str | None = None
 
     def __post_init__(self) -> None:
         self.pubkey = is_valid_wg_pubkey(self.pubkey)
@@ -33,11 +36,13 @@ class ParkerQuery:
         pubkey: str = is_valid_wg_pubkey(data.get("pubkey", ""))
         nonce: str = data.get("nonce", "")
         preferred_site = str(data.get("preferred_site") or "") or None
+        domain = str(data.get("domain") or "") or None
         return cls(
             v6mtu=v6mtu,
             pubkey=pubkey,
             nonce=nonce,
             preferred_site=preferred_site,
+            domain=domain,
         )
 
 

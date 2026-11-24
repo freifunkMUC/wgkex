@@ -734,7 +734,7 @@ def _provision(
 
 
 def _base_response(req_data: ParkerQuery, addresses: dict[str, str], concentrators):
-    return dataclasses.asdict(
+    data = dataclasses.asdict(
         ParkerResponse(
             nonce=req_data.nonce,
             time=int(datetime.now(tz=timezone.utc).timestamp()),
@@ -744,6 +744,13 @@ def _base_response(req_data: ParkerQuery, addresses: dict[str, str], concentrato
             **addresses,
         )
     )
+    # Optional: without the field, the node sends no captive portal option.
+    captive_portal_url = config.get_config().parker.captive_portal_urls.get(
+        req_data.domain or ""
+    )
+    if captive_portal_url:
+        data["captive_portal_url"] = captive_portal_url
+    return data
 
 
 def _single_site_response(req_data: ParkerQuery) -> dict[str, Any]:

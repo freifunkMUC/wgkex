@@ -235,6 +235,10 @@ parker:
   #  rebalance_min_excess: 10   # minimum excess in peers
   #  rebalance_max_moves: 2     # maximum moves per site and window. 0: no load moves
   #  rebalance_window: 120      # seconds
+  # [broker] Optional. Gluon domain (query parameter "domain" of the node) -> captive portal API
+  # URI (RFC 8908). The node sends it in DHCPv4 option 114. Domains without a URI get no option.
+  #captive_portal_urls:
+  #  ffdlg_dlg: https://freifunk-dillingen-donau.de/captive
   # [broker] Optional. With ipam: netbox, the broker keeps all node prefixes in memory and
   # answers known nodes without NetBox. See Docs/parker.md.
   #ipam_cache:
