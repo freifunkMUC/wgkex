@@ -117,12 +117,13 @@ Broker:
 Preferred pgw of a site:
 - A healthy pgw is online, has fresh metrics and does not drain. The load is the connected peers plus pending assignments, compared to the weighted target in the site.
 - The broker selects the preferred pgw in this order:
+  0. The pgw of a confirmed switch, during the switch hold (see [Switch](#switch)). It must be online and must not drain.
   1. The healthy pgw of the site with a fresh handshake event of the node (within `route_gate.handshake_max_age`).
   2. The healthy stored preferred pgw of the site.
   3. The healthy pgw with the lowest load. This is a new placement, or a failover when the pgw of the node is not healthy. A failover has no delay and no rate limit.
 - A small load difference does not move a node. Before, the node moved each time that two pgws had almost the same load, and its tunnel flapped between them.
 - The broker moves a node for load only when its pgw has more than `max(rebalance_min_excess, rebalance_tolerance * target)` peers above its target, and only to a pgw below its target. It moves at most `rebalance_max_moves` nodes per site in each `rebalance_window`. It moves standby-site tunnels first. A primary-site tunnel moves only after the pgw was overloaded for a full window without a standby move. A node with a fresh handshake does not move.
-- The counter `wgkex_broker_pgw_selections{site,reason}` shows the reason of each selection: `handshake`, `stored`, `new`, `failover` or `rebalance`.
+- The counter `wgkex_broker_pgw_selections{site,reason}` shows the reason of each selection: `switch_hold`, `handshake`, `stored`, `new`, `failover` or `rebalance`.
 
 Worker:
 - With `parker.route_gate`, a pgw installs the route to the prefix of a node only when the node has a fresh handshake (`handshake_max_age`) on this pgw. Thus only the active pgw attracts the return traffic. When the gate adds a route, the worker sends `parker/wireguard-worker/<worker>/handshake` with the public key and the handshake time.
@@ -131,8 +132,15 @@ Worker:
 
 Switch:
 - When a node moves to another pgw of a site, it calls `GET /api/v3/switch?pubkey=..&site=..&pgw=..`.
-- The broker accepts the call only after a fresh handshake event from the new pgw (else `409`, the node tries again). Then it stores the new pgw as the preferred pgw of the site and sends `Unroute` to the other pgws of the site. If the broker cannot store the pgw, it sends `500` and no `Unroute`. They remove the route at once and keep the peer.
+- The broker accepts the call only after a fresh handshake event of the node from the new pgw in this site (else `409`, the node tries again). It refuses a pgw that drains (`409`). Then it stores the new pgw as the preferred pgw of the site and sends `Unroute` to the other pgws of the site. If the broker cannot store the pgw, it sends `500` and no `Unroute`. They remove the route at once and keep the peer.
 - If the old pgw does not get the `Unroute` (for example, it is offline), the old route ages out after `handshake_max_age`.
+- Replies:
+  - `200` `{"Message": "OK", "site": "<site>", "pgw": "<pgw>", "hold": <seconds>}`: the switch is stored. `pgw` is the reported pgw. The node retries until it gets `200` with its pgw.
+  - `409`: no fresh handshake yet, or the pgw drains. Try again.
+  - `400`: bad public key, unknown site, or the pgw is not in the site. Do not try again.
+  - `500`: the broker could not store the switch. Try again.
+- Switch hold: for `parker.pgw_selection.switch_hold` seconds (default 900, `0`: no hold), `/config` gives the reported pgw as the preferred pgw of the site. A handshake on another pgw or the load does not change it. A new switch call starts the hold again. The hold ends at once when the pgw goes offline or drains, and the normal failover applies. After the hold, the pgw stays because it is the stored preferred pgw.
+- The broker sends the hold to the other brokers on `wireguard-broker/<broker>/ipam`. Brokers older than this change log an error for this message and ignore it.
 
 ### IPAM cache
 

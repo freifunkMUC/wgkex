@@ -147,6 +147,7 @@ class TestBrokerApp(unittest.TestCase):
         self.broker_app.parker_worker_metrics._pending.clear()
         self.broker_app.handshakes.clear()
         self.broker_app.site_handshakes.clear()
+        self.broker_app.switch_holds.clear()
         self.broker_app.pgw_selector = self.broker_app.PgwSelector()
         self.broker_app.rate_limiter = self.broker_app._create_rate_limiter()
         self.broker_app.blocklist = self.broker_app._create_blocklist()
@@ -1039,6 +1040,125 @@ class TestBrokerApp(unittest.TestCase):
         site_ipams["muc"].update_prefix.assert_called_once_with(
             _PUBLIC_KEY, False, True, ["muc1"], primary=True
         )
+
+    def _handshake(self, cfg, worker):
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "mqtt"),
+        ):
+            self.broker_app.handle_mqtt_message_parker_handshake(
+                None,
+                None,
+                _message(
+                    f"parker/wireguard-worker/{worker}/handshake",
+                    json.dumps({"PublicKey": _PUBLIC_KEY}).encode(),
+                ),
+            )
+
+    def test_switch_holds_reported_pgw(self):
+        """/config gives the reported pgw during the hold, also against a handshake."""
+        cfg = _multisite_config()
+        self._handshake(cfg, "muc2")
+        query = {"pubkey": _PUBLIC_KEY, "site": "muc", "pgw": "muc2"}
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "mqtt") as mqtt,
+            mock.patch.object(self.broker_app, "site_ipams", self._site_ipams()),
+        ):
+            response = self.broker_app.app.test_client().get(
+                "/api/v3/switch", query_string=query
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.get_json(),
+            {"Message": "OK", "site": "muc", "pgw": "muc2", "hold": 900},
+        )
+        topic, payload = mqtt.client.publish.call_args.args
+        self.assertEqual(topic, f"wireguard-broker/{self.broker_app.broker_id}/ipam")
+        self.assertEqual(json.loads(payload)["switch"], {"pgw": "muc2", "hold": 900.0})
+
+        # A later handshake on muc1 and a lower load on muc1 do not win.
+        self._handshake(cfg, "muc1")
+        _, _, site_ipams = self._multisite_exchange(
+            {}, best=("muc1", "vie1"), stored="muc"
+        )
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc2"], primary=True
+        )
+
+        # A drain of the held pgw ends the hold at once.
+        self.broker_app.parker_worker_metrics.set_draining("muc2", True)
+        _, _, site_ipams = self._multisite_exchange(
+            {}, best=("muc1", "vie1"), stored="muc"
+        )
+        site_ipams["muc"].update_prefix.assert_called_once_with(
+            _PUBLIC_KEY, False, True, ["muc1"], primary=True
+        )
+        self.assertNotIn(("muc", _PUBLIC_KEY), self.broker_app.switch_holds)
+
+    def test_switch_hold_ends_when_pgw_is_down_or_time_is_over(self):
+        for offline, age in ((("muc2",), 0), ((), 901)):
+            with self.subTest(offline=offline, age=age):
+                now = self.broker_app.time.monotonic()
+                self.broker_app.switch_holds[("muc", _PUBLIC_KEY)] = (
+                    "muc2",
+                    now + 900 - age,
+                )
+                _, _, site_ipams = self._multisite_exchange(
+                    {}, best=("muc2", "vie1"), stored="muc", offline=offline
+                )
+                # The stored pgw (muc1) wins again.
+                site_ipams["muc"].update_prefix.assert_called_once_with(
+                    _PUBLIC_KEY, False, True, ["muc1"], primary=True
+                )
+
+    def test_switch_to_draining_pgw_is_refused(self):
+        cfg = _multisite_config()
+        self._handshake(cfg, "muc2")
+        self.broker_app.parker_worker_metrics.set_draining("muc2", True)
+        with (
+            mock.patch.object(self.broker_app.config, "get_config", return_value=cfg),
+            mock.patch.object(self.broker_app, "mqtt"),
+            mock.patch.object(self.broker_app, "site_ipams", self._site_ipams()),
+        ):
+            response = self.broker_app.app.test_client().get(
+                "/api/v3/switch",
+                query_string={"pubkey": _PUBLIC_KEY, "site": "muc", "pgw": "muc2"},
+            )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.broker_app.switch_holds, {})
+
+    def test_switch_hold_from_other_broker(self):
+        cfg = _multisite_config()
+        handle = self.broker_app.handle_mqtt_message_ipam
+        good = {
+            "site": "muc",
+            "pubkey": _PUBLIC_KEY,
+            "switch": {"pgw": "muc2", "hold": 300},
+        }
+        with mock.patch.object(self.broker_app.config, "get_config", return_value=cfg):
+            for bad in (
+                {**good, "switch": {"pgw": "vie1", "hold": 300}},
+                {**good, "switch": {"pgw": "muc2", "hold": -1}},
+                {**good, "switch": {"pgw": "muc2", "hold": True}},
+                {**good, "pubkey": "x"},
+            ):
+                handle(
+                    None,
+                    None,
+                    _message("wireguard-broker/other/ipam", json.dumps(bad).encode()),
+                )
+            self.assertEqual(self.broker_app.switch_holds, {})
+            # The own messages are ignored.
+            own = f"wireguard-broker/{self.broker_app.broker_id}/ipam"
+            handle(None, None, _message(own, json.dumps(good).encode()))
+            self.assertEqual(self.broker_app.switch_holds, {})
+            handle(
+                None,
+                None,
+                _message("wireguard-broker/other/ipam", json.dumps(good).encode()),
+            )
+        self.assertEqual(self.broker_app._held_pgw("muc", _PUBLIC_KEY), "muc2")
 
     def test_select_primary_site_capacity_and_preference(self):
         select = self.broker_app._select_primary_site

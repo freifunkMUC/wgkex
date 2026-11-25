@@ -442,10 +442,16 @@ class TestConfig(unittest.TestCase):
 
     def test_parker_pgw_selection(self):
         parker = _parker_dict()
-        parker["pgw_selection"] = {"rebalance_max_moves": 0, "rebalance_window": 60}
+        parker["pgw_selection"] = {
+            "rebalance_max_moves": 0,
+            "rebalance_window": 60,
+            "switch_hold": 0,
+        }
         parsed = config.Parker.from_dict(parker).pgw_selection
-        self.assertEqual(parsed, config.Parker.PgwSelection(0.2, 10, 0, 60))
+        self.assertEqual(parsed, config.Parker.PgwSelection(0.2, 10, 0, 60, 0))
+        self.assertEqual(config.Parker.PgwSelection().switch_hold, 900)
         for bad in (
+            {"switch_hold": -1},
             {"rebalance_tolerance": -1},
             {"rebalance_max_moves": -1},
             {"rebalance_window": 0},
