@@ -25,7 +25,7 @@ ASSIGNMENTS = Counter(
 PGW_SELECTIONS = Counter(
     "wgkex_broker_pgw_selections",
     "Multi-site Parker pgw selections by site and reason "
-    "(handshake, stored, new, failover, rebalance)",
+    "(switch_hold, handshake, stored, new, failover, rebalance)",
     ["site", "reason"],
     registry=REGISTRY,
 )

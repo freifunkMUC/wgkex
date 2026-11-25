@@ -3,6 +3,7 @@
 import dataclasses
 import ipaddress
 import json
+import math
 import os
 import random
 import re
@@ -294,6 +295,8 @@ handshakes: dict[str, tuple[str, float]] = {}
 # (site, public key) -> (worker, receive time) of the last fresh handshake in
 # each site. A multi-site node has one tunnel per site.
 site_handshakes: dict[tuple[str, str], tuple[str, float]] = {}
+# (site, public key) -> (pgw, end time) of a switch that a node reported.
+switch_holds: dict[tuple[str, str], tuple[str, float]] = {}
 pgw_selector = PgwSelector()
 
 
@@ -884,15 +887,31 @@ def _select_site_pgw(
 
     healthy = [w for w in pgws if parker_worker_metrics.is_online(w, "parker")]
     not_draining = [w for w in healthy if not parker_worker_metrics.is_draining(w)]
-    healthy = not_draining or healthy or pgws
+    stored_pgw = next(
+        (w for w in stored if w in config.get_config().workers.names_in_pop(site)), None
+    )
 
+    held = _held_pgw(site, pubkey)
+    if held is not None:
+        if held in not_draining:
+            if held != stored_pgw:
+                logger.info(
+                    "Preferred pgw of %s in site %s: %s -> %s (switch_hold)",
+                    pubkey,
+                    site,
+                    stored_pgw,
+                    held,
+                )
+            PGW_SELECTIONS.labels(site, "switch_hold").inc()
+            return held
+        # The pgw is down or drains: end the hold, the normal selection fails over.
+        del switch_holds[(site, pubkey)]
+
+    healthy = not_draining or healthy or pgws
     reported = site_handshakes.get((site, pubkey))
     handshake_pgw = None
     if reported is not None and time.monotonic() - reported[1] <= _handshake_max_age():
         handshake_pgw = reported[0]
-    stored_pgw = next(
-        (w for w in stored if w in config.get_config().workers.names_in_pop(site)), None
-    )
 
     selection = pgw_selector.select(
         site,
@@ -1045,10 +1064,16 @@ def _handshake_max_age() -> float:
 def wg_api_v3_switch() -> tuple[Response | dict, int]:
     """A node reports that it moved its tunnel of a site to another pgw.
 
-    The broker accepts the report only when that pgw has reported a fresh
-    handshake of the node. Then it stores that pgw as the preferred pgw of the
-    site and tells the other pgws of the site to remove the route to the node
-    and keep the peer (standby).
+    The broker accepts the report only when that pgw does not drain and has
+    reported a fresh handshake of the node in this site. Then it stores that pgw
+    as the preferred pgw of the site, holds it for parker.pgw_selection.switch_hold
+    seconds on all brokers (see _select_site_pgw) and tells the other pgws of the
+    site to remove the route to the node and keep the peer (standby).
+
+    Replies: 200 {"Message": "OK", "site", "pgw", "hold"} when the switch is
+    stored; 409 when the node must try again later (no fresh handshake yet, or
+    the pgw drains); 400 for an invalid query; 500 when the switch could not be
+    stored (try again).
     """
     parker_cfg = config.get_config().parker
     if not parker_cfg.enabled or not parker_cfg.sites:
@@ -1063,8 +1088,13 @@ def wg_api_v3_switch() -> tuple[Response | dict, int]:
     site_pgws = config.get_config().workers.names_in_pop(site)
     if site not in parker_cfg.sites or pgw not in site_pgws:
         return {"error": {"message": "Unknown site or pgw"}}, 400
+    # Use the configured names from here on, not the query values.
+    site = next(name for name in parker_cfg.sites if name == site)
+    pgw = next(name for name in site_pgws if name == pgw)
 
-    reported = handshakes.get(pubkey)
+    if parker_worker_metrics.is_draining(pgw):
+        return {"error": {"message": "The pgw drains"}}, 409
+    reported = site_handshakes.get((site, pubkey))
     if (
         reported is None
         or reported[0] != pgw
@@ -1078,8 +1108,47 @@ def wg_api_v3_switch() -> tuple[Response | dict, int]:
     except Exception as error:  # noqa: BLE001
         logger.error("Could not store the switch of %s", pubkey, exc_info=error)
         return {"error": {"message": "Internal error, please try again later"}}, 500
+    hold = parker_cfg.pgw_selection.switch_hold
+    _hold_switch(site, pubkey, pgw, hold)
+    _publish_switch(site, pubkey, pgw, hold)
     _unroute(pubkey, [other for other in site_pgws if other != pgw])
-    return {"Message": "OK"}, 200
+    return {"Message": "OK", "site": site, "pgw": pgw, "hold": round(hold)}, 200
+
+
+def _hold_switch(site: str, pubkey: str, pgw: str, hold: float) -> None:
+    """Hold the reported pgw of a node in a site for hold seconds."""
+    now = time.monotonic()
+    for key in [k for k, (_, end) in switch_holds.items() if end <= now]:
+        del switch_holds[key]
+    if hold > 0:
+        switch_holds[(site, pubkey)] = (pgw, now + hold)
+    else:
+        switch_holds.pop((site, pubkey), None)
+
+
+def _held_pgw(site: str, pubkey: str) -> str | None:
+    """The pgw of a reported switch, while its hold time runs."""
+    held = switch_holds.get((site, pubkey))
+    if held is None:
+        return None
+    if time.monotonic() >= held[1]:
+        del switch_holds[(site, pubkey)]
+        return None
+    return held[0]
+
+
+def _publish_switch(site: str, pubkey: str, pgw: str, hold: float) -> None:
+    """Send a switch hold to the other brokers (on the IPAM topic).
+
+    The hold is relative (seconds), so clock differences do not matter.
+    """
+    if not mqtt.connected:
+        logger.warning("MQTT is not connected, the other brokers miss the switch")
+        return
+    payload = json.dumps(
+        {"site": site, "pubkey": pubkey, "switch": {"pgw": pgw, "hold": hold}}
+    )
+    mqtt.client.publish(TOPIC_BROKER_IPAM.format(broker=broker_id), payload, qos=1)
 
 
 def _unroute(pubkey: str, workers: list[str], handshake: float | None = None) -> None:
@@ -1250,17 +1319,34 @@ def handle_mqtt_message_parker_handshake(
 def handle_mqtt_message_ipam(
     client: mqtt_client.Client, userdata: bytes, message: mqtt_client.MQTTMessage
 ) -> None:
-    """Adds an IPAM change of another broker to the cache."""
+    """Adds an IPAM change or a switch hold of another broker."""
     sender = message.topic.split("/")[1]
     if sender == broker_id:
         return
     try:
         data = json.loads(message.payload)
+        if "switch" in data:
+            _apply_shared_switch(data)
+            return
         cache = ipam_caches[data["site"]]
         cache.apply(is_valid_wg_pubkey(data["pubkey"]), data["entry"])
     except Exception as error:  # noqa: BLE001
         logger.error("Ignoring invalid IPAM message from broker %s: %s", sender, error)
         MQTT_MESSAGE_ERRORS.labels("ipam").inc()
+
+
+def _apply_shared_switch(data: dict[str, Any]) -> None:
+    """Hold the pgw of a switch that another broker accepted."""
+    site, switch = data["site"], data["switch"]
+    pubkey = is_valid_wg_pubkey(data["pubkey"])
+    pgw, hold = switch["pgw"], switch["hold"]
+    if pgw not in config.get_config().workers.names_in_pop(site):
+        raise ValueError(f"unknown pgw {pgw} in site {site}")
+    if isinstance(hold, bool) or not isinstance(hold, (int, float)):
+        raise TypeError(f"invalid hold {hold!r}")
+    if not math.isfinite(hold) or hold < 0:
+        raise ValueError(f"invalid hold {hold!r}")
+    _hold_switch(site, pubkey, pgw, hold)
 
 
 @mqtt.on_topic(MQTTTopics.TOPIC_WORKER_STATUS.format(worker="+"))

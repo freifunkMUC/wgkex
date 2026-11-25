@@ -755,12 +755,16 @@ class Parker:
             rebalance_max_moves: The maximum number of moves in each site and window.
                 0: no load moves.
             rebalance_window: The rate limit window for moves (seconds).
+            switch_hold: After a node reports a switch (/api/v3/switch), the broker
+                gives the reported pgw for this time (seconds), while the pgw is
+                online and does not drain. 0: no hold.
         """
 
         rebalance_tolerance: float = 0.2
         rebalance_min_excess: int = 10
         rebalance_max_moves: int = 2
         rebalance_window: float = 120
+        switch_hold: float = 900
 
     @dataclasses.dataclass(frozen=True)
     class IPAMCache:
@@ -967,6 +971,9 @@ class Parker:
             raise ValueError(
                 "parker.pgw_selection.rebalance_min_excess and rebalance_max_moves must be >= 0"
             )
+        switch_hold = float(sel_cfg.get("switch_hold", defaults.switch_hold))
+        if not math.isfinite(switch_hold) or switch_hold < 0:
+            raise ValueError("parker.pgw_selection.switch_hold must be >= 0")
         return cls.PgwSelection(
             rebalance_tolerance=tolerance,
             rebalance_min_excess=min_excess,
@@ -975,6 +982,7 @@ class Parker:
                 sel_cfg.get("rebalance_window", defaults.rebalance_window),
                 "parker.pgw_selection.rebalance_window",
             ),
+            switch_hold=switch_hold,
         )
 
     @classmethod

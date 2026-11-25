@@ -235,6 +235,7 @@ parker:
   #  rebalance_min_excess: 10   # minimum excess in peers
   #  rebalance_max_moves: 2     # maximum moves per site and window. 0: no load moves
   #  rebalance_window: 120      # seconds
+  #  switch_hold: 900          # seconds: /config keeps the pgw of a confirmed switch. 0: no hold
   # [broker] Optional. With ipam: netbox, the broker keeps all node prefixes in memory and
   # answers known nodes without NetBox. See Docs/parker.md.
   #ipam_cache:
