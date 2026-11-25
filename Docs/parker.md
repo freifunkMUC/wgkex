@@ -19,7 +19,7 @@ For Parker the following configuration items are relevant in addition to the def
 - `workers` map (including `pop` key)
 - `sticky_worker_tolerance`
 - `broker_signing_key`
-- `parker` section (optional: `sites`, `route_gate`, `ipam_cache`, `pgw_selection`)
+- `parker` section (optional: `sites`, `route_gate`, `ipam_cache`, `pgw_selection`, `captive_portal_urls`)
 - `peer_cleanup` section (`parker_stale_timeout`, `initial_handshake_grace`; the older `cleanup` section is still
   accepted as an alias)
 - `netbox` section

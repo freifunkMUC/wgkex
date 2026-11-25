@@ -140,6 +140,7 @@ paths:
         - $ref: "#/components/parameters/ParkerNonce"
         - $ref: "#/components/parameters/ParkerV6MTU"
         - $ref: "#/components/parameters/ParkerPreferredSite"
+        - $ref: "#/components/parameters/ParkerDomain"
       responses:
         "200":
           $ref: "#/components/responses/ParkerConfig"
@@ -161,6 +162,7 @@ paths:
         - $ref: "#/components/parameters/ParkerNonce"
         - $ref: "#/components/parameters/ParkerV6MTU"
         - $ref: "#/components/parameters/ParkerPreferredSite"
+        - $ref: "#/components/parameters/ParkerDomain"
       responses:
         "200":
           $ref: "#/components/responses/ParkerConfig"
@@ -182,6 +184,7 @@ paths:
         - $ref: "#/components/parameters/ParkerNonce"
         - $ref: "#/components/parameters/ParkerV6MTU"
         - $ref: "#/components/parameters/ParkerPreferredSite"
+        - $ref: "#/components/parameters/ParkerDomain"
       responses:
         "200":
           $ref: "#/components/responses/ParkerConfig"
@@ -318,6 +321,14 @@ components:
       description: |
         Only with `parker.sites`. The site that the node owner prefers as primary site. The broker uses it only when
         the site is known and has capacity.
+      schema:
+        type: string
+    ParkerDomain:
+      name: domain
+      in: query
+      required: false
+      description: |
+        The Gluon domain of the node. The broker uses it for per-domain values, for example `captive_portal_url`.
       schema:
         type: string
   responses:
@@ -493,6 +504,11 @@ components:
         retry:
           type: integer
           description: Seconds after which the node should fetch its configuration again.
+        captive_portal_url:
+          type: string
+          description: |
+            Optional. The captive portal API URI (RFC 8908) of the node's `domain` from `parker.captive_portal_urls`.
+            The node sends it to its clients in DHCPv4 option 114 (RFC 8910). Not sent when the domain has no URI.
     ParkerConcentrator:
       type: object
       required: [address4, address6, endpoint, pubkey, id]

@@ -460,6 +460,24 @@ class TestConfig(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 config.Parker.from_dict({**parker, "pgw_selection": bad})
 
+    def test_parker_captive_portal_urls(self):
+        parker = _parker_dict()
+        self.assertEqual(config.Parker.from_dict(parker).captive_portal_urls, {})
+        urls = {"ffdlg_dlg": "https://example.org/captive?x=1"}
+        parsed = config.Parker.from_dict({**parker, "captive_portal_urls": urls})
+        self.assertEqual(parsed.captive_portal_urls, urls)
+        for bad in (
+            [],
+            {"d": "http://example.org/captive"},
+            {"d": "https://example.org/a,b"},
+            {"d": "https://example.org/a b"},
+            {"d": "https://example.org/#x"},
+            {"d": "https://example.org/" + "a" * 250},
+            {"d": None},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                config.Parker.from_dict({**parker, "captive_portal_urls": bad})
+
     def test_parker_sites_and_route_gate(self):
         parker = _parker_dict()
         parker["ipam"] = "netbox"

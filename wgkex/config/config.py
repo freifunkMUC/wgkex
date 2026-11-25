@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import math
 import os
+import re
 import sys
 from enum import Enum
 from typing import Any
@@ -33,6 +34,32 @@ def _positive_duration(value: Any, name: str) -> float:
     if not math.isfinite(duration) or duration <= 0:
         raise ValueError(f"{name} must be a positive duration in seconds")
     return duration
+
+
+# Same check as the node (parker/dhcp.lua): dnsmasq splits option values at
+# commas, and a DHCP option holds at most 255 bytes.
+_CAPTIVE_PORTAL_URL = re.compile(r"https://[A-Za-z0-9\-._~:/?@!$&*+;=%\[\]]+")
+
+
+def _captive_portal_urls(value: Any) -> dict[str, str]:
+    """Parse parker.captive_portal_urls: Gluon domain -> captive portal API URI."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("parker.captive_portal_urls must be a mapping")  # noqa: TRY004
+    urls = {}
+    for domain, url in value.items():
+        if (
+            not isinstance(url, str)
+            or len(url.encode()) > 255
+            or not _CAPTIVE_PORTAL_URL.fullmatch(url)
+        ):
+            raise ValueError(
+                f"parker.captive_portal_urls.{domain} must be an https URI of at most "
+                "255 bytes without comma, space, quote or '#'"
+            )
+        urls[str(domain)] = url
+    return urls
 
 
 def _route_metric(value: Any) -> int:
@@ -796,6 +823,7 @@ class Parker:
     route_gate: RouteGate | None = None
     ipam_cache: IPAMCache = dataclasses.field(default_factory=IPAMCache)
     pgw_selection: PgwSelection = dataclasses.field(default_factory=PgwSelection)
+    captive_portal_urls: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, parker_cfg: dict[str, Any]) -> "Parker":
@@ -947,6 +975,9 @@ class Parker:
             route_gate=route_gate,
             ipam_cache=ipam_cache,
             pgw_selection=pgw_selection,
+            captive_portal_urls=_captive_portal_urls(
+                parker_cfg.get("captive_portal_urls")
+            ),
         )
 
     @classmethod

@@ -926,6 +926,16 @@ class TestBrokerApp(unittest.TestCase):
             _PUBLIC_KEY, False, True, ["vie1"], primary=True
         )
 
+    def test_multisite_captive_portal_url_per_domain(self):
+        cfg = _multisite_config()
+        cfg.parker.captive_portal_urls = {"ffdlg_dlg": "https://example.org/captive"}
+        payload, _, _ = self._multisite_exchange({"domain": "ffdlg_dlg"}, cfg=cfg)
+        self.assertEqual(payload["captive_portal_url"], "https://example.org/captive")
+        for query in ({"domain": "ffmuc"}, {}):
+            with self.subTest(query=query):
+                payload, _, _ = self._multisite_exchange(query, cfg=cfg)
+                self.assertNotIn("captive_portal_url", payload)
+
     def test_multisite_primary_site_is_sticky(self):
         payload, _, site_ipams = self._multisite_exchange(
             {}, best=("muc1", "vie1"), stored="muc", counts={"muc": 9, "vie": 1}
